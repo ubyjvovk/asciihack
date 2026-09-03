@@ -12,6 +12,7 @@ import type { Theme } from '../../render/themes.js';
 import { renderFirstPerson } from '../../render/raycast.js';
 import { paintMinimap } from '../minimap.js';
 import { paintCompass } from '../compass.js';
+import { FOV_MIN, FOV_MAX } from '../settings.js';
 import {
   FACINGS,
   charKey,
@@ -29,6 +30,20 @@ import type { Mode, Rect } from './classic.js';
 
 /** Yaw turn duration in ms: the world swings instead of snapping. */
 export const TURN_MS = 120;
+
+/** Default vertical FOV in degrees (tuned with F6/F7 or `--fov`). */
+export const DEFAULT_VFOV_DEG = 60;
+
+/**
+ * Horizontal FOV in radians for a vertical FOV at a given viewport size.
+ * Mirrors `renderFirstPerson`'s derivation exactly (docs/architecture.md
+ * §5.2): a terminal cell is twice as tall as wide, so the horizontal FOV is
+ * wider than the vertical one on a landscape viewport.
+ */
+export function hFovRad(vFovDeg: number, cols: number, rows: number, cellAspect = 2): number {
+  const vFovRad = (vFovDeg * Math.PI) / 180;
+  return 2 * Math.atan(Math.tan(vFovRad / 2) * (cols / (rows * cellAspect)));
+}
 
 /** Facing index after a digit/arrow key that also moves (vi-keys + numpad). */
 const DIGIT_FACING: Record<string, number> = {
@@ -82,6 +97,8 @@ export class FpsMode implements Mode {
   theme: Theme = 'cyber';
   /** Whether the minimap overlay is shown (toggled with F4 by the App). */
   showMinimap = true;
+  /** Vertical FOV in degrees for the raycaster (adjusted with F6/F7 by the App). */
+  vFovDeg = DEFAULT_VFOV_DEG;
 
   /** @param session - the session whose map and hero this mode renders. */
   constructor(session: NethackSession, now: () => number = () => Date.now()) {
@@ -118,14 +135,23 @@ export class FpsMode implements Mode {
     const sprites = spritesFromMap(this.session.map, hero, false);
     const theme = this.theme;
     const yaw = this.yaw;
+    const vFovDeg = Math.min(FOV_MAX, Math.max(FOV_MIN, this.vFovDeg));
     const sub = this.viewport.render(
       { x: 0, y: 0, width: Math.max(1, rect.width), height: Math.max(1, rect.height) },
-      (fb) => renderFirstPerson(this.session.map, poseFor(hero, yaw), sprites, fb),
+      (fb) =>
+        renderFirstPerson(
+          this.session.map,
+          poseFor(hero, yaw),
+          sprites,
+          fb,
+          { vFovDeg, cellAspect: 2 },
+        ),
       theme,
     );
     blitGrid(sub, grid, rect);
     if (this.showMinimap) paintMinimap(grid, rect, this.session, this.facing);
-    paintCompass(grid, rect, this.yaw);
+    const hFov = hFovRad(vFovDeg, Math.max(1, rect.width), Math.max(1, rect.height));
+    paintCompass(grid, rect, this.yaw, hFov);
   }
 
   /**

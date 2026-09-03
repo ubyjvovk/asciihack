@@ -66,12 +66,17 @@ saves persist across builds. Terminal: at least 80×24, 24-bit colour.
 | flag | default | meaning |
 |---|---|---|
 | `--mode=` | `fps` | `fps`, `ortho` or `classic` |
-| `--theme=` | `cyber` | `cyber`, `gloom`, `solarized`, `amber` |
+| `--theme=` | `amber` | `cyber`, `gloom`, `solarized`, `amber` |
 | `--no-minimap` | – | hide the minimap in fps/ortho |
+| `--fov=` | `60` | first-person vertical FOV (40–100) |
 | `--name=` | `asciihack` | character name |
 | `--playground=` | `~/.asciihack/playground` | per-player NetHack directory |
 | `--options=` | – | extra `NETHACKOPTIONS`, comma-separated |
 | `--bridge=` | `build/nethack/bridge/nh-bridge` | bridge binary |
+
+`--theme=`, `--no-minimap` and `--fov=` override the saved settings in
+`~/.asciihack/settings.json` (`{ "fov": 60, "theme": "amber", "minimap": true }`)
+for the run and are saved back, so your FOV and theme survive restarts.
 
 ### Keys
 
@@ -82,7 +87,8 @@ saves persist across builds. Terminal: at least 80×24, 24-bit colour.
   rose in the corner).
 - **Classic**: every key goes to NetHack.
 - `F1` classic · `F2` first-person · `F3` ortho · `F4` minimap · `F5` theme ·
-  `Ctrl+P` message history · `Ctrl+L` redraw.
+  `F6`/`F7` FOV (narrow/widen, first-person) · `Ctrl+P` message history ·
+  `Ctrl+L` redraw.
 
 Menus, text windows, prompts and `--More--` pauses are NetHack's own,
 drawn as overlays.

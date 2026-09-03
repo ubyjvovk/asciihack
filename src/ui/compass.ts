@@ -1,17 +1,16 @@
 /**
  * Compass ribbon for the first-person view (docs/architecture.md §7): a
- * 41-column heading strip on the top row of the fps viewport showing the
- * facing heading bright at the centre, the adjacent diagonals dim, and a
- * `·`/`|` tick every 15°, all on a black strip so it reads over the scene.
- * Pure painting; no I/O, no session state.
+ * heading strip on the top row of the fps viewport showing the facing heading
+ * bright at the centre, the adjacent headings dim, and a `·`/`|` tick every
+ * 15°, all on a black strip so it reads over the scene. The ribbon spans the
+ * real horizontal field of view: its visible window is `±hFov/2` and its
+ * scale is `(rect.width·0.34) / hFov` columns per radian, so the headings you
+ * see are the headings actually in view. Pure painting; no I/O, no session
+ * state.
  */
 import type { ScreenGrid } from '../model/types.js';
 import type { Rect } from './modes/classic.js';
 
-/** Half-width of the ribbon in columns (the ribbon spans ±20 about the centre). */
-const RIBBON_HALF = 20;
-/** Degrees of bearing per ribbon column: one 45° facing step maps to 20 columns. */
-const DEG_PER_COL = 45 / RIBBON_HALF;
 /** The 8 headings with their bearings in degrees, clockwise from north. */
 const HEADINGS: ReadonlyArray<{ name: string; deg: number }> = [
   { name: 'N', deg: 0 },
@@ -39,19 +38,31 @@ function deltaDeg(headingDeg: number, yawDeg: number): number {
   return d;
 }
 
+/** Signed angular difference of `headingDeg` from `yawDeg` in radians (wrapped to (−π, π]). */
+function deltaRad(headingDeg: number, yawDeg: number): number {
+  return (deltaDeg(headingDeg, yawDeg) * Math.PI) / 180;
+}
+
 /**
  * Paint the compass ribbon on the first row of `rect`, centred on the
- * viewport: a black 41-column strip, the nearest heading bright white (at
- * the centre when it is being faced), the other in-span headings dim grey,
- * a `·` tick every 15° with a `|` facing notch at the centre column.
+ * viewport: a black strip ~0.34 of the viewport width wide, the nearest
+ * heading bright white (at the centre when it is being faced), the other
+ * in-window headings dim grey, a `·` tick every 15° with a `|` facing notch
+ * at the centre column. The visible window is `±hFovRad/2` so the headings in
+ * view are exactly the headings the camera sees.
  */
-export function paintCompass(grid: ScreenGrid, rect: Rect, yawRad: number): void {
+export function paintCompass(grid: ScreenGrid, rect: Rect, yawRad: number, hFovRad: number): void {
   const yawDeg = (yawRad * 180) / Math.PI;
   const centre = rect.x + Math.floor(rect.width / 2);
   const y = rect.y;
   if (y < 0 || y >= grid.height) return;
-  // Black strip so the markers read over the rendered scene.
-  for (let x = centre - RIBBON_HALF; x <= centre + RIBBON_HALF; x++) {
+  // Columns per radian, chosen so the ribbon stays ~a third of the viewport
+  // width at any FOV; the visible half-width is then rect.width·0.34/2.
+  const scale = (rect.width * 0.34) / hFovRad;
+  const half = Math.round((rect.width * 0.34) / 2);
+  // Black strip so the markers read over the rendered scene (a hair wider to
+  // cover two-character headings that straddle the window edge).
+  for (let x = centre - half - 2; x <= centre + half + 2; x++) {
     if (x < 0 || x >= grid.width) continue;
     const cell = grid.cells[y * grid.width + x]!;
     cell.ch = ' ';
@@ -65,11 +76,13 @@ export function paintCompass(grid: ScreenGrid, rect: Rect, yawRad: number): void
     cell.fg = fg;
     cell.bg = BG;
   };
-  // 15° ticks across the visible span (±45°); the centre one is the notch.
-  for (let d = -45; d <= 45; d += 15) {
-    put(centre + Math.round(d / DEG_PER_COL), d === 0 ? '|' : '·', TICK_FG);
+  // 15° ticks across the visible window (±hFov/2); the centre one is the notch.
+  for (let d = -90; d <= 90; d += 15) {
+    const off = Math.round(((d * Math.PI) / 180) * scale);
+    if (Math.abs(off) > half) continue;
+    put(centre + off, d === 0 ? '|' : '·', TICK_FG);
   }
-  // Headings inside the ribbon span; the nearest one bright, the rest dim.
+  // Headings inside the window; the nearest one bright, the rest dim.
   let nearest: { name: string; deg: number } | null = null;
   let nearestAbs = Infinity;
   for (const h of HEADINGS) {
@@ -80,8 +93,8 @@ export function paintCompass(grid: ScreenGrid, rect: Rect, yawRad: number): void
     }
   }
   for (const h of HEADINGS) {
-    const off = Math.round(deltaDeg(h.deg, yawDeg) / DEG_PER_COL);
-    if (Math.abs(off) > RIBBON_HALF) continue;
+    const off = Math.round(deltaRad(h.deg, yawDeg) * scale);
+    if (Math.abs(off) > half) continue;
     const col = centre + off;
     const fg = h === nearest ? NEAR_FG : FAR_FG;
     for (let i = 0; i < h.name.length; i++) put(col + i, h.name[i]!, fg);

@@ -12,6 +12,7 @@ import { spawnBridge } from './engine/bridge.js';
 import { NethackSession, runSession } from './engine/session.js';
 import { TtyTerm } from './term/tty.js';
 import { App } from './ui/app.js';
+import { settingsPath } from './ui/settings.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** Default location of the built bridge binary. */
@@ -28,8 +29,12 @@ export interface CliFlags {
   bridge: string;
   playground: string;
   options: string[];
-  theme: string;
-  minimap: boolean;
+  /** Render theme, or null to fall back to the saved setting (default `amber`). */
+  theme: string | null;
+  /** Whether to show the minimap, or null to fall back to the saved setting. */
+  minimap: boolean | null;
+  /** Vertical FOV in degrees, or null to fall back to the saved setting. */
+  fov: number | null;
 }
 
 /** Write the usage text to the given stream. */
@@ -38,11 +43,12 @@ function printUsage(out: NodeJS.WritableStream): void {
     [
       'usage: asciihack [--mode=classic|fps|ortho] [--name=NAME]',
       '                 [--bridge=PATH] [--playground=DIR] [--options=K,V,...]',
-      '                 [--theme=cyber|gloom|solarized|amber] [--no-minimap]',
+      '                 [--theme=cyber|gloom|solarized|amber] [--no-minimap] [--fov=DEG]',
       '',
       '  --mode       requested view (default fps)',
-      '  --theme      render theme for fps/ortho (default cyber)',
+      '  --theme      render theme for fps/ortho (default amber)',
       '  --no-minimap hide the minimap overlay in fps/ortho',
+      '  --fov        first-person vertical FOV in degrees (default 60, 40-100)',
       '  --name       character name (default "asciihack")',
       '  --bridge     path to the nh-bridge binary',
       '  --playground per-player playground dir (default $ASCIIHACK_HOME/playground',
@@ -72,8 +78,9 @@ export function parseFlags(argv: readonly string[]): CliFlags {
     bridge: DEFAULT_BRIDGE,
     playground: '',
     options: [],
-    theme: 'cyber',
-    minimap: true,
+    theme: null,
+    minimap: null,
+    fov: null,
   };
   for (const arg of argv) {
     if (arg === '--help' || arg === '-h') showHelp();
@@ -83,7 +90,14 @@ export function parseFlags(argv: readonly string[]): CliFlags {
     else if (arg.startsWith('--name=')) flags.name = arg.slice('--name='.length);
     else if (arg.startsWith('--bridge=')) flags.bridge = arg.slice('--bridge='.length);
     else if (arg.startsWith('--playground=')) flags.playground = arg.slice('--playground='.length);
-    else if (arg.startsWith('--options=')) {
+    else if (arg.startsWith('--fov=')) {
+      const f = Number(arg.slice('--fov='.length));
+      if (!Number.isFinite(f)) {
+        console.error(`asciihack: --fov expects a number, got "${arg.slice('--fov='.length)}"`);
+        usage();
+      }
+      flags.fov = f;
+    } else if (arg.startsWith('--options=')) {
       flags.options = arg
         .slice('--options='.length)
         .split(',')
@@ -97,7 +111,7 @@ export function parseFlags(argv: readonly string[]): CliFlags {
     console.error(`asciihack: unknown mode "${flags.mode}"`);
     usage();
   }
-  if (flags.theme !== 'cyber' && flags.theme !== 'gloom' && flags.theme !== 'solarized' && flags.theme !== 'amber') {
+  if (flags.theme !== null && flags.theme !== 'cyber' && flags.theme !== 'gloom' && flags.theme !== 'solarized' && flags.theme !== 'amber') {
     console.error(`asciihack: unknown theme "${flags.theme}"`);
     usage();
   }
@@ -139,7 +153,15 @@ async function main(): Promise<void> {
     options: flags.options.length > 0 ? flags.options : undefined,
   });
   const session = new NethackSession((r) => bridge.reply(r), { playerName: flags.name });
-  const app = new App({ session, term, mode: flags.mode, theme: flags.theme as 'cyber' | 'gloom' | 'solarized' | 'amber', minimap: flags.minimap });
+  const app = new App({
+    session,
+    term,
+    mode: flags.mode,
+    theme: (flags.theme ?? undefined) as 'cyber' | 'gloom' | 'solarized' | 'amber' | undefined,
+    minimap: flags.minimap ?? undefined,
+    fov: flags.fov ?? undefined,
+    settingsFile: settingsPath(),
+  });
   app.enter();
   try {
     await runSession(bridge, session);

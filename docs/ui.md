@@ -56,9 +56,11 @@ Keys are routed in `App.handleKey`, in priority order:
 
 1. **Global keys** — `F1`/`F2`/`F3` switch the mode (classic/fps/ortho);
    `F4` toggles the minimap in fps/ortho; `F5` cycles the render theme
-   (cyber → gloom → solarized → amber); `Ctrl+L` invalidates the screen
-   (full repaint); `Ctrl+P` opens the last 20 `session.messages` as a text
-   overlay.
+   (cyber → gloom → solarized → amber); `F6` narrows and `F7` widens the
+   first-person vertical FOV by 5° (clamped to 40–100°, fps only, each press
+   shows a `FOV nn°` toast on the message line for ~1.5 s); `Ctrl+L`
+   invalidates the screen (full repaint); `Ctrl+P` opens the last 20
+   `session.messages` as a text overlay.
 2. **The overlay** — while an overlay is open it consumes every key.
 3. **The message pager** — while the message line is paging an overflowing
    batch (`--More--`), any key reveals the next chunk *before* it reaches
@@ -126,7 +128,8 @@ to the overlay/prompt exactly as in classic mode:
 - Ortho `Left`/`Right`/`Up`/`Down` are plain NetHack moves (west/east/north/
   south); there is no facing.
 - Everything else passes through unchanged. `F1/F2/F3` switch modes, `F4`
-  toggles the minimap, `F5` cycles the theme, `Ctrl+L` redraws.
+  toggles the minimap, `F5` cycles the theme, `F6`/`F7` narrow/widen the fps
+  FOV (see Settings), `Ctrl+L` redraws.
 
 ## Minimap (`src/ui/minimap.ts`)
 
@@ -146,16 +149,17 @@ Three always-visible, cheap facing cues (none in classic mode; nothing here
 touches the renderers):
 
 - **Compass ribbon** (`src/ui/compass.ts`, pure `paintCompass(grid, rect,
-  yawRad)`): a 41-column strip on the first row of the fps viewport, centred,
-  over the rendered scene, drawn with the interpolated `yaw` so it slides
-  during a turn. The headings `N NE E SE S SW W NW` are placed at
-  `centre + round(Δ·20/45°)` columns where Δ is the signed heading − yaw
-  wrapped to (−180°, 180°]; only headings inside the 41-column span (within
-  45°: the facing heading and its two adjacent diagonals) are drawn, so the
-  facing heading sits at the centre with `NE`/`NW` at ±20 columns. A `·` tick
-  marks every 15°, with a `|` facing notch at the centre column. The nearest
-  heading is bright white, the others dim grey, the ticks darker, all on a
-  black background.
+  yawRad, hFovRad)`): a heading strip on the first row of the fps viewport,
+  centred, over the rendered scene, drawn with the interpolated `yaw` so it
+  slides during a turn. The ribbon spans the real horizontal field of view:
+  its visible window is `±hFov/2` and its scale is `(rect.width·0.34) / hFov`
+  columns per radian, so the ribbon is always ~a third of the viewport width
+  and the headings you see are the headings actually in view. The headings
+  `N NE E SE S SW W NW` are placed at `centre + round(Δ·scale)` where Δ is the
+  signed heading − yaw wrapped to (−π, π]; only headings inside the window are
+  drawn, the facing heading bright white at the centre and the others dim. A
+  `·` tick marks every 15° across the window, with a `|` facing notch at the
+  centre column, all on a black background.
 - **Minimap facing arrow** (`src/ui/minimap.ts`): the hero cell prints an
   arrow instead of `@` when `facing` is given (see above).
 - **Ortho rose** (`src/ui/modes/ortho.ts`): a fixed 5×3 legend at the
@@ -163,6 +167,32 @@ touches the renderers):
   locked projection north is up-right (cell (x, y−1) → screen (sx+2, sy−1)),
   east down-right, south down-left, west up-left. Dim grey with the `+`
   bright.
+
+## Settings (`src/ui/settings.ts`)
+
+Player preferences are persisted to `~/.asciihack/settings.json` (the path
+comes from `$ASCIIHACK_HOME` like the playground, defaulting to `~/.asciihack`):
+
+```json
+{ "fov": 60, "theme": "amber", "minimap": true }
+```
+
+- The file is loaded once at start; a missing, unreadable or invalid file falls
+  back to defaults and never crashes. `parseSettings`/`serializeSettings` are
+  pure; `loadSettings`/`saveSettings` are the thin I/O wrappers (atomic
+  `.tmp` + rename write).
+- Precedence is **CLI flag > saved setting > default**. `--fov=`, `--theme=`
+  and `--no-minimap` override the file for that run, and any flag override is
+  written back so it sticks for the next run.
+- `F6`/`F7` adjust the first-person vertical FOV by 5° (clamped 40–100°, fps
+  only); `F5` cycles the theme and `F4` toggles the minimap. Every change is
+  written back immediately.
+- Defaults: `fov 60`, `theme amber`, `minimap true`.
+
+The fps mode renders with its `vFovDeg` (pushed by the App) and derives the
+horizontal FOV for the compass with `hFovRad(vFovDeg, cols, rows)`
+(`src/ui/modes/fps.ts`), which mirrors the renderer's aspect-corrected
+formula `2·atan(tan(vFov/2)·cols/(rows·cellAspect))` (cellAspect 2).
 
 ## Overlays (`src/ui/overlays.ts`)
 
@@ -207,10 +237,12 @@ npm start -- --mode=fps --name=tester
 ```
 
 `parseFlags` reads `--mode=classic|fps|ortho` (default `fps`), `--theme=`
-(cyber|gloom|solarized|amber, default `cyber`), `--no-minimap` (hide the
-minimap in fps/ortho), `--name=`, `--bridge=` (default
+(cyber|gloom|solarized|amber, default `amber`), `--no-minimap` (hide the
+minimap in fps/ortho), `--fov=DEG` (first-person vertical FOV, default 60,
+clamped 40–100), `--name=`, `--bridge=` (default
 `build/nethack/bridge/nh-bridge`), `--playground=` and `--options=` (extra
-`NETHACKOPTIONS`). `preparePlayground` copies the build's playground to `~/.asciihack/playground` on first run so saves persist and the
+`NETHACKOPTIONS`). Theme/minimap/fov flags override the saved settings
+(`~/.asciihack/settings.json`) for the run and are saved back. `preparePlayground` copies the build's playground to `~/.asciihack/playground` on first run so saves persist and the
 build dir stays clean. `main` errors helpfully if the bridge binary is missing,
 spawns the bridge, wires the session to it, enters the alternate screen, and
 runs `runSession` until the bridge closes stdout (restoring the terminal in a
