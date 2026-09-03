@@ -31,9 +31,10 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   for the console build, see decision log).
 - GitHub: `[github] repo = ubyjvovk/asciihack`, `sync = true`, `watch = false`.
 - The cockpit tmux session is `tigerteam-asciihack`; web on 127.0.0.1:8787,
-  MCP on 8765 (defaults). `[pm] nudge = true` → push mode: read digests from
-  `.tigerteam/digests/` via `tigerteam events --latest`; never arm
-  `events --wait`.
+  MCP on 8765 (defaults). `[pm] nudge = true` (push_digests off): the supervisor
+  types a nudge into the PM pane; the PM then reads/consumes the digest with
+  `tigerteam events --wait` (returns immediately when a backlog exists) —
+  keep exactly one armed in the background.
 - `nethack/` is a git submodule (NetHack-5.0 branch, commit 04834a931,
   2026-09-01). Worktrees get it via `scripts/nethack-src.sh` (T-0001).
 
