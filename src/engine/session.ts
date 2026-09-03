@@ -521,6 +521,19 @@ export class NethackSession extends EventEmitter {
       }
       case 'status_update':
         return this.doStatusUpdate(msg);
+      case 'exit_nhwindows': {
+        // NetHack passes a farewell string to `exit_nhwindows` on a clean
+        // shutdown (`nh_terminate`): tty prints it on the message window
+        // before the terminal is restored. The shim just forwards the
+        // string, so treat it like any other game message so the CLI can
+        // echo the farewell after `app.leave()` (T-0015).
+        const str = args[0] as string | null;
+        if (typeof str === 'string' && str.length > 0) {
+          this._messages.push(str);
+          this.emit('message', str);
+        }
+        return;
+      }
       case 'status_enablefield':
       case 'status_init':
       case 'number_pad':
@@ -531,7 +544,6 @@ export class NethackSession extends EventEmitter {
       case 'get_nh_event':
       case 'resume_nhwindows':
       case 'suspend_nhwindows':
-      case 'exit_nhwindows':
       case 'putmsghistory':
       case 'update_inventory':
       case 'cliparound':

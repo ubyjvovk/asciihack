@@ -169,6 +169,20 @@ describe('NethackSession — map bookkeeping', () => {
     expect(messages).toEqual(['Velkommen, welcome to NetHack!', 'You see here 2 gold pieces.']);
   });
 
+  it('exit_nhwindows(str) appends the farewell string to messages (T-0015)', () => {
+    const messages: string[] = [];
+    const { session } = fresh();
+    session.on('message', (m: string) => messages.push(m));
+    // Non-null string: nh_terminate's farewell — must land in messages so the
+    // CLI can echo it on the restored terminal.
+    session.handle(tCall('exit_nhwindows', ['Be seeing you...']));
+    expect(session.messages.at(-1)).toBe('Be seeing you...');
+    expect(messages).toEqual(['Be seeing you...']);
+    // Null string: no-op (the shim also calls this on soft shutdowns).
+    session.handle(tCall('exit_nhwindows', [null]));
+    expect(messages).toEqual(['Be seeing you...']);
+  });
+
   it('preference_update and update_positionbar are not messages', () => {
     const messages: string[] = [];
     const replies: RetMsg[] = [];

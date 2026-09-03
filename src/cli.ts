@@ -133,6 +133,13 @@ async function main(): Promise<void> {
     app.leave();
     term.restore();
   }
+  // The bridge auto-dismissed "Saving..." during the session, so nothing
+  // survives to be printed on the alternate screen; echo the last two
+  // messages (typically "Saving...  Be seeing you...") on the restored
+  // terminal so the player gets the same farewell tty shows (T-0015).
+  const tail = session.messages.slice(-2).join('  ');
+  if (tail) process.stdout.write(`${tail}\n`);
+  process.exit(await bridge.exited);
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {

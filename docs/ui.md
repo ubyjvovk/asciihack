@@ -33,13 +33,22 @@ active mode's optional `tick(nowMs)` returns `true`, the app repaints at
 ≤ 30 fps (`FRAME_MS = 33`, `setTimeout`, never a busy loop); `leave()`
 cancels any pending frame.
 
-When the session emits `exit` (NetHack has returned), the app also drops any
-pending `display`/`--More--` overlay and calls `leave()` immediately — the
-bridge is already gone, so waiting on a keypress would just hang. In-game
-`--More--`s (death messages, DYWYPI) arrive before `exit`, so they still
-pause for a key. `TtyTerm.restore()` removes its stdin/stdout listeners and
-unrefs stdin so the process exits within 500 ms even if a listener is still
-registered elsewhere.
+Shutdown auto-dismiss. NetHack's `dosave()` prints `Saving...` and then does
+a blocking `display_nhwindow(WIN_MESSAGE, TRUE)` — a `--More--` on a game
+that has already committed to exiting. When a blocking message-window
+display arrives whose newest message is exactly `Saving...`, the App
+answers `dismiss` from the `request` handler so the shutdown proceeds
+without a keypress. Death messages, DYWYPI and every other blocking
+display keep pausing for a key. As a safety net, the App also drops a
+lingering `display` overlay if the session ever emits `exit` while one is
+still pending, and `TtyTerm.restore()` removes its stdin/stdout listeners
+and unrefs stdin so the process exits within 500 ms even if a listener is
+still registered elsewhere.
+
+After `app.leave()` restores the terminal, `cli.ts` echoes the last two
+messages (`Saving...  Be seeing you...` on a clean save) on stdout so the
+player gets the farewell tty shows on exit. The session picks up the
+farewell string from NetHack's `exit_nhwindows(str)` call (docs/engine.md).
 
 ## Key routing
 

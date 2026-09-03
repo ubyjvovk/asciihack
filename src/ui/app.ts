@@ -86,6 +86,7 @@ export class App {
     this.session.on('change', () => this.repaint());
     this.session.on('request', () => {
       this.flushQueue();
+      this.autoDismissSaving();
       this.repaint();
     });
     this.session.on('message', (m: string) => this.pendingMsgs.push(m));
@@ -94,11 +95,10 @@ export class App {
   }
 
   /**
-   * Handle a session `exit`: NetHack's `Saving…` display leaves a `--More--`
-   * pending on the message window, but the bridge has already gone — waiting
-   * for a keypress would just hang the terminal. Drop that overlay and leave
-   * the alternate screen. In-game display overlays (death message, DYWYPI)
-   * still wait for a key because they arrive before `exit`.
+   * Belt-and-suspenders exit guard: if the bridge went away while a `display`
+   * overlay is still pending, drop it and leave. With `autoDismissSaving`
+   * live the pre-save `--More--` never survives to see `exit`, but this keeps
+   * us from hanging on an unexpected trailing display.
    */
   private onExit(): void {
     const p = this.session.pending;
@@ -107,6 +107,23 @@ export class App {
       this.overlayReq = null;
     }
     this.leave();
+  }
+
+  /**
+   * NetHack's `dosave()` prints "Saving..." then does a blocking
+   * `display_nhwindow(WIN_MESSAGE, TRUE)` to make sure the player sees the
+   * word before exit — but the game is already committed to exiting, so no
+   * one needs to press a key. When the pending request is exactly that
+   * (message-window display, previous message === "Saving..."), answer
+   * `dismiss` right away. Death messages, DYWYPI and every other blocking
+   * message display keep pausing for a key.
+   */
+  private autoDismissSaving(): void {
+    const p = this.session.pending;
+    if (p === null || p.kind !== 'display') return;
+    if (p.windowType !== this.session.hello?.nhw['NHW_MESSAGE']) return;
+    if (this.pendingMsgs[this.pendingMsgs.length - 1] !== 'Saving...') return;
+    this.session.answer({ kind: 'dismiss' });
   }
 
   /** The last composed grid (what the screen painted last), for tests. */

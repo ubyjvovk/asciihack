@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { App } from '../src/ui/app.js';
 import { NethackSession } from '../src/engine/session.js';
 import type { HelloMsg, RetMsg } from '../src/engine/protocol.js';
@@ -292,18 +292,28 @@ describe('ExtCmdOverlay', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Exit while a --More-- is pending (T-0015)
+// Auto-dismiss of NetHack's "Saving..." --More-- (T-0015)
 
-describe('App — session exit', () => {
-  it('a session `exit` while a --More-- overlay is pending calls leave() without a keypress', () => {
-    const { session, app } = makeReady();
-    session.handle({ t: 'call', name: 'putstr', args: [1, 0, 'Saving...'] });
+describe('App — Saving auto-dismiss', () => {
+  it('auto-dismisses the "Saving..." blocking message display without a keypress', () => {
+    const { session, replies } = makeReady();
+    session.handle({ t: 'call', name: 'raw_print', args: ['Saving...'] });
     session.handle({ t: 'call', name: 'display_nhwindow', args: [1, true], id: 60 });
+    // dosave() commits to exiting; no player key is needed. The session was
+    // already answered by the request handler.
+    expect(session.pending).toBeNull();
+    expect(replies.at(-1)).toEqual({ id: 60, ret: 0 });
+  });
+
+  it('a blocking message display after an ordinary message still waits for a key', () => {
+    const { session, app, replies } = makeReady();
+    session.handle({ t: 'call', name: 'raw_print', args: ['You die...'] });
+    session.handle({ t: 'call', name: 'display_nhwindow', args: [1, true], id: 61 });
+    // Not "Saving..." → --More-- stays up until a key arrives.
     expect(session.pending?.kind).toBe('display');
     expect(gridText(app.lastGrid!)).toContain('--More--');
-
-    const leaveSpy = vi.spyOn(app, 'leave');
-    session.handle({ t: 'exit', code: 0 });
-    expect(leaveSpy).toHaveBeenCalledTimes(1);
+    app.handleKey(ev(' '));
+    expect(session.pending).toBeNull();
+    expect(replies.at(-1)).toEqual({ id: 61, ret: 0 });
   });
 });

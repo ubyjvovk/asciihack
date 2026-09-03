@@ -140,6 +140,13 @@ UI assigns accelerators to selectable items whose `accel` is empty (see
 docs/architecture.md §4.4). Answer with the identifier indices the user
 picked and their counts (`-1` = "all").
 
+`exit_nhwindows(str)` is NetHack's shutdown call: on a clean exit
+(`nh_terminate`) the tty port prints the passed string on the message
+window before restoring the terminal. The session mirrors that — a
+non-null string is appended to `session.messages` and emitted as
+`message`, so the CLI can echo the farewell on the restored terminal
+after `app.leave()` (T-0015). A null string is a no-op (soft shutdown).
+
 Cancelled vs empty menu: NetHack's `select_menu` returns `-1` for a
 cancelled prompt and `0` for "nothing selected" (docs/architecture.md
 §3.3), and it behaves differently for the two on some questions. The
