@@ -1,6 +1,6 @@
 /**
  * AsciiHack CLI entry point (docs/architecture.md §8). Parses flags, prepares
- * the per-user playground, spawns the bridge, and runs the terminal app until
+ * the per-player playground, spawns the bridge, and runs the terminal app until
  * NetHack exits. `npm start -- --mode=classic --name=tester` is the primary
  * invocation.
  */
@@ -18,8 +18,8 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_BRIDGE = join(HERE, '..', 'build', 'nethack', 'bridge', 'nh-bridge');
 /** Default source playground (cloned from the build) before the first copy. */
 const DEFAULT_PLAYGROUND = join(HERE, '..', 'build', 'nethack', 'bridge', 'playground');
-/** Per-user playground so saves persist and the build dir stays clean. */
-const USER_PLAYGROUND = join(homedir(), '.asciihack', 'playground');
+/** Default per-user playground so saves persist and the build dir stays clean. */
+const USER_PLAYGROUND = join(process.env.ASCIIHACK_HOME ?? join(homedir(), '.asciihack'), 'playground');
 
 /** Parsed CLI flags. */
 export interface CliFlags {
@@ -32,9 +32,9 @@ export interface CliFlags {
   minimap: boolean;
 }
 
-/** Print usage and exit non-zero. */
-function usage(): never {
-  console.error(
+/** Write the usage text to the given stream. */
+function printUsage(out: NodeJS.WritableStream): void {
+  out.write(
     [
       'usage: asciihack [--mode=classic|fps|ortho] [--name=NAME]',
       '                 [--bridge=PATH] [--playground=DIR] [--options=K,V,...]',
@@ -45,11 +45,23 @@ function usage(): never {
       '  --no-minimap hide the minimap overlay in fps/ortho',
       '  --name       character name (default "asciihack")',
       '  --bridge     path to the nh-bridge binary',
-      '  --playground directory to copy into ~/.asciihack/playground on first run',
+      '  --playground per-player playground dir (default $ASCIIHACK_HOME/playground',
+      '               or ~/.asciihack/playground); copied from the build on first use',
       '  --options    extra NETHACKOPTIONS (comma-separated)',
-    ].join('\n'),
+    ].join('\n') + '\n',
   );
+}
+
+/** Show usage on an error and exit non-zero. */
+function usage(): never {
+  printUsage(process.stderr);
   process.exit(2);
+}
+
+/** Show usage on an explicit --help request and exit 0. */
+function showHelp(): never {
+  printUsage(process.stdout);
+  process.exit(0);
 }
 
 /** Parse `process.argv.slice(2)` into `CliFlags`. */
@@ -58,13 +70,13 @@ export function parseFlags(argv: readonly string[]): CliFlags {
     mode: 'fps',
     name: 'asciihack',
     bridge: DEFAULT_BRIDGE,
-    playground: DEFAULT_PLAYGROUND,
+    playground: '',
     options: [],
     theme: 'cyber',
     minimap: true,
   };
   for (const arg of argv) {
-    if (arg === '--help' || arg === '-h') usage();
+    if (arg === '--help' || arg === '-h') showHelp();
     if (arg === '--no-minimap') flags.minimap = false;
     else if (arg.startsWith('--theme=')) flags.theme = arg.slice('--theme='.length);
     else if (arg.startsWith('--mode=')) flags.mode = arg.slice('--mode='.length);
@@ -115,12 +127,14 @@ async function main(): Promise<void> {
     );
     process.exit(1);
   }
-  preparePlayground(resolve(flags.playground), USER_PLAYGROUND);
+  // --playground names the per-player target dir; default to the per-user dir.
+  const targetPlayground = flags.playground ? resolve(flags.playground) : USER_PLAYGROUND;
+  preparePlayground(resolve(DEFAULT_PLAYGROUND), targetPlayground);
 
   const term = new TtyTerm();
   const bridge = spawnBridge({
     binary: bridgePath,
-    playgroundDir: USER_PLAYGROUND,
+    playgroundDir: targetPlayground,
     name: flags.name,
     options: flags.options.length > 0 ? flags.options : undefined,
   });

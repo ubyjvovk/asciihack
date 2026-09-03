@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# asciihack-login — the login shell for the dedicated 'play' user. When someone
+# runs `ssh play@host mia`, plays AsciiHack as `mia` (one NetHack playground per
+# player name, see docs/ssh.md). With no command it prompts for a name.
+set -euo pipefail
+
+# This script's directory, wherever it is run from / symlinked to.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=asciihack-lib.sh
+. "$SCRIPT_DIR/asciihack-lib.sh"
+
+# 1. TERM defaults: ssh usually sends it, but a dumb/unset TERM breaks colour.
+if [[ -z "${TERM:-}" || "$TERM" == "dumb" ]]; then
+  export TERM=xterm-256color
+fi
+
+# 2. Resolve the player name. `ssh play@host mia` puts "mia" in
+#    SSH_ORIGINAL_COMMAND; otherwise prompt (three attempts).
+NAME=""
+if [[ -n "${SSH_ORIGINAL_COMMAND:-}" ]]; then
+  local_cmd="${SSH_ORIGINAL_COMMAND//[$'\t\r\n ']/}"
+  if asciihack_valid_name "$local_cmd"; then
+    NAME="$local_cmd"
+  else
+    echo "asciihack: invalid name in SSH_ORIGINAL_COMMAND: $SSH_ORIGINAL_COMMAND" >&2
+    exit 1
+  fi
+else
+  if ! NAME="$(asciihack_prompt_name)"; then
+    echo "asciihack: no valid name after 3 attempts" >&2
+    exit 1
+  fi
+fi
+
+# 3. Repo build paths (the repo lives at this script's grandparent).
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+DIST_JS="$REPO_ROOT/dist/cli.js"
+BRIDGE="$REPO_ROOT/build/nethack/bridge/nh-bridge"
+SRC_PLAYGROUND="$REPO_ROOT/build/nethack/bridge/playground"
+
+# 4. Refuse to run with a helpful message if dist or the bridge is missing.
+if [[ ! -f "$DIST_JS" ]]; then
+  echo "asciihack: $DIST_JS not found — run 'npm run build' on the host" >&2
+  exit 1
+fi
+if [[ ! -x "$BRIDGE" ]]; then
+  echo "asciihack: bridge not found at $BRIDGE" >&2
+  echo "  Build it with:  bash scripts/nethack-build.sh lib && bash scripts/nethack-build.sh bridge" >&2
+  exit 1
+fi
+
+# 5. Per-player playground, created from the build on first use so saves persist
+#    per name. cli.js also copies the build playground into a missing target, so
+#    this is belt-and-braces; both agree the dir becomes NETHACKDIR.
+PLAYDIR="$(asciihack_player_dir "$NAME")"
+if [[ ! -d "$PLAYDIR" ]]; then
+  mkdir -p "$(dirname "$PLAYDIR")"
+  cp -a "$SRC_PLAYGROUND" "$PLAYDIR"
+fi
+
+# 6. Run the game. Drop SSH_ORIGINAL_COMMAND so NetHack can't see the name token.
+unset SSH_ORIGINAL_COMMAND
+exec node "$DIST_JS" --mode=fps --name="$NAME" --playground="$PLAYDIR" --bridge="$BRIDGE"
