@@ -16,7 +16,7 @@ import type {
 } from '../engine/session.js';
 import type { ScreenGrid } from '../model/types.js';
 import type { KeyEvent } from '../term/input.js';
-import { paintBox, putText, UI_BG, UI_FG } from './grid.js';
+import { paintBox, putPanelText, putText, UI_BG, UI_FG } from './grid.js';
 
 /** A UI overlay: paints itself into the grid and consumes keys. */
 export interface Overlay {
@@ -109,12 +109,12 @@ export class MenuOverlay implements Overlay {
     for (let k = start; k < Math.min(items.length, start + perPage); k++) {
       const it = items[k]!;
       if (it.identIndex === -1) {
-        putText(grid, inner.x, row, it.text.slice(0, inner.width), [150, 150, 150]);
+        putPanelText(grid, inner.x, row, it.text.slice(0, inner.width), [150, 150, 150]);
       } else {
         const acc = this.accels.find((a) => a.item === it)?.accel ?? it.accel;
         const marker = this.selected.has(it.identIndex) ? '*' : ' ';
         const line = ` ${marker} ${acc}) ${it.text}`;
-        putText(grid, inner.x, row, line.slice(0, inner.width));
+        putPanelText(grid, inner.x, row, line.slice(0, inner.width));
       }
       row++;
     }
@@ -124,7 +124,7 @@ export class MenuOverlay implements Overlay {
         : this.pickAny
           ? 'Enter ok  Esc cancel'
           : 'Esc cancel';
-    putText(grid, inner.x, inner.y + inner.height - 1, footer.slice(0, inner.width), [180, 180, 180]);
+    putPanelText(grid, inner.x, inner.y + inner.height - 1, footer.slice(0, inner.width), [180, 180, 180]);
   }
 
   handleKey(e: KeyEvent): boolean {
@@ -226,10 +226,10 @@ export class TextOverlay implements Overlay {
     const start = this.page * perPage;
     let row = inner.y;
     for (let k = start; k < Math.min(this.lines.length, start + perPage); k++) {
-      putText(grid, inner.x, row++, this.lines[k]!.slice(0, inner.width));
+      putPanelText(grid, inner.x, row++, this.lines[k]!.slice(0, inner.width));
     }
     const footer = pages > 1 ? `p${this.page + 1}/${pages}  any key  Esc close` : 'any key  Esc close';
-    putText(grid, inner.x, inner.y + inner.height - 1, footer.slice(0, inner.width), [180, 180, 180]);
+    putPanelText(grid, inner.x, inner.y + inner.height - 1, footer.slice(0, inner.width), [180, 180, 180]);
   }
 
   handleKey(e: KeyEvent): boolean {
@@ -275,7 +275,7 @@ export class YnOverlay implements Overlay {
     const text = `${this.req.query} ${choices}${def}`;
     const boxW = Math.min(text.length + 4, grid.width - 2);
     const inner = paintBox(grid, Math.floor(grid.width / 2), Math.floor(grid.height / 2), boxW, 5, 'Question');
-    putText(grid, inner.x, inner.y + 1, text.slice(0, inner.width));
+    putPanelText(grid, inner.x, inner.y + 1, text.slice(0, inner.width));
   }
 
   handleKey(e: KeyEvent): boolean {
@@ -323,7 +323,7 @@ export class GetlinOverlay implements Overlay {
   paint(grid: ScreenGrid): void {
     const boxW = Math.min(Math.max(20, this.req.query.length + 4), grid.width - 2);
     const inner = paintBox(grid, Math.floor(grid.width / 2), Math.floor(grid.height / 2), boxW, 5, this.req.query);
-    putText(grid, inner.x, inner.y + 1, (this.buffer + ' ').slice(0, inner.width));
+    putPanelText(grid, inner.x, inner.y + 1, (this.buffer + ' ').slice(0, inner.width));
   }
 
   handleKey(e: KeyEvent): boolean {
@@ -379,11 +379,11 @@ export class ExtCmdOverlay implements Overlay {
     const width = Math.min(36, grid.width - 2);
     const bodyH = Math.min(10, shown.length);
     const inner = paintBox(grid, Math.floor(grid.width / 2), Math.floor(grid.height / 2), width, bodyH + 4, 'Extended command');
-    putText(grid, inner.x, inner.y, `#${this.buffer}`, UI_FG);
+    putPanelText(grid, inner.x, inner.y, `#${this.buffer}`, UI_FG);
     for (let k = 0; k < shown.length; k++) {
-      putText(grid, inner.x, inner.y + 1 + k, `${k}) ${shown[k]!.name}`, [200, 200, 200]);
+      putPanelText(grid, inner.x, inner.y + 1 + k, `${k}) ${shown[k]!.name}`, [200, 200, 200]);
     }
-    putText(grid, inner.x, inner.y + inner.height - 1, 'Tab: complete  Esc: cancel', [150, 150, 150]);
+    putPanelText(grid, inner.x, inner.y + inner.height - 1, 'Tab: complete  Esc: cancel', [150, 150, 150]);
   }
 
   handleKey(e: KeyEvent): boolean {
@@ -431,7 +431,7 @@ export class MessageMenuOverlay implements Overlay {
     const text = this.req.mesg;
     const boxW = Math.min(text.length + 4, grid.width - 2);
     const inner = paintBox(grid, Math.floor(grid.width / 2), Math.floor(grid.height / 2), boxW, 5, 'Message');
-    putText(grid, inner.x, inner.y + 1, text.slice(0, inner.width));
+    putPanelText(grid, inner.x, inner.y + 1, text.slice(0, inner.width));
   }
 
   handleKey(e: KeyEvent): boolean {

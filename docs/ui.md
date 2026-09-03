@@ -167,7 +167,9 @@ touches the renderers):
 ## Overlays (`src/ui/overlays.ts`)
 
 One overlay object per pending request, built by `createOverlay(pending,
-session)`; `paint` draws a boxed overlay centred on the viewport and `handleKey`
+session)`; `paint` draws a centred box with an opaque `PANEL_BG` panel
+(`[18, 18, 26]`, a hair lighter than the black scene) plus a one-cell `UI_BG`
+margin, and `handleKey`
 either keeps the overlay open or answers the request and returns `false` so the
 app closes it. The app keeps the same overlay instance while `session.pending`
 is unchanged, so editor/menu state survives repaints.
