@@ -92,6 +92,13 @@ export class App {
     this.session.on('message', (m: string) => this.pendingMsgs.push(m));
     this.session.on('exit', () => this.onExit());
     this.term.onKey((e) => this.handleKey(e));
+    this.term.onResize(() => {
+      // Screen's own resize listener invalidates its buffer; recompose for the
+      // new columns/rows and paint at once so a resize is visible without a
+      // key or game event.
+      this.screen.invalidate();
+      this.repaint();
+    });
   }
 
   /**
