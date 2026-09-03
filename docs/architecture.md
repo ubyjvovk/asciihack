@@ -152,10 +152,9 @@ Not forwarded (the bridge answers itself): `getmsghistory` → `NULL`,
   without `CHDIR`), and the installed `sysconf` has `GDBPATH` disabled.
 - `exit` carries `reason: "atexit"` (code 0) when NetHack calls `exit()`
   itself; `reason` otherwise only on the error path.
-- Known hardening backlog (harmless today, bundle into the next bridge
-  ticket): read `start_menu`'s `mbehavior` as `unsigned long`; the
-  unknown-call fallback must zero only the return width named by `fmt`;
-  bounds-check the window id in `select_menu`.
+- Hardened in T-0010: `start_menu`'s `mbehavior` is read as `unsigned
+  long`; the unknown-call fallback zeroes only the return width named by
+  `fmt`; `select_menu` bounds-checks the window id.
 
 ### 3.4 Glyph info
 
