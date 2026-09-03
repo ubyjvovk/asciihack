@@ -88,7 +88,7 @@ describe('engine/bridge — parseBridgeLine', () => {
     const msg = parseBridgeLine(line);
     expect(msg).not.toBeNull();
     expect((msg as { t: string }).t).toBe('tables');
-    expect((msg as { monsters: { name: string }[] }).monsters[0].name).toBe('jackal');
+    expect((msg as { monsters: { name: string }[] }).monsters[0]!.name).toBe('jackal');
   });
 
   it('drops unparseable JSON and unknown message types', () => {
