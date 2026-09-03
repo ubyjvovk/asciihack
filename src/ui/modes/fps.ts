@@ -36,8 +36,8 @@ export const DEFAULT_VFOV_DEG = 60;
 
 /**
  * Horizontal FOV in radians for a vertical FOV at a given viewport size.
- * Mirrors `renderFirstPerson`'s derivation exactly (docs/architecture.md
- * §5.2): a terminal cell is twice as tall as wide, so the horizontal FOV is
+ * Mirrors the derivation inside `renderFirstPerson` (src/render/raycast.ts)
+ * and must be kept identical (docs/architecture.md §5.2): a terminal cell is twice as tall as wide, so the horizontal FOV is
  * wider than the vertical one on a landscape viewport.
  */
 export function hFovRad(vFovDeg: number, cols: number, rows: number, cellAspect = 2): number {
