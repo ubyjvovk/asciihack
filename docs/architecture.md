@@ -305,7 +305,7 @@ tint = c / max(v, 0.02) * clamp(dens * 0.7 + 0.4, 0, 1)
 fg   = round(clamp(tint, 0, 1) * 255) ; bg = black
 ```
 
-`DEFAULT_RAMP` is AsciiCity's 68-glyph ramp, sparsest to densest:
+`DEFAULT_RAMP` is AsciiCity's 70-glyph ramp, sparsest to densest:
 
 ```
  .'`^",:;Il!i><~+_-?][}{1)(|\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$
