@@ -63,6 +63,11 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   before the first ticket.
 
 ## Board snapshot
+- 2026-09-03 23:20 — **T-0016 accepted; board drained, 16/16 done.** Master:
+  166 tests, tsc clean. Deliverable state: `npm start` = first-person
+  NetHack with textured walls, F3 ortho, F1 classic, F4 minimap, F5 themes;
+  `docs/ssh.md` for ssh serving. Total engine spend ≈ $24 (of which $23 the
+  opus bridge ticket); muse lane baked well.
 - 2026-09-03 23:00 — T-0015 (polish: Saving... auto-dismiss + farewell) and
   T-0014 (ssh: bin/asciihack-login, scripts/ssh-serve.sh, docs/ssh.md)
   accepted; 15 done. `--playground` now means the per-player target dir
@@ -120,6 +125,14 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   yet.
 
 ## Next actions
+- Wave 4 needs a user decision before planning: browser build as static
+  WASM (emscripten build of libnethack + three.js/AsciiCity styles, no
+  server) vs thin client (browser talks WebSocket to the native bridge on
+  a host). Candidate wave-3b tickets meanwhile: ortho textures; lit/dark
+  room lighting (needs a `lit` flag on MapCell — PM type change); tutorial
+  prompt handling in the UI; docs/ui.md `--playground` doc sync;
+  `nethack-build.sh` excluding the submodule's `.git` file from src-tree;
+  message history overlay polish; performance pass on the 215-col loop.
 0a. (done 19:09) Before T-0007 can be claimed (i.e. right after accepting T-0004 while no
     attempt runs): restart the supervisor so it loads `OPENROUTER_KEY`
     (`.env` changed 18:36, supervisor started 17:03) — `tigerteam down
