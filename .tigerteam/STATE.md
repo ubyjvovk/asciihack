@@ -20,10 +20,9 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
 - Fleet (`tigerteam.toml`): `opus` ×2 (claude login_auth, C3, `frontier`),
   `ds` ×4 (pi → DeepSeek V4 Flash on DeepInfra, C2), `grok` ×0 (C3,
   `frontier`, parked). `max_concurrent = 8`. Copied from the asciicity board.
-- `muse` lane (pi → OpenRouter meta/muse-spark-1.3-contributor, C2, scale 0)
-  added 2026-09-03 at the user's request to test it on T-0007 (`assignee:
-  muse`). Run it by hand: `tigerteam worker run muse --once` once T-0004 is
-  accepted. Needs `OPENROUTER_KEY` in `.env` (present) and the OpenRouter
+- `muse` lane (pi → OpenRouter meta/muse-spark-1.3-contributor, C2, scale 1)
+  was added by the user 2026-09-03 to test it on T-0007 (`assignee: muse`);
+  the supervisor spawns it when T-0007 becomes claimable (after T-0004). Needs `OPENROUTER_KEY` in `.env` (present) and the OpenRouter
   privacy setting that allows paid-model training.
 - Secrets in `<root>/.env` (copied from ~/asciicity: DEEPINFRA_KEY,
   GITHUB_TOKEN). The supervisor must be restarted after `.env` changes.
