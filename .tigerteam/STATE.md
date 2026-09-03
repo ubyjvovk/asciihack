@@ -63,6 +63,12 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   before the first ticket.
 
 ## Board snapshot
+- 2026-09-04 02:10 — T-0022 (cutaway), T-0025 (tile data, muse), T-0023
+  (readable look: fixed vertical FOV + horizon 0.42, dark stone surfaces,
+  absolute-brightness edges, flagstone floor, fog 0.28) accepted; 24 done.
+  Running: T-0024 (FOV keys, settings, amber default), T-0026 (tile-shaped
+  size-classed sprites). Queued: T-0027 (ortho look). `events --wait` gets
+  killed externally now — rely on the supervisor nudges.
 - 2026-09-04 01:00 — T-0020 reinstated + merged (user), T-0021 (ortho v2)
   accepted; 21 done. README screenshots refreshed (fps + new ortho) and
   pushed. Queued: T-0022 (ortho cutaway). Board otherwise empty; browser
