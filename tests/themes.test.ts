@@ -3,37 +3,28 @@ import { DEFAULT_RAMP, quantize } from '../src/render/ascii.js';
 import { makeFrameBuffer } from '../src/model/types.js';
 
 const EXPOSURE = 1.7;
-const GAMMA = 0.45;
+const OLD_GAMMA = 0.45;
 
 function clamp01(x: number): number {
   return x < 0 ? 0 : x > 1 ? 1 : x;
 }
 
-/** Pre-theme cyber formula (docs/architecture.md §5.4), for the regression check. */
-function refCyberCell(r0: number, g0: number, b0: number) {
+/** Pre-theme cyber glyph selection (docs/architecture.md §5.4). fg is not
+ *  reproduced by the regression path because darkness-dependent
+ *  desaturation is a deliberate new behaviour on every theme. */
+function refCyberGlyph(r0: number, g0: number, b0: number): string {
   const r = r0 * EXPOSURE;
   const g = g0 * EXPOSURE;
   const b = b0 * EXPOSURE;
   const v = Math.max(r, g, b);
-  const dens = Math.pow(clamp01(v), GAMMA);
+  const dens = Math.pow(clamp01(v), OLD_GAMMA);
   const idx = Math.min(
     Math.max(Math.floor(dens * (DEFAULT_RAMP.length - 1) + 0.5), 0),
     DEFAULT_RAMP.length - 1,
   );
-  const t = Math.max(v, 0.02);
-  const boost = clamp01(dens * 0.7 + 0.4);
-  return {
-    ch: DEFAULT_RAMP[idx]!,
-    fg: [
-      Math.round(clamp01((r / t) * boost) * 255),
-      Math.round(clamp01((g / t) * boost) * 255),
-      Math.round(clamp01((b / t) * boost) * 255),
-    ] as const,
-    bg: [0, 0, 0] as const,
-  };
+  return DEFAULT_RAMP[idx]!;
 }
 
-/** Fill a frame buffer with a deterministic mixed spread of hues/brightnesses. */
 function fillMixed(fb: ReturnType<typeof makeFrameBuffer>): void {
   let step = 0;
   for (let i = 0; i < fb.rgb.length; i += 3) {
@@ -45,17 +36,25 @@ function fillMixed(fb: ReturnType<typeof makeFrameBuffer>): void {
 }
 
 describe('render/themes', () => {
-  it('cyber output is byte-identical to the pre-theme formula for a mixed buffer', () => {
+  it('veil-like cell [0.03, 0.03, 0.05] quantizes to a space in cyber, gloom and solarized', () => {
+    const fb = makeFrameBuffer(1, 1);
+    fb.rgb[0] = 0.03;
+    fb.rgb[1] = 0.03;
+    fb.rgb[2] = 0.05;
+    for (const theme of ['cyber', 'gloom', 'solarized'] as const) {
+      const cell = quantize(fb, { theme }).cells[0]!;
+      expect(cell.ch).toBe(' ');
+    }
+  });
+
+  it('blackPoint: 0 and gamma: 0.45 reproduce the pre-theme cyber glyph mapping for a mixed buffer', () => {
     const fb = makeFrameBuffer(8, 4);
     fillMixed(fb);
-    const grid = quantize(fb, { theme: 'cyber' });
+    const grid = quantize(fb, { theme: 'cyber', blackPoint: 0, gamma: OLD_GAMMA });
     for (let i = 0; i < grid.cells.length; i++) {
       const off = i * 3;
-      const ref = refCyberCell(fb.rgb[off]!, fb.rgb[off + 1]!, fb.rgb[off + 2]!);
-      const cell = grid.cells[i]!;
-      expect(cell.ch).toBe(ref.ch);
-      expect(cell.fg).toEqual([ref.fg[0], ref.fg[1], ref.fg[2]]);
-      expect(cell.bg).toEqual([ref.bg[0], ref.bg[1], ref.bg[2]]);
+      const ref = refCyberGlyph(fb.rgb[off]!, fb.rgb[off + 1]!, fb.rgb[off + 2]!);
+      expect(grid.cells[i]!.ch).toBe(ref);
     }
   });
 
@@ -107,7 +106,6 @@ describe('render/themes', () => {
     const cell = quantize(fb, { theme: 'amber' }).cells[0]!;
     expect(cell.fg[0]).toBeGreaterThan(cell.fg[1]);
     expect(cell.fg[1]).toBeGreaterThan(cell.fg[2]);
-    // "dim": well below saturation
     expect(cell.fg[0]).toBeLessThan(200);
   });
 

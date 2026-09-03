@@ -16,20 +16,34 @@ For a cell with **no** overlay glyph:
 ```
 c    = rgb * exposure                       // exposure = 1.7
 v    = max(c.r, c.g, c.b)                   // hue-independent brightness
-dens = clamp(v, 0, 1) ^ gamma               // gamma = 0.45
+vc   = clamp((v - blackPoint) / (1 - blackPoint), 0, 1)   // blackPoint = 0.10
+dens = vc ^ gamma                           // gamma = 0.9
 idx  = clamp(floor(dens * (ramp.length - 1) + 0.5), 0, ramp.length - 1)
-ch   = ramp[idx]
-tint = c / max(v, 0.02) * clamp(dens * 0.7 + 0.4, 0, 1)
-fg   = round(clamp(tint, 0, 1) * 255) ; bg = black
+ch   = ramp[idx]                            // vc = 0 → space
+raw  = c / max(v, 0.02)                     // hue at unit brightness
+grey = 0.299·raw.r + 0.587·raw.g + 0.114·raw.b
+sat  = clamp(dens * 1.5, 0, 1)              // darkness-dependent desaturation
+tint = grey + (raw - grey) * sat            // dark cells fade to grey
+fg   = round(clamp(tint * clamp(dens * 0.7 + 0.4, 0, 1), 0, 1) * 255)
+                                            // bg = theme background
 ```
 
-- `glyphIndex(lum, count, gamma)` is the density→index step (`dens` from `lum`,
-  then the clamped rounding above), exposed for testing.
-- `clamp(v, 0, 1)^gamma` with `gamma = 0.45` lifts midtones so the ramp is
-  used across its whole length.
-- The tint normalises the colour by its brightness and re-boosts by density,
-  so a saturated colour keeps its hue while the glyph density tracks
-  luminance. The `max(v, 0.02)` guard avoids a divide-by-zero on black cells.
+- `glyphIndex(lum, count, gamma)` is the density→index step for the un-clipped
+  luminance path (`dens = lum^gamma`), exposed for testing.
+- The black-point `blackPoint` cuts near-black inputs (post-exposure) to `vc = 0`
+  so faint noise renders as the space glyph, not a smudge of dots. The default
+  `0.10` clears the sub-`v ≈ 0.10` band; `blackPoint = 0` restores the
+  pre-black-point mapping (`dens = v^gamma`).
+- `gamma = 0.9` is near-linear: the `vc → dens` curve leaves midtones roughly
+  where the brightness put them, so dark surfaces stay sparse instead of being
+  lifted into mid-density glyphs by the old `v^0.45`.
+- The desaturation fold pulls faint cells toward their per-channel grey (weight
+  `1 - sat`) while bright cells (`dens ≥ 2/3`) keep their full hue (`sat = 1`).
+  Combined with the black-point/gamma change, this stops thin colour casts in
+  dark cells (e.g. a barely-lit corridor floor) from quantizing to saturated
+  hues.
+- The tint then folds by the same brightness boost `clamp(dens * 0.7 + 0.4)` as
+  before, so mid-density cells keep the softly-lit look.
 - The index is clamped to `[0, ramp.length - 1]`, so a non-overlay cell can
   **never** produce a character outside the ramp.
 
@@ -53,9 +67,28 @@ AsciiCity's ramp, sparsest to densest, starting with a space and ending with
 - `quantizeInto(fb, grid, opts?)` — quantize into a caller-owned grid,
   **reusing its cell objects** (no per-frame allocation). `width`/`height`
   are overwritten; existing cells are mutated in place.
-- `QuantizeOptions { ramp?, exposure?, gamma?, theme? }` — defaults are the
-  ramp above, `1.7`, `0.45` and `'cyber'`. `theme` picks one of four looks
-  (see the Themes subsection).
+- `QuantizeOptions { ramp?, exposure?, gamma?, blackPoint?, theme? }` —
+  defaults are the ramp above, `1.7`, `0.9`, `0.10` and `'cyber'`. `theme`
+  picks one of four looks (see the Themes subsection). Setting
+  `blackPoint: 0, gamma: 0.45` reproduces the pre-black-point density
+  mapping (glyph selection only; the desaturation fold is always applied).
+
+### Worked example (T-0023 render levels)
+
+Cyber theme, defaults (exposure 1.7, blackPoint 0.10, gamma 0.9, 70-glyph
+ramp so idx-max 69). Input given in linear 0..1 per channel; `v` is the
+exposed max-channel brightness.
+
+| surface        | rgb               | v     | vc    | dens  | idx | glyph  |
+|----------------|-------------------|------:|------:|------:|----:|--------|
+| unseen veil    | `[0.03,0.03,0.03]`| 0.051 | 0.000 | 0.000 |   0 | ` ` (space) |
+| corridor floor | `[0.10,0.10,0.11]`| 0.187 | 0.097 | 0.122 |   8 | `,`    |
+| wall body      | `[0.14,0.14,0.15]`| 0.255 | 0.172 | 0.205 |  14 | `~`    |
+| floor grid     | `[0.30,0.30,0.30]`| 0.510 | 0.456 | 0.500 |  35 | `n`    |
+| wall edge      | `[0.75,0.75,0.75]`| 1.000 | 1.000 | 1.000 |  69 | `$`    |
+
+Dark surfaces render as sparse dots or nothing; only the built-in bright
+edges climb into the dense end of the ramp.
 
 ### Themes
 
@@ -66,12 +99,16 @@ the terminal. The mixers live in `src/render/themes.ts` as pure functions
 In a shader the glyph coverage `mask` is a per-pixel value; in a terminal
 the glyph is drawn by the terminal, so **`mask = 1` gives the foreground
 colour of a cell and `mask = 0` gives the background colour of the same
-cell**. For `cyber`/`gloom`/`solarized` the glyph choice is unchanged;
-`amber` uses its own density curve (`clamp((v - 0.06) / 0.94)^(gamma·1.5)`)
-for the ramp index too, keeping a black point and a steeper falloff.
+cell**. For `cyber`/`gloom`/`solarized` the glyph choice is the same shared
+`vc^gamma` curve; `amber` uses its own steeper density curve
+(`clamp((v - blackPoint) / (1 - blackPoint))^(gamma·1.5)`, same `blackPoint`
+as the shared path) for the ramp index too. The darkness-dependent
+desaturation fold documented in Formulas is applied on every theme before
+the theme mixer runs.
 
-- `cyber` (default) — the original look: folded tint over a black bg.
-  Byte-identical to the pre-theme output.
+- `cyber` (default) — the original look: folded tint over a black bg. The
+  glyph mapping under `blackPoint: 0, gamma: 0.45` reproduces the pre-theme
+  ramp selection; foreground colours are always desaturated in dark cells.
 - `gloom` — a low-contrast wash of the cell's hue on a bright grey ground
   `[184, 186, 191]` (`0.72/0.73/0.75 × 255`). Hot cells (`v` near 1) burst
   back toward the raw tint.

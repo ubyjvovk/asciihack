@@ -25,9 +25,9 @@ export interface QuantizeOptions {
   ramp?: string;
   /** Pre-exposure multiplier on linear RGB. Default 1.7. */
   exposure?: number;
-  /** Density power (gamma). Default 0.7. */
+  /** Density power (gamma). Default 0.9. */
   gamma?: number;
-  /** Black-point cutoff on the exposed brightness `v`: `vc = clamp((v − bp)/(1 − bp))`. Default 0.08. */
+  /** Black-point cutoff on the exposed brightness `v`: `vc = clamp((v − bp)/(1 − bp))`. Default 0.10. */
   blackPoint?: number;
   /** Colour theme (see docs/terminal.md — Themes). Default `'cyber'`. */
   theme?: Theme;
@@ -121,14 +121,14 @@ function cellFromOverlay(
 
 /**
  * Quantize a frame buffer into a freshly allocated `ScreenGrid` (one cell per
- * sample). Options default to exposure 1.7, gamma 0.7, blackPoint 0.08,
+ * sample). Options default to exposure 1.7, gamma 0.9, blackPoint 0.10,
  * `DEFAULT_RAMP`, theme `'cyber'`.
  */
 export function quantize(fb: FrameBuffer, opts: QuantizeOptions = {}): ScreenGrid {
   const ramp = opts.ramp ?? DEFAULT_RAMP;
   const exposure = opts.exposure ?? 1.7;
-  const gamma = opts.gamma ?? 0.7;
-  const blackPoint = opts.blackPoint ?? 0.08;
+  const gamma = opts.gamma ?? 0.9;
+  const blackPoint = opts.blackPoint ?? 0.10;
   const theme = opts.theme ?? 'cyber';
   const bg = themeBackground(theme);
   const n = fb.width * fb.height;
@@ -152,8 +152,8 @@ export function quantize(fb: FrameBuffer, opts: QuantizeOptions = {}): ScreenGri
 export function quantizeInto(fb: FrameBuffer, grid: ScreenGrid, opts: QuantizeOptions = {}): ScreenGrid {
   const ramp = opts.ramp ?? DEFAULT_RAMP;
   const exposure = opts.exposure ?? 1.7;
-  const gamma = opts.gamma ?? 0.7;
-  const blackPoint = opts.blackPoint ?? 0.08;
+  const gamma = opts.gamma ?? 0.9;
+  const blackPoint = opts.blackPoint ?? 0.10;
   const theme = opts.theme ?? 'cyber';
   const bg = themeBackground(theme);
   grid.width = fb.width;
