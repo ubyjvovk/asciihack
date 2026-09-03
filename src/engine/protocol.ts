@@ -60,7 +60,36 @@ export interface LogMsg {
   msg: string;
 }
 
-export type BridgeMsg = HelloMsg | CallMsg | ExitMsg | LogMsg;
+/**
+ * Printed once right after `init_nhwindows` (NetHack's monster/object tables
+ * are only initialised inside `nhmain`, so they cannot ride on `hello`).
+ * Index = NetHack's monster / object index (`GlyphInfo.idx`).
+ */
+export interface TablesMsg {
+  t: 'tables';
+  monsters: Array<{
+    /** Neutral name (falls back to the male one), e.g. "jackal". */
+    name: string;
+    male: string | null;
+    female: string | null;
+    /** Display letter (the monster class symbol), one character. */
+    letter: string;
+    /** NetHack size class: 0 tiny, 1 small, 2 medium, 3 large, 4 huge, 7 gigantic. */
+    size: number;
+    /** CLR_* index. */
+    color: number;
+  }>;
+  objects: Array<{
+    /** Actual name, e.g. "dagger", or null. */
+    name: string | null;
+    /** Unidentified description, e.g. "ruby" for a potion, or null. */
+    descr: string | null;
+    /** Object class symbol, one character (`)` weapon, `!` potion, …). */
+    cls: string;
+  }>;
+}
+
+export type BridgeMsg = HelloMsg | CallMsg | ExitMsg | LogMsg | TablesMsg;
 
 /** The client's reply to a `call` that carried an `id`. Field meaning depends on the call (§3.3). */
 export interface RetMsg {

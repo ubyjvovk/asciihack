@@ -148,6 +148,11 @@ Not forwarded (the bridge answers itself): `getmsghistory` → `NULL`,
   through `putstr(WIN_MESSAGE)`. The client treats both as messages and
   paces them itself (§6.3): NetHack never waits between messages except
   for an explicit blocking `display_nhwindow(WIN_MESSAGE, true)`.
+- `tables` (T-0025): right after `init_nhwindows` the bridge prints one
+  `{"t":"tables","monsters":[…],"objects":[…]}` line (`TablesMsg` in
+  `protocol.ts`) — name/letter/size/colour per monster index and
+  name/descr/class per object index. It cannot be part of `hello`
+  because NetHack fills those tables only inside `nhmain`.
 - `player_selection_or_tty`: reply `false` always (`true` would make
   NetHack run its tty character setup on the bridge's stdio).
 - `BL_GOLD` arrives as `\GXXXXXXXX:<amount>` (NetHack's glyph escape);
