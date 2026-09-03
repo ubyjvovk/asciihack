@@ -121,6 +121,18 @@ export interface Pose {
   yaw: number;
 }
 
+/**
+ * A 16×16 NetHack tile (from `nethack/win/share/*.txt`): `pixels` holds one
+ * palette index per pixel, row-major; index 0 is transparent.
+ */
+export interface Tile {
+  readonly w: number;
+  readonly h: number;
+  readonly pixels: Uint8Array;
+  /** sRGB 0–255 per palette index; entry 0 is the transparent colour. */
+  readonly palette: ReadonlyArray<readonly [number, number, number]>;
+}
+
 /** A billboard drawn by the 3D renderers: a NetHack glyph standing on a cell. */
 export interface Sprite {
   /** Cell coordinates (the sprite stands at the cell centre). */
@@ -130,6 +142,10 @@ export interface Sprite {
   /** Linear RGB 0..1. */
   rgb: readonly [number, number, number];
   cls: GlyphClass;
+  /** Height in cells (0.3 tiny … 1.3 gigantic); renderers default to 0.7 when absent. */
+  height?: number;
+  /** Tile art to shape the billboard with; absent = the renderer's generic figure. */
+  tile?: Tile;
 }
 
 /**
