@@ -59,6 +59,9 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   before the first ticket.
 
 ## Board snapshot
+- 2026-09-03 18:00 — T-0005 accepted after one rework (buffer pre-fill). T-0006
+  reworked once (Screen.paint aliasing, UTF-8 wedge, unknown CSI leak); ds-3
+  on it. T-0002 with opus-1 (~10 min in). Spend ≈ $0.15.
 - 2026-09-03 17:35 — T-0001 accepted (build scripts; vanilla NetHack 5.0 verified
   playable in a pty by the PM). T-0005 reworked once (stale overlay plane +
   unpainted horizon row for odd heights). T-0002 claimed by opus-1, T-0006 by
