@@ -7,7 +7,6 @@
  * `message` / `exit` events; tests drive it via `handle`/`handleBatch`
  * directly.
  */
-import { EventEmitter } from 'node:events';
 import type {
   BridgeMsg,
   CallMsg,
@@ -18,6 +17,52 @@ import type {
 import type { CellKind, GlyphInfo, LevelView, MapCell } from '../model/types.js';
 import { COLNO, ROWNO } from '../model/types.js';
 import { cellKindOf, isTerrainGlyph } from './glyphs.js';
+
+// ---------------------------------------------------------------------------
+// Tiny typed event emitter (browser-clean; the subset the session uses:
+// on/off/emit, multiple listeners per event, no once, no error events, no
+// memory-leak warnings — kept here so shared code stays free of process/OS
+// imports).
+
+/**
+ * Callback shape stored per event. `never[]` on the parameter list is a
+ * contra-variance trick: any narrower callback (`(m: string) => void`,
+ * `(code: number) => void`, …) is assignable to it under `strictFunctionTypes`
+ * because the callback can never actually be called with `never`. Internally
+ * we still invoke with real args via a single cast at the call site.
+ */
+export type Listener = (...args: never[]) => void;
+
+/** Minimal typed emitter used by NethackSession. */
+export class TinyEmitter {
+  private readonly handlers = new Map<string, Listener[]>();
+
+  /** Register a listener; the same function can be added more than once. */
+  on(event: string, cb: Listener): this {
+    const arr = this.handlers.get(event);
+    if (arr) arr.push(cb);
+    else this.handlers.set(event, [cb]);
+    return this;
+  }
+
+  /** Remove one occurrence of `cb` from `event`'s listeners (no-op if absent). */
+  off(event: string, cb: Listener): this {
+    const arr = this.handlers.get(event);
+    if (!arr) return this;
+    const i = arr.indexOf(cb);
+    if (i >= 0) arr.splice(i, 1);
+    return this;
+  }
+
+  /** Invoke every listener for `event` with `args`; a copy is used so a
+   *  listener that unsubscribes itself does not perturb the iteration. */
+  emit(event: string, ...args: unknown[]): boolean {
+    const arr = this.handlers.get(event);
+    if (!arr || arr.length === 0) return false;
+    for (const cb of arr.slice()) (cb as (...a: unknown[]) => void)(...args);
+    return true;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // State types
@@ -167,7 +212,7 @@ export function stripGlyphEscape(v: string): string {
  * `handle`, or in chunks via `handleBatch`), read the current state through
  * the getters, and answer pending requests with `answer(...)`.
  */
-export class NethackSession extends EventEmitter {
+export class NethackSession extends TinyEmitter {
   private _hello: HelloMsg | null = null;
   private cells: MapCell[];
   private _hero: { x: number; y: number } | null = null;
@@ -765,7 +810,7 @@ export function decodeConditions(
  * closes its stdout.
  */
 export async function runSession(
-  bridge: { batches: AsyncIterable<BridgeMsg[]> },
+  bridge: { readonly batches: AsyncIterable<BridgeMsg[]> },
   session: NethackSession,
 ): Promise<void> {
   for await (const batch of bridge.batches) {

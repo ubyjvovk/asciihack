@@ -16,6 +16,11 @@ export interface TermIO {
    *  invalidates the buffer; App recomposes and paints at the new size). */
   onResize(cb: () => void): void;
   onKey(cb: (e: KeyEvent) => void): void;
+  /** Optional direct-paint path used by non-ANSI transports (e.g. the browser
+   *  DOM terminal, `web/src/dom-term.ts`). When present, `Screen.paint` hands
+   *  the whole grid to `paintGrid` instead of computing the ANSI diff — the
+   *  transport owns diffing (or does not need it). */
+  paintGrid?(grid: ScreenGrid): void;
 }
 
 const CSI = '\x1b[';
@@ -119,8 +124,14 @@ export class Screen {
     term.onResize(() => this.invalidate());
   }
 
-  /** Paint `grid`, writing only the ANSI diff from the previous paint. */
+  /** Paint `grid`. If the underlying `TermIO` implements `paintGrid`, hand
+   *  the whole grid over (the browser DOM terminal does its own DOM
+   *  diffing); otherwise write only the ANSI diff from the previous paint. */
   paint(grid: ScreenGrid): void {
+    if (this.term.paintGrid) {
+      this.term.paintGrid(grid);
+      return;
+    }
     const out = diff(this.prev, grid);
     if (out !== '') this.term.write(out);
     this.remember(grid);

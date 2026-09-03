@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { App } from '../src/ui/app.js';
+import { parseSettings, serializeSettings } from '../src/ui/settings.js';
 import { FACINGS, opposite, poseFor, spritesFromMap, strafe, turn, blitGrid, Viewport3D } from '../src/ui/view3d.js';
 import { paintMinimap } from '../src/ui/minimap.js';
 import { FpsMode } from '../src/ui/modes/fps.js';
@@ -445,7 +446,11 @@ describe('FOV tuning and settings', () => {
     const file = join(dir, 'settings.json');
     const replies: RetMsg[] = [];
     const session = freshSessionWithHero(replies);
-    const app = new App({ session, term: new FakeTerm(), mode: 'fps', settingsFile: file });
+    const settings = existsSync(file) ? parseSettings(readFileSync(file, 'utf8')) : undefined;
+    const app = new App({
+      session, term: new FakeTerm(), mode: 'fps',
+      settings, onSettingsChange: (s) => writeFileSync(file, serializeSettings(s)),
+    });
     expect((app.activeMode as FpsMode).vFovDeg).toBe(60);
     app.handleKey(ev('F7')); // 65
     app.handleKey(ev('F7')); // 70
@@ -460,7 +465,11 @@ describe('FOV tuning and settings', () => {
     writeFileSync(file, JSON.stringify({ fov: 50, theme: 'cyber', minimap: false }));
     const replies: RetMsg[] = [];
     const session = freshSessionWithHero(replies);
-    const app = new App({ session, term: new FakeTerm(), mode: 'fps', fov: 90, settingsFile: file });
+    const app = new App({
+      session, term: new FakeTerm(), mode: 'fps', fov: 90,
+      settings: parseSettings(readFileSync(file, 'utf8')),
+      onSettingsChange: (s) => writeFileSync(file, serializeSettings(s)),
+    });
     expect((app.activeMode as FpsMode).vFovDeg).toBe(90);
     expect(JSON.parse(readFileSync(file, 'utf8')).fov).toBe(90);
   });
@@ -480,7 +489,11 @@ describe('FOV tuning and settings', () => {
     const file = join(dir, 'settings.json');
     const replies: RetMsg[] = [];
     const session = freshSessionWithHero(replies);
-    const app = new App({ session, term: new FakeTerm(), mode: 'fps', settingsFile: file, now: () => clock });
+    const app = new App({
+      session, term: new FakeTerm(), mode: 'fps',
+      onSettingsChange: (s) => writeFileSync(file, serializeSettings(s)),
+      now: () => clock,
+    });
     app.handleKey(ev('F7'));
     expect(row0Text(app.lastGrid!)).toContain('FOV 65°');
     clock += 2000;

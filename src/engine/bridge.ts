@@ -11,6 +11,9 @@
 import { spawn as nodeSpawn } from 'node:child_process';
 import type { Readable, Writable } from 'node:stream';
 import type { BridgeMsg, RetMsg } from './protocol.js';
+import type { BridgeTransport } from './transport.js';
+
+export type { BridgeTransport } from './transport.js';
 
 /** Minimal subset of `child_process.ChildProcess` this module needs. */
 export interface BridgeChild {
@@ -49,18 +52,9 @@ export interface SpawnBridgeOptions {
   spawn?: SpawnFn;
 }
 
-/** Handle returned by `spawnBridge`. */
-export interface BridgeProcess {
-  /** Per-line JSON messages from the bridge's stdout. */
-  readonly messages: AsyncIterable<BridgeMsg>;
-  /** Per-stdout-chunk batches of messages (used by session coalescing). */
-  readonly batches: AsyncIterable<BridgeMsg[]>;
-  /** Write one reply line to the bridge's stdin (LF-terminated JSON). */
-  reply(msg: RetMsg): void;
-  /** Send a signal to the child (defaults to SIGTERM). */
+/** Handle returned by `spawnBridge` — a `BridgeTransport` with Node signal typing. */
+export interface BridgeProcess extends BridgeTransport {
   kill(signal?: NodeJS.Signals): void;
-  /** Resolves with the child's exit code (0 on clean exit). */
-  readonly exited: Promise<number>;
 }
 
 /** Default NETHACKOPTIONS the client sets when the caller does not override. */

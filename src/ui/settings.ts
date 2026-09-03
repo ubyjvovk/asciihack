@@ -1,14 +1,10 @@
 /**
  * Player settings persisted to `~/.asciihack/settings.json` (docs/ui.md —
  * Settings): the first-person vertical FOV, the render theme and the minimap
- * flag, remembered across runs. The file is loaded once at start (missing or
- * invalid input falls back to defaults, never crashes) and written atomically
- * whenever FOV, theme or minimap changes. `parseSettings`/`serializeSettings`
- * are pure; `loadSettings`/`saveSettings` are the thin I/O wrappers.
+ * flag, remembered across runs. Pure only — the Node-only I/O wrappers
+ * (`settingsPath`, `loadSettings`, `saveSettings`) live in
+ * `src/settings-io.ts` so this module stays browser-clean.
  */
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
 import type { Theme } from '../render/themes.js';
 
 /** Lower bound of the vertical FOV in degrees (F6/F7 and `--fov` clamp to it). */
@@ -66,30 +62,4 @@ export function parseSettings(text: string): Settings {
 /** Serialize `Settings` to the file format (pretty JSON + trailing newline). */
 export function serializeSettings(s: Settings): string {
   return JSON.stringify({ fov: s.fov, theme: s.theme, minimap: s.minimap }, null, 2) + '\n';
-}
-
-/** The default settings-file path (`$ASCIIHACK_HOME/settings.json`, else `~/.asciihack/`). */
-export function settingsPath(): string {
-  return join(process.env.ASCIIHACK_HOME ?? join(homedir(), '.asciihack'), 'settings.json');
-}
-
-/** Read and parse the settings file at `path` (missing/unreadable → defaults). */
-export function loadSettings(path: string): Settings {
-  try {
-    return parseSettings(readFileSync(path, 'utf8'));
-  } catch {
-    return { ...DEFAULT_SETTINGS };
-  }
-}
-
-/** Write `s` to `path` atomically (`.tmp` + rename); never throws on failure. */
-export function saveSettings(path: string, s: Settings): void {
-  try {
-    mkdirSync(dirname(path), { recursive: true });
-    const tmp = `${path}.tmp`;
-    writeFileSync(tmp, serializeSettings(s));
-    renameSync(tmp, path);
-  } catch {
-    // A failed write must never crash the game or break the key handler.
-  }
 }

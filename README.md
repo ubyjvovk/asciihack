@@ -100,6 +100,24 @@ playground; without a name it asks. `bin/asciihack-login` is the login
 shell, `scripts/ssh-serve.sh --check` prints the `sshd_config` block, and
 [`docs/ssh.md`](docs/ssh.md) is the operator walk-through.
 
+## Browser
+
+The same TypeScript client also runs in a browser through a WebSocket
+transport (thin client): a Node WS server spawns one `nh-bridge` per
+connection and relays its JSON lines to the page, which renders the game
+into a `<pre>` grid using the DOM terminal. The three.js viewport that
+reuses AsciiCity's shader styles is coming next (T-0031); today the
+browser shows classic and the CPU raycaster (fps).
+
+```sh
+npm ci
+npm run web:server    # ws://127.0.0.1:8790/play?name=<name>
+npm run web:dev       # Vite dev server on http://127.0.0.1:5173/
+# open http://127.0.0.1:5173/?name=mia
+```
+
+Loopback-only by default (no auth). Full walk-through: [`docs/web.md`](docs/web.md).
+
 ## How it works
 
 `docs/architecture.md` is the design contract: the bridge protocol
