@@ -504,9 +504,6 @@ handle_callback(const char *name, void *ret_ptr, const char *fmt, va_list ap)
         return;
     }
 
-    /* Ignore fmt entirely — we know each call's shape statically. */
-    (void) fmt;
-
     /* ---- Simple void calls with no arguments. -------------------------- */
 
     if (!strcmp(name, "shim_get_nh_event")
@@ -720,10 +717,11 @@ handle_callback(const char *name, void *ret_ptr, const char *fmt, va_list ap)
 
     if (!strcmp(name, "shim_start_menu")) {
         int w = va_arg(ap, int);
-        int beh = va_arg(ap, int); /* unsigned long promoted through varargs
-                                    * arrives as int (mbehavior fits) */
+        /* mbehavior is declared `unsigned long` in the shim; varargs does
+         * not promote unsigned long to int, so read it as unsigned long. */
+        unsigned long beh = va_arg(ap, unsigned long);
         emit_call_head(name);
-        fprintf(stdout, "%d,%d", w, beh);
+        fprintf(stdout, "%d,%lu", w, beh);
         emit_call_end_noreply();
         menu_reset((winid) w);
         return;
@@ -778,7 +776,10 @@ handle_callback(const char *name, void *ret_ptr, const char *fmt, va_list ap)
         int ret = 0;
         if (r.ret_kind == REPLY_RET_INT) ret = (int) r.ret_int;
         if (menu_list) *menu_list = NULL;
-        if (ret > 0 && r.sel && r.sel_len > 0 && menu_list) {
+        /* Guard w before indexing g_menus[]; an out-of-range id means no
+         * items (ret stays 0, *menu_list already NULL). */
+        if (ret > 0 && w >= 0 && w < MAX_WIN
+            && r.sel && r.sel_len > 0 && menu_list) {
             MENU_ITEM_P *arr = (MENU_ITEM_P *) malloc(r.sel_len * sizeof(*arr));
             if (arr) {
                 size_t out = 0;
@@ -1020,9 +1021,19 @@ handle_callback(const char *name, void *ret_ptr, const char *fmt, va_list ap)
      * zero the return slot so NetHack doesn't wedge. --------------- */
 
     print_log(name);
-    if (ret_ptr) {
-        /* Zero a machine word; every DECLCB return type fits. */
-        memset(ret_ptr, 0, sizeof(void *));
+    if (ret_ptr && fmt && *fmt) {
+        /* Zero exactly the width the return type names: a 1-byte char /
+         * boolean / yn-char (c/b/0), a 2-byte short (2), an int (i), a
+         * pointer (s/p). Never memset a whole word — the slot may be a
+         * 1- or 2-byte scalar. 'v' has no return slot at all. */
+        switch (*fmt) {
+        case 'v': /* no return slot */ break;
+        case 'c': case 'b': case '0': *(char *) ret_ptr = 0; break;
+        case '2': *(short *) ret_ptr = 0; break;
+        case 'i': *(int *) ret_ptr = 0; break;
+        case 's': case 'p': *(void **) ret_ptr = NULL; break;
+        default: memset(ret_ptr, 0, sizeof(void *)); break;
+        }
     }
 }
 
