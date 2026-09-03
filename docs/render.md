@@ -16,7 +16,7 @@ renderFirstPerson(level, pose, sprites, fb, opts?)
 - `sprites: Sprite[]` — billboards to overlay (monsters/objects).
 - `fb: FrameBuffer` — the buffer to fill (rgb, depth, overlay planes).
 - `opts?: RaycastOptions` — `fovDeg` (70), `maxDepth` (24), `cellAspect` (2),
-  `fogK` (0.18).
+  `fogK` (0.18), `detail` (true, see “Surface detail”).
 
 ## Algorithm
 
@@ -50,6 +50,47 @@ renderFirstPerson(level, pose, sprites, fb, opts?)
    billboard 0.7 cells wide × 0.9 tall standing on its cell; its screen
    rectangle gets `overlayCh = sprite.ch` and `overlayRgb = sprite.rgb ×
    attenuation`. A sprite on the camera cell (the hero) is skipped.
+
+## Surface detail
+
+`RaycastOptions.detail` (default **true**) turns on procedural surface detail
+so depth and structure read in ASCII instead of one flat glyph per surface.
+The pure pattern functions live in `src/render/texture.ts` (`brickShade`,
+`plankShade`, `barsShade`, `gridShade`) and are unit-tested there; `raycast.ts`
+only calls them. With `detail: false` the renderer is byte-identical to the
+pre-detail flat renderer (this is what the original `raycast-golden.txt`
+commits); the default is covered by `raycast-textured-golden.txt`.
+
+- **Wall texture.** For a wall hit, `u` is the fraction along the hit face
+  (`posY + perp·rdy` for a vertical/E-W face, `posX + perp·rdx` for a
+  horizontal/N-S one, fractional part), and per row `v = (y − top)/(bot − top)`
+  (0 at the wall top, 1 at the bottom). `brickShade(u, v, seed)`: rows 0.25
+  tall, bricks 0.5 wide, every other row offset by 0.25, 0.05-wide mortar at
+  brightness 0.65, and a brick body of 1.0 ± 0.08 hashed by (row, column,
+  `seed`) where `seed = hitY·80 + hitX` keeps bricks stable frame to frame.
+  It multiplies the wall colour after the N/S vs E/W face factor and before
+  fog. `wall` gets the brick; `bars` gets `barsShade(u)` (0.2 bars at 1.0,
+  0.3 gaps at 0.25).
+- **Doors.** `door_closed`: `plankShade(u)` = vertical planks 0.2 wide
+  alternating 1.0 / 0.82 with a 0.05 dark seam; the outer 0.12 of the face
+  (`u < 0.12 || u > 0.88`) is a wall-coloured frame at wall × 1.1.
+  `doorway` / `door_open` stay passable, but the ray treats the outer 0.12 of
+  the cell's width (its posts) as solid wall-coloured frame, and in the floor
+  pass the doorway threshold is drawn with a wall-coloured frame (outer 0.12
+  of the cell) around the passable door colour — so a doorway reads as an
+  opening in a wall rather than a gap in the floor colour.
+- **Floor grid.** In the floor pass, `gridShade(fX, fY, edge)` returns `edge`
+  (0.7, or 0.5 for stairs so they pop) when the sample is within 0.05 of a
+  cell edge in either axis, else 1.0. Applied to `floor`, `ice`, `stairs_*`,
+  `altar`, `throne` only (not corridors, water, lava).
+- **Edge lines.** In the wall pass, the topmost painted wall row of a column
+  is at 1.25× (light edge) and the bottom row at 0.8× (contact shadow). A
+  column whose hit cell or hit side differs from its left neighbour's (a
+  corner or a different wall block) gets its whole wall span at 1.15× —
+  vertical corner lines. Edge and corner lines apply to `wall` cells.
+
+Detail costs a little per-pixel hashing but stays well under the 8 ms budget
+for a 200×60 frame (measured ~1.3 ms with detail on).
 
 ## Colour table
 
