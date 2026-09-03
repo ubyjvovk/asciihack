@@ -80,7 +80,7 @@ describe('tile text parser', () => {
 });
 
 describe('tile lookups', () => {
-  it("monsterTile('jackal') is 16x16 with opaque rows 4-13 and a blank row 0", () => {
+  it("monsterTile('jackal') is 16x16 with opaque rows 4-14 and a blank row 0", () => {
     const set = loadTiles();
     const tile = monsterTile(set, 'jackal');
     expect(tile).not.toBeNull();
@@ -89,11 +89,13 @@ describe('tile lookups', () => {
     expect(tile!.pixels).toHaveLength(256);
     const row = (r: number): number[] => [...tile!.pixels.slice(r * 16, r * 16 + 16)];
     expect(row(0).every((v) => v === 0)).toBe(true);
-    for (let r = 4; r <= 13; r++) {
+    for (let r = 4; r <= 14; r++) {
       expect(row(r).some((v) => v !== 0)).toBe(true);
     }
   });
 
+  // NB: jackal m/f tiles are pixel-identical upstream, so the m/f-diff
+  // case uses elven monarch (whose variants genuinely differ).
   it("monsterTile('elven monarch', true) differs from the male tile", () => {
     const set = loadTiles();
     const male = monsterTile(set, 'elven monarch')!;
