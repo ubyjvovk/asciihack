@@ -7,6 +7,7 @@
 import { clrToRgb } from '../model/types.js';
 import type { ScreenGrid } from '../model/types.js';
 import type { NethackSession } from '../engine/session.js';
+import { FACINGS, type Facing } from './view3d.js';
 import type { Rect } from './modes/classic.js';
 
 /** Minimap window size, including the one-cell border. */
@@ -15,16 +16,24 @@ export const MINIMAP_WIDTH = 40;
 export const MINIMAP_HEIGHT = 11;
 /** Grey used for the minimap border. */
 const DIM_GREY: readonly [number, number, number] = [100, 100, 100];
+/** Facing arrow glyphs indexed like `FACINGS` (N, NE, … NW clockwise), all BMP one-cell. */
+const FACING_ARROWS: ReadonlyArray<string> = ['↑', '↗', '→', '↘', '↓', '↙', '←', '↖'];
 /** Top-right corner inset in cells (one column / one row from the edge). */
 const INSET = 1;
 
 /**
  * Paint the minimap over `grid` inside `rect` (the viewport). Shows a
  * 38×9 window of the map centred on the hero (clamped to the map bounds);
- * unexplored cells are spaces, the hero is inverse video. Does nothing when
- * the hero position is unknown.
+ * unexplored cells are spaces, the hero is inverse video. When `facing` is
+ * given the hero prints its facing arrow (`↑ ↗ → ↘ ↓ ↙ ← ↖`) instead of `@`.
+ * Does nothing when the hero position is unknown.
  */
-export function paintMinimap(grid: ScreenGrid, rect: Rect, session: NethackSession): void {
+export function paintMinimap(
+  grid: ScreenGrid,
+  rect: Rect,
+  session: NethackSession,
+  facing?: Facing,
+): void {
   const hero = session.hero;
   if (hero === null) return;
   const w = Math.min(MINIMAP_WIDTH, rect.width);
@@ -68,7 +77,9 @@ export function paintMinimap(grid: ScreenGrid, rect: Rect, session: NethackSessi
       const ch = top?.ch ?? ' ';
       const fgc = top ? clrToRgb(top.color) : ([0, 0, 0] as const);
       if (isHero) {
-        put(ox + 1 + dx, oy + 1 + dy, '@', [0, 0, 0], fgc);
+        const heroCh =
+          facing === undefined ? '@' : (FACING_ARROWS[FACINGS.indexOf(facing)] ?? '@');
+        put(ox + 1 + dx, oy + 1 + dy, heroCh, [0, 0, 0], fgc);
       } else if (cell === null || cell.kind === 'unexplored' || top === null || top === undefined) {
         put(ox + 1 + dx, oy + 1 + dy, ' ', [0, 0, 0], [0, 0, 0]);
       } else {

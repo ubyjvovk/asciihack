@@ -94,8 +94,10 @@ interface Mode {
   80×21 map from `session.map` — `top` glyph char + `clrToRgb(color)`, the hero
   cell in inverse video (ink black on the glyph colour) — centred when the
   terminal is wider. Fps paints the raycaster (`renderFirstPerson`) from the
-  hero's facing plus the minimap (`src/ui/minimap.ts`); ortho paints
-  `renderOrtho` with the hero as an `@` sprite plus the minimap.
+  hero's facing plus the minimap (`src/ui/minimap.ts`, hero as a facing arrow)
+  and the compass ribbon (`src/ui/compass.ts`); ortho paints
+  `renderOrtho` with the hero as an `@` sprite plus the minimap and a compass
+  rose.
 - `handleKey` receives a key once no overlay or message pager consumed it.
   Classic answers a pending `key`/`pos` request with the key code via
   `session.answer`; if none is pending it hands the key to `queueKey`, which the
@@ -128,11 +130,39 @@ to the overlay/prompt exactly as in classic mode:
 
 ## Minimap (`src/ui/minimap.ts`)
 
-`paintMinimap(grid, rect, session)` draws a 40×11 window of the classic map
-(`MINIMAP_WIDTH`/`MINIMAP_HEIGHT`), centred on the hero and clamped to the
-map bounds, top-right over the viewport. One-cell `-`/`|` border (dim grey,
-`+` corners), glyph colours from `clrToRgb`, unexplored cells as spaces, the
-hero cell inverse-video (`@`). Shown by default in fps/ortho; `F4` hides it.
+`paintMinimap(grid, rect, session, facing?)` draws a 40×11 window of the
+classic map (`MINIMAP_WIDTH`/`MINIMAP_HEIGHT`), centred on the hero and
+clamped to the map bounds, top-right over the viewport. One-cell `-`/`|`
+border (dim grey, `+` corners), glyph colours from `clrToRgb`, unexplored
+cells as spaces, the hero cell inverse-video. When `facing` is given the hero
+prints its facing arrow (`↑ ↗ → ↘ ↓ ↙ ← ↖` for N…NW, all BMP one-cell) instead
+of `@`. Shown by default in fps/ortho; `F4` hides it. The fps mode passes its
+`Facing`, so the arrow matches the compass ribbon; ortho/classic pass none and
+stay `@`.
+
+## Heading cues
+
+Three always-visible, cheap facing cues (none in classic mode; nothing here
+touches the renderers):
+
+- **Compass ribbon** (`src/ui/compass.ts`, pure `paintCompass(grid, rect,
+  yawRad)`): a 41-column strip on the first row of the fps viewport, centred,
+  over the rendered scene, drawn with the interpolated `yaw` so it slides
+  during a turn. The headings `N NE E SE S SW W NW` are placed at
+  `centre + round(Δ·20/45°)` columns where Δ is the signed heading − yaw
+  wrapped to (−180°, 180°]; only headings inside the 41-column span (within
+  45°: the facing heading and its two adjacent diagonals) are drawn, so the
+  facing heading sits at the centre with `NE`/`NW` at ±20 columns. A `·` tick
+  marks every 15°, with a `|` facing notch at the centre column. The nearest
+  heading is bright white, the others dim grey, the ticks darker, all on a
+  black background.
+- **Minimap facing arrow** (`src/ui/minimap.ts`): the hero cell prints an
+  arrow instead of `@` when `facing` is given (see above).
+- **Ortho rose** (`src/ui/modes/ortho.ts`): a fixed 5×3 legend at the
+  top-left of the ortho viewport — `W N` / `+` / `S E` — because in the
+  locked projection north is up-right (cell (x, y−1) → screen (sx+2, sy−1)),
+  east down-right, south down-left, west up-left. Dim grey with the `+`
+  bright.
 
 ## Overlays (`src/ui/overlays.ts`)
 

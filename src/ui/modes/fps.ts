@@ -11,6 +11,7 @@ import type { KeyEvent } from '../../term/input.js';
 import type { Theme } from '../../render/themes.js';
 import { renderFirstPerson } from '../../render/raycast.js';
 import { paintMinimap } from '../minimap.js';
+import { paintCompass } from '../compass.js';
 import {
   FACINGS,
   charKey,
@@ -123,7 +124,8 @@ export class FpsMode implements Mode {
       theme,
     );
     blitGrid(sub, grid, rect);
-    if (this.showMinimap) paintMinimap(grid, rect, this.session);
+    if (this.showMinimap) paintMinimap(grid, rect, this.session, this.facing);
+    paintCompass(grid, rect, this.yaw);
   }
 
   /**

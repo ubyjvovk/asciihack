@@ -12,6 +12,35 @@ import { paintMinimap } from '../minimap.js';
 import { charKey, sendKey, spritesFromMap, Viewport3D, blitGrid } from '../view3d.js';
 import type { Mode, Rect } from './classic.js';
 
+/** Colour of the ortho rose letters (dim grey). */
+const ROSE_FAR_FG: readonly [number, number, number] = [120, 120, 120];
+/** Colour of the ortho rose centre `+` (bright). */
+const ROSE_NEAR_FG: readonly [number, number, number] = [255, 255, 255];
+
+/**
+ * Paint the fixed 5×3 compass rose at the top-left of the ortho viewport:
+ * `W N` on the top row, `+` at the centre, `S E` on the bottom, because in
+ * the locked projection north is up-right. Pure painting; the `+` is bright.
+ */
+function paintRose(grid: ScreenGrid, rect: Rect): void {
+  const x = rect.x;
+  const y = rect.y;
+  const put = (dx: number, dy: number, ch: string, fg: readonly [number, number, number]): void => {
+    const gx = x + dx;
+    const gy = y + dy;
+    if (gx < 0 || gx >= grid.width || gy < 0 || gy >= grid.height) return;
+    const cell = grid.cells[gy * grid.width + gx]!;
+    cell.ch = ch;
+    cell.fg = fg;
+    cell.bg = [0, 0, 0];
+  };
+  put(0, 0, 'W', ROSE_FAR_FG);
+  put(4, 0, 'N', ROSE_FAR_FG);
+  put(2, 1, '+', ROSE_NEAR_FG);
+  put(0, 2, 'S', ROSE_FAR_FG);
+  put(4, 2, 'E', ROSE_FAR_FG);
+}
+
 /** Ortho view: isometric map centred on the hero with an `@` hero sprite. */
 export class OrthoMode implements Mode {
   readonly name = 'ortho';
@@ -43,6 +72,7 @@ export class OrthoMode implements Mode {
     );
     blitGrid(sub, grid, rect);
     if (this.showMinimap) paintMinimap(grid, rect, this.session);
+    paintRose(grid, rect);
   }
 
   handleKey(e: KeyEvent, queueKey: (ev: KeyEvent) => void): void {

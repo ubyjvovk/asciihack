@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { App } from '../src/ui/app.js';
 import { FACINGS, opposite, poseFor, spritesFromMap, strafe, turn, blitGrid, Viewport3D } from '../src/ui/view3d.js';
+import { paintMinimap } from '../src/ui/minimap.js';
 import { FpsMode } from '../src/ui/modes/fps.js';
 import { OrthoMode } from '../src/ui/modes/ortho.js';
 import { blankGrid } from '../src/ui/grid.js';
@@ -106,17 +107,26 @@ function nonSpaces(grid: ScreenGrid, y0: number, y1: number): number {
   return n;
 }
 
-function viewportZone(grid: ScreenGrid): { hasRamp: boolean; hasHero: boolean } {
+function viewportZone(grid: ScreenGrid): { hasRamp: boolean; hasHero: boolean; hasArrow: boolean } {
+  const arrows = new Set(['↑', '↗', '→', '↘', '↓', '↙', '←', '↖']);
   let hasRamp = false;
   let hasHero = false;
+  let hasArrow = false;
   for (let y = 1; y < grid.height - 2; y++) {
     for (let x = 0; x < grid.width; x++) {
       const ch = grid.cells[y * grid.width + x]!.ch;
       if (DEFAULT_RAMP.includes(ch) && ch !== ' ') hasRamp = true;
       if (ch === '@') hasHero = true;
+      if (arrows.has(ch)) hasArrow = true;
     }
   }
-  return { hasRamp, hasHero };
+  return { hasRamp, hasHero, hasArrow };
+}
+
+function countChars(grid: ScreenGrid, ch: string): number {
+  let n = 0;
+  for (const c of grid.cells) if (c.ch === ch) n++;
+  return n;
 }
 
 // ---------------------------------------------------------------------------
@@ -308,11 +318,10 @@ describe('minimap and theme toggles', () => {
     const replies: RetMsg[] = [];
     const { app } = startApp('fps', replies);
     const before = app.lastGrid!;
-    const beforeRect = { zone: viewportZone(before) };
-    expect(beforeRect.zone.hasHero).toBe(true);
+    expect(viewportZone(before).hasArrow).toBe(true);
     app.handleKey(ev('F4'));
     const after = app.lastGrid!;
-    expect(viewportZone(after).hasHero).toBe(false);
+    expect(viewportZone(after).hasArrow).toBe(false);
   });
 
   it('F5 changes the cell colours of the viewport', () => {
@@ -340,14 +349,14 @@ describe('minimap and theme toggles', () => {
 
 describe('3D structural render checks', () => {
   it.skipIf(!existsSync(resolve(HERE, 'fixtures', 'bridge', 'start.jsonl')))(
-    'fps viewport rows contain ramp glyphs and the minimap contains the hero @',
+    'fps viewport rows contain ramp glyphs and the minimap contains the hero facing arrow',
     () => {
       const replies: RetMsg[] = [];
       const { app } = startApp('fps', replies);
       const grid = app.lastGrid!;
       expect(nonSpaces(grid, 1, grid.height - 3)).toBeGreaterThan(50);
       expect(viewportZone(grid).hasRamp).toBe(true);
-      expect(viewportZone(grid).hasHero).toBe(true);
+      expect(viewportZone(grid).hasArrow).toBe(true);
     },
   );
 
@@ -363,6 +372,52 @@ describe('3D structural render checks', () => {
       expect(session.hero).not.toBeNull();
     },
   );
+});
+
+describe('heading cues', () => {
+  it('the minimap prints ↓ on the hero cell when facing south and @ without a facing', () => {
+    if (!existsSync(resolve(HERE, 'fixtures', 'bridge', 'start.jsonl'))) return;
+    const replies: RetMsg[] = [];
+    const { session } = startApp('fps', replies);
+    const rect = { x: 0, y: 1, width: 80, height: 21 };
+    const withFacing = blankGrid(80, 24);
+    paintMinimap(withFacing, rect, session, FACINGS[4]!); // south
+    expect(countChars(withFacing, '↓')).toBe(1);
+    expect(countChars(withFacing, '@')).toBe(0);
+    const withoutFacing = blankGrid(80, 24);
+    paintMinimap(withoutFacing, rect, session);
+    expect(countChars(withoutFacing, '@')).toBe(1);
+    expect(countChars(withoutFacing, '↓')).toBe(0);
+  });
+
+  it('the fps mode after Right from north paints NE at the centre once the turn settles', () => {
+    if (!existsSync(resolve(HERE, 'fixtures', 'bridge', 'start.jsonl'))) return;
+    const replies: RetMsg[] = [];
+    const { session } = startApp('fps', replies);
+    let clock = 1000;
+    const mode = new FpsMode(session, () => clock);
+    mode.handleKey(ev('Right'), () => {});
+    clock += 200; // past TURN_MS
+    mode.tick(clock); // settle the turn to north-east
+    const grid = blankGrid(80, 24);
+    mode.paintViewport(grid, { x: 0, y: 1, width: 80, height: 21 });
+    const centre = 40; // viewport centre for an 80-wide rect at x=0
+    expect(grid.cells[1 * 80 + centre]!.ch).toBe('N');
+    expect(grid.cells[1 * 80 + centre + 1]!.ch).toBe('E');
+  });
+
+  it('the ortho viewport contains the rose rows', () => {
+    if (!existsSync(resolve(HERE, 'fixtures', 'bridge', 'start.jsonl'))) return;
+    const replies: RetMsg[] = [];
+    const { app } = startApp('ortho', replies);
+    const grid = app.lastGrid!;
+    // Fixed rose at the top-left of the viewport (rect y = 1).
+    expect(grid.cells[1 * 80 + 0]!.ch).toBe('W');
+    expect(grid.cells[1 * 80 + 4]!.ch).toBe('N');
+    expect(grid.cells[2 * 80 + 2]!.ch).toBe('+');
+    expect(grid.cells[3 * 80 + 0]!.ch).toBe('S');
+    expect(grid.cells[3 * 80 + 4]!.ch).toBe('E');
+  });
 });
 
 describe('fps/ortho mode controls', () => {
