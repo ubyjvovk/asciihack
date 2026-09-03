@@ -33,6 +33,23 @@ active mode's optional `tick(nowMs)` returns `true`, the app repaints at
 ≤ 30 fps (`FRAME_MS = 33`, `setTimeout`, never a busy loop); `leave()`
 cancels any pending frame.
 
+Shutdown auto-dismiss. NetHack's `dosave()` prints `Saving...` and then does
+a blocking `display_nhwindow(WIN_MESSAGE, TRUE)` — a `--More--` on a game
+that has already committed to exiting. When a blocking message-window
+display arrives whose newest message is exactly `Saving...`, the App
+answers `dismiss` from the `request` handler so the shutdown proceeds
+without a keypress. Death messages, DYWYPI and every other blocking
+display keep pausing for a key. As a safety net, the App also drops a
+lingering `display` overlay if the session ever emits `exit` while one is
+still pending, and `TtyTerm.restore()` removes its stdin/stdout listeners
+and unrefs stdin so the process exits within 500 ms even if a listener is
+still registered elsewhere.
+
+After `app.leave()` restores the terminal, `cli.ts` echoes the last two
+messages (`Saving...  Be seeing you...` on a clean save) on stdout so the
+player gets the farewell tty shows on exit. The session picks up the
+farewell string from NetHack's `exit_nhwindows(str)` call (docs/engine.md).
+
 ## Key routing
 
 Keys are routed in `App.handleKey`, in priority order:
@@ -127,11 +144,11 @@ is unchanged, so editor/menu state survives repaints.
 
 | pending kind | overlay | behaviour |
 |---|---|---|
-| `menu` | `MenuOverlay` | paging with `>`/`<`, accelerators (`a-zA-Z` assigned to empty ones), PICK_NONE any-key dismiss, PICK_ONE accelerator answers, PICK_ANY toggles then Enter, ESC cancels (empty selection) |
+| `menu` | `MenuOverlay` | paging with `>`/`<`, accelerators (`a-zA-Z` assigned to empty ones), PICK_NONE any-key dismiss, PICK_ONE accelerator answers, PICK_ANY toggles then Enter, ESC cancels (`{cancelled:true}` → `ret -1`; Enter with nothing picked stays `ret 0`) |
 | `display` (menu/text) | `TextOverlay` | paged lines, any key pages, ESC dismisses |
 | `display` (message) | `MoreOverlay` | `--More--`, any key → `dismiss` |
 | `file` | `TextOverlay` | paged file text, ESC dismisses |
-| `yn` | `YnOverlay` | shows choices + default; only offered choices accepted; ESC → `q`/`n`/default rule from `wintty.c` |
+| `yn` | `YnOverlay` | shows `query [choices] (def)` (default in parens only when it is a printable ASCII char, 0x21–0x7e); only offered choices accepted; ESC → `q`/`n`/default rule from `wintty.c` |
 | `getlin` | `GetlinOverlay` | line editor (Backspace, Enter commits, ESC → `""`) |
 | `extcmd` | `ExtCmdOverlay` | `#` line with prefix completion over `hello.extra.extcmds`, Enter → index, ESC → −1 |
 | `message-menu` | `MessageMenuOverlay` | shows the message, any key answers its code |

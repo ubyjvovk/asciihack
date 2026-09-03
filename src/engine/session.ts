@@ -138,6 +138,7 @@ export type Answer =
   | { kind: 'yn'; ch: number }
   | { kind: 'getlin'; text: string }
   | { kind: 'menu'; selected: ReadonlyArray<{ i: number; count: number }> }
+  | { kind: 'menu'; cancelled: true }
   | { kind: 'dismiss' }
   | { kind: 'display' }
   | { kind: 'extcmd'; index: number }
@@ -303,11 +304,17 @@ export class NethackSession extends EventEmitter {
       case 'getlin':
         return { id: p.id, ret: a.text };
       case 'menu': {
-        if (a.selected.length === 0) return { id: p.id, ret: 0, selected: [] };
+        // `cancelled` (ESC) and "no selection" (Enter with nothing picked)
+        // are different at the protocol level: cancel is `ret -1` with no
+        // `selected` field, no-selection is `ret 0` with `selected: []`
+        // (docs/architecture.md §3.3 `select_menu`).
+        if ('cancelled' in a) return { id: p.id, ret: -1 };
+        const sel = a.selected;
+        if (sel.length === 0) return { id: p.id, ret: 0, selected: [] };
         return {
           id: p.id,
-          ret: a.selected.length,
-          selected: a.selected.map((s) => ({ i: s.i, count: s.count })),
+          ret: sel.length,
+          selected: sel.map((s) => ({ i: s.i, count: s.count })),
         };
       }
       case 'dismiss':
@@ -514,6 +521,19 @@ export class NethackSession extends EventEmitter {
       }
       case 'status_update':
         return this.doStatusUpdate(msg);
+      case 'exit_nhwindows': {
+        // NetHack passes a farewell string to `exit_nhwindows` on a clean
+        // shutdown (`nh_terminate`): tty prints it on the message window
+        // before the terminal is restored. The shim just forwards the
+        // string, so treat it like any other game message so the CLI can
+        // echo the farewell after `app.leave()` (T-0015).
+        const str = args[0] as string | null;
+        if (typeof str === 'string' && str.length > 0) {
+          this._messages.push(str);
+          this.emit('message', str);
+        }
+        return;
+      }
       case 'status_enablefield':
       case 'status_init':
       case 'number_pad':
@@ -524,7 +544,6 @@ export class NethackSession extends EventEmitter {
       case 'get_nh_event':
       case 'resume_nhwindows':
       case 'suspend_nhwindows':
-      case 'exit_nhwindows':
       case 'putmsghistory':
       case 'update_inventory':
       case 'cliparound':

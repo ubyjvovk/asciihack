@@ -169,6 +169,20 @@ describe('NethackSession — map bookkeeping', () => {
     expect(messages).toEqual(['Velkommen, welcome to NetHack!', 'You see here 2 gold pieces.']);
   });
 
+  it('exit_nhwindows(str) appends the farewell string to messages (T-0015)', () => {
+    const messages: string[] = [];
+    const { session } = fresh();
+    session.on('message', (m: string) => messages.push(m));
+    // Non-null string: nh_terminate's farewell — must land in messages so the
+    // CLI can echo it on the restored terminal.
+    session.handle(tCall('exit_nhwindows', ['Be seeing you...']));
+    expect(session.messages.at(-1)).toBe('Be seeing you...');
+    expect(messages).toEqual(['Be seeing you...']);
+    // Null string: no-op (the shim also calls this on soft shutdowns).
+    session.handle(tCall('exit_nhwindows', [null]));
+    expect(messages).toEqual(['Be seeing you...']);
+  });
+
   it('preference_update and update_positionbar are not messages', () => {
     const messages: string[] = [];
     const replies: RetMsg[] = [];
@@ -276,6 +290,23 @@ describe('NethackSession — menus and requests', () => {
     s.handle(tCall('select_menu', [win, 1], 2));
     s.answer({ kind: 'menu', selected: [] });
     expect(replies.at(-1)).toEqual({ id: 2, ret: 0, selected: [] });
+  });
+
+  it('answer({kind:"menu", cancelled:true}) sends ret -1 with no `selected` field (T-0015)', () => {
+    const replies: RetMsg[] = [];
+    const s = new NethackSession((r) => replies.push(r));
+    s.handle(makeHello());
+    const win = createWindow(s, 4, 1, replies);
+    s.handle(tCall('start_menu', [win, 0]));
+    s.handle(tCall('add_menu', [win, null, 0, 'y', '', 0, 0, 'A', 0]));
+    s.handle(tCall('end_menu', [win, null]));
+    s.handle(tCall('select_menu', [win, 1], 3));
+    s.answer({ kind: 'menu', cancelled: true });
+    expect(s.pending).toBeNull();
+    // NetHack's `select_menu` reads `ret -1` as cancelled and `ret 0` as
+    // "nothing selected"; the two are different on some prompts (docs/engine.md).
+    expect(replies.at(-1)).toEqual({ id: 3, ret: -1 });
+    expect(replies.at(-1)).not.toHaveProperty('selected');
   });
 
   it('yn / getlin / nhgetch / blocking-display round-trip to the right RetMsg', () => {

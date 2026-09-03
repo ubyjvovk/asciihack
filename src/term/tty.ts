@@ -20,11 +20,14 @@ export class TtyTerm implements TermIO {
   private escapeTimer: NodeJS.Timeout | null = null;
   private restored = false;
 
+  private readonly dataListener = (chunk: string | Buffer): void => this.handleData(chunk);
+  private readonly resizeListener = (): void => this.resizeCb?.();
+
   constructor() {
     process.stdin.setRawMode(true);
     process.stdin.resume();
-    process.stdin.on('data', (chunk) => this.handleData(chunk));
-    process.stdout.on('resize', () => this.resizeCb?.());
+    process.stdin.on('data', this.dataListener);
+    process.stdout.on('resize', this.resizeListener);
     // Restore the terminal on the way out, however we get there.
     process.on('exit', () => this.restore());
     process.on('SIGTERM', () => {
@@ -60,7 +63,10 @@ export class TtyTerm implements TermIO {
     this.keyCb = cb;
   }
 
-  /** Restore the terminal to a usable state (raw mode off, stdin paused). */
+  /** Restore the terminal to a usable state (raw mode off, stdin paused) and
+   *  drop the stdin/stdout listeners so nothing keeps the event loop alive
+   *  after the bridge exits (T-0015: process must exit within 500 ms of the
+   *  session `exit` event). */
   restore(): void {
     if (this.restored) return;
     this.restored = true;
@@ -70,7 +76,14 @@ export class TtyTerm implements TermIO {
     } catch {
       /* already detached */
     }
+    process.stdin.off('data', this.dataListener);
+    process.stdout.off('resize', this.resizeListener);
     process.stdin.pause();
+    try {
+      process.stdin.unref();
+    } catch {
+      /* stdin is not a ref-countable handle in every environment */
+    }
   }
 
   /** Feed raw stdin bytes into `parseKeys`, resolving a lone ESC after a timeout. */
