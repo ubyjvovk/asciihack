@@ -63,6 +63,10 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   before the first ticket.
 
 ## Board snapshot
+- 2026-09-03 22:15 — **T-0007 accepted: fps + ortho modes playable** (muse,
+  2 attempts, $0.11 + rework). 13 done. `npm start` = first-person NetHack.
+  In progress: T-0016 (surface detail, ds-1). Claimable: T-0014 (ssh),
+  T-0015 (polish).
 - 2026-09-03 21:50 — T-0007 (muse lane, first bake): fps + ortho modes work
   in the PM playtest; reworked once for 45° turns (PM's acceptance line was
   inconsistent with the Context — muse flagged it) and the obsolete classic
