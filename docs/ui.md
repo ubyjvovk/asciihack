@@ -1,13 +1,14 @@
 # Terminal UI (`src/ui/`, `src/term/tty.ts`, `src/cli.ts`)
 
 Module notes for the app shell, modes, overlays, status rows, the real tty
-adapter and the CLI entry (docs/architecture.md §6, §8). This is the first
-playable milestone: `npm start -- --mode=classic` runs NetHack through the
-bridge + session model in the terminal.
+adapter and the CLI entry (docs/architecture.md §6, §8). `npm start`
+(default `--mode=fps`) runs NetHack through the bridge + session model with
+the first-person raycaster view; `--mode=ortho` is the isometric view and
+`--mode=classic` the top-down map.
 
 ## The App loop (`src/ui/app.ts`)
 
-`App` takes `{ session, term: TermIO, mode }` and owns the compose-and-paint
+`App` takes `{ session, term, mode, theme, minimap }` and owns the compose-and-paint
 loop. It subscribes to the session's `change`, `request` and `message` events
 and to the term's `onKey`/`onResize`, and on each trigger rebuilds a
 `ScreenGrid` and paints it through `Screen` (`src/term/screen.ts`).
@@ -16,27 +17,31 @@ Composition for a terminal ≥ 80×24 (docs/architecture.md §6.3):
 
 ```
 row 0            message line (latest message, --More-- when it overflows)
-rows 1..H-3      viewport — the mode's paintViewport (classic: 80×21 map)
+rows 1..H-3      viewport — the mode's paintViewport (classic: 80×21 map;
+                 fps: raycaster + minimap; ortho: isometric + minimap)
 rows H-2..H-1    the two status rows from session.statusLines()
-                 (+ the fps/ortho "not yet" banner at the top of the viewport)
 overlay          the pending request's boxed overlay, painted last
 ```
 
 Below 80×24 the app paints a "terminal too small" screen instead and recovers
 on the next repaint once the terminal grows back.
 
-`App` exposes `lastGrid` (the last composed `ScreenGrid`) and `screenWriter`
-(the `Screen`) for tests, plus `enter()`/`leave()` to switch the alternate
-screen.
+`App` exposes `lastGrid` (the last composed `ScreenGrid`), `screenWriter`
+(the `Screen`) and `activeMode` for tests, plus `enter()`/`leave()` to switch
+the alternate screen. `requestFrame()` asks for one more frame: while the
+active mode's optional `tick(nowMs)` returns `true`, the app repaints at
+≤ 30 fps (`FRAME_MS = 33`, `setTimeout`, never a busy loop); `leave()`
+cancels any pending frame.
 
 ## Key routing
 
 Keys are routed in `App.handleKey`, in priority order:
 
-1. **Global keys** — `F1`/`F2`/`F3` switch the mode (fps/ortho show a "not yet
-   implemented" banner and stay in classic, the hook for T-0007/T-0008);
-   `Ctrl+L` invalidates the screen (full repaint); `Ctrl+P` opens the last 20
-   `session.messages` as a text overlay.
+1. **Global keys** — `F1`/`F2`/`F3` switch the mode (classic/fps/ortho);
+   `F4` toggles the minimap in fps/ortho; `F5` cycles the render theme
+   (cyber → gloom → solarized → amber); `Ctrl+L` invalidates the screen
+   (full repaint); `Ctrl+P` opens the last 20 `session.messages` as a text
+   overlay.
 2. **The overlay** — while an overlay is open it consumes every key.
 3. **The message pager** — while the message line is paging an overflowing
    batch (`--More--`), any key reveals the next chunk *before* it reaches
@@ -71,14 +76,46 @@ interface Mode {
 - `paintViewport` draws the play area (rows 1..H-3). Classic paints the whole
   80×21 map from `session.map` — `top` glyph char + `clrToRgb(color)`, the hero
   cell in inverse video (ink black on the glyph colour) — centred when the
-  terminal is wider.
+  terminal is wider. Fps paints the raycaster (`renderFirstPerson`) from the
+  hero's facing plus the minimap (`src/ui/minimap.ts`); ortho paints
+  `renderOrtho` with the hero as an `@` sprite plus the minimap.
 - `handleKey` receives a key once no overlay or message pager consumed it.
   Classic answers a pending `key`/`pos` request with the key code via
   `session.answer`; if none is pending it hands the key to `queueKey`, which the
-  app stores and flushes when NetHack next asks.
+  app stores and flushes when NetHack next asks. Fps/ortho translate facing
+  keys (see below) and likewise queue moves when NetHack is not waiting.
+- A mode may expose an optional `tick(nowMs): boolean`: `true` asks for
+  another frame. The fps mode interpolates its yaw toward the facing yaw
+over 120 ms on a turn (`TURN_MS`), so the world swings instead of snapping;
+  ortho has no `tick` (no camera rotation).
 
-The fps (T-0007) and ortho (T-0008) modes will implement the same interface
-with a different `paintViewport`.
+## Fps/ortho controls (§6.4)
+
+Only in fps/ortho, and only translated while NetHack waits for a key
+(`session.pending` is a key/pos request); otherwise keys are queued or flow
+to the overlay/prompt exactly as in classic mode:
+
+- Fps `Left`/`Right`: turn to the next facing (consumed, never sent to
+  NetHack); `Up` sends the facing's vi-key, `Down` the opposite facing's key
+  (walk backwards); `Shift+Left/Right`: strafe (facing ±90°) — the sidestep
+  key is sent, the facing is unchanged.
+- A vi-key (`hjklyubn` + capitals) or number-pad digit typed directly is sent
+  unchanged and sets the facing to that direction, so the next `Up` follows it.
+- Facing is one of 8 compass directions (`FACINGS` in `src/ui/view3d.ts`:
+  N `k`, NE `u`, E `l`, SE `n`, S `j`, SW `b`, W `h`, NW `y`), shared with
+  the ortho sprite sync; `turn`/`opposite`/`strafe` step it with wrap-around.
+- Ortho `Left`/`Right`/`Up`/`Down` are plain NetHack moves (west/east/north/
+  south); there is no facing.
+- Everything else passes through unchanged. `F1/F2/F3` switch modes, `F4`
+  toggles the minimap, `F5` cycles the theme, `Ctrl+L` redraws.
+
+## Minimap (`src/ui/minimap.ts`)
+
+`paintMinimap(grid, rect, session)` draws a 40×11 window of the classic map
+(`MINIMAP_WIDTH`/`MINIMAP_HEIGHT`), centred on the hero and clamped to the
+map bounds, top-right over the viewport. One-cell `-`/`|` border (dim grey,
+`+` corners), glyph colours from `clrToRgb`, unexplored cells as spaces, the
+hero cell inverse-video (`@`). Shown by default in fps/ortho; `F4` hides it.
 
 ## Overlays (`src/ui/overlays.ts`)
 
@@ -117,13 +154,14 @@ uncaught exceptions.
 ## CLI (`src/cli.ts`)
 
 ```
-npm start -- --mode=classic --name=tester
+npm start -- --mode=fps --name=tester
 ```
 
-`parseFlags` reads `--mode=classic|fps|ortho` (default `fps`), `--name=`,
-`--bridge=` (default `build/nethack/bridge/nh-bridge`), `--playground=` and
-`--options=` (extra `NETHACKOPTIONS`). `preparePlayground` copies the build's
-playground to `~/.asciihack/playground` on first run so saves persist and the
+`parseFlags` reads `--mode=classic|fps|ortho` (default `fps`), `--theme=`
+(cyber|gloom|solarized|amber, default `cyber`), `--no-minimap` (hide the
+minimap in fps/ortho), `--name=`, `--bridge=` (default
+`build/nethack/bridge/nh-bridge`), `--playground=` and `--options=` (extra
+`NETHACKOPTIONS`). `preparePlayground` copies the build's playground to `~/.asciihack/playground` on first run so saves persist and the
 build dir stays clean. `main` errors helpfully if the bridge binary is missing,
 spawns the bridge, wires the session to it, enters the alternate screen, and
 runs `runSession` until the bridge closes stdout (restoring the terminal in a

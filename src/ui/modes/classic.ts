@@ -10,7 +10,7 @@ import type { ScreenGrid } from '../../model/types.js';
 import type { KeyEvent } from '../../term/input.js';
 import { keyToCode } from '../overlays.js';
 
-/** A screen rectangle for `paintViewport`. */
+/** A screen rectangle for `paintViewport` (viewport origin and size in cells). */
 export interface Rect {
   x: number;
   y: number;

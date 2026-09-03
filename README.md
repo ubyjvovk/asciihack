@@ -1,8 +1,8 @@
 # asciihack
 
-Play real NetHack 5.0 in a terminal, rendered as coloured-ASCII: the classic
-top-down map for now, with first-person (raycaster) and ortho/isometric views
-on the way.
+Play real NetHack 5.0 in a terminal, rendered as coloured-ASCII: a
+first-person view (raycaster) or an ortho/isometric view by default, with
+the classic top-down map as a mode and a minimap.
 
 ## Build
 
@@ -24,7 +24,7 @@ Lua.
 ## Play
 
 ```
-npm start -- --mode=classic --name=tester
+npm start -- --name=tester
 ```
 
 The first run copies the bridge's playground to `~/.asciihack/playground` so
@@ -34,7 +34,9 @@ your saves persist and the build directory stays clean.
 
 | flag | default | meaning |
 |---|---|---|
-| `--mode=` | `fps` | `classic`, `fps` or `ortho`. fps/ortho aren't implemented yet (they show a "not yet" banner and stay in classic). |
+| `--mode=` | `fps` | `classic`, `fps` or `ortho` |
+| `--theme=` | `cyber` | render theme for fps/ortho: `cyber`, `gloom`, `solarized`, `amber` |
+| `--no-minimap` | – | hide the minimap overlay in fps/ortho |
 | `--name=` | `asciihack` | character name |
 | `--bridge=` | `build/nethack/bridge/nh-bridge` | path to the bridge binary |
 | `--playground=` | `build/nethack/bridge/playground` | source dir copied to `~/.asciihack/playground` on first run |
@@ -44,7 +46,11 @@ your saves persist and the build directory stays clean.
 
 - **Classic mode**: every key goes straight to NetHack (`hjkl` to move, `i`
   inventory, `S` save, `#` extended commands, …).
-- `F1` classic · `F2` fps (not yet) · `F3` ortho (not yet).
+- **Fps mode**: `Left`/`Right` turn, `Up`/`Down` walk forward/back, `Shift`+arrows
+  strafe; typing a vi-key (`hjklyubn`) moves that way and turns to face it.
+- **Ortho mode**: arrows are plain moves (`h`/`l`/`k`/`j`); vi-keys work too.
+- `F1` classic · `F2` fps · `F3` ortho · `F4` toggle minimap · `F5` cycle theme
+  (cyber → gloom → solarized → amber).
 - `Ctrl+L` redraw.
 - `Ctrl+P` show the last 20 messages.
 - `--More--`: any key continues.
@@ -55,8 +61,8 @@ boxed overlays centred on the viewport.
 ## Layout
 
 - `src/engine/` — bridge process + `NethackSession` model.
-- `src/ui/` — the app shell, classic mode, overlays, status rows
-  (see `docs/ui.md`).
+- `src/ui/` — the app shell, classic/fps/ortho modes, minimap, overlays,
+  status rows (see `docs/ui.md`).
 - `src/term/` — screen writer, key parser, real tty adapter.
 - `docs/` — architecture and per-module notes (`docs/architecture.md` first).
 

@@ -22,12 +22,14 @@ const DEFAULT_PLAYGROUND = join(HERE, '..', 'build', 'nethack', 'bridge', 'playg
 const USER_PLAYGROUND = join(homedir(), '.asciihack', 'playground');
 
 /** Parsed CLI flags. */
-interface CliFlags {
+export interface CliFlags {
   mode: string;
   name: string;
   bridge: string;
   playground: string;
   options: string[];
+  theme: string;
+  minimap: boolean;
 }
 
 /** Print usage and exit non-zero. */
@@ -36,8 +38,11 @@ function usage(): never {
     [
       'usage: asciihack [--mode=classic|fps|ortho] [--name=NAME]',
       '                 [--bridge=PATH] [--playground=DIR] [--options=K,V,...]',
+      '                 [--theme=cyber|gloom|solarized|amber] [--no-minimap]',
       '',
-      '  --mode       requested view (default fps; falls back to classic until T-0007)',
+      '  --mode       requested view (default fps)',
+      '  --theme      render theme for fps/ortho (default cyber)',
+      '  --no-minimap hide the minimap overlay in fps/ortho',
       '  --name       character name (default "asciihack")',
       '  --bridge     path to the nh-bridge binary',
       '  --playground directory to copy into ~/.asciihack/playground on first run',
@@ -55,10 +60,14 @@ export function parseFlags(argv: readonly string[]): CliFlags {
     bridge: DEFAULT_BRIDGE,
     playground: DEFAULT_PLAYGROUND,
     options: [],
+    theme: 'cyber',
+    minimap: true,
   };
   for (const arg of argv) {
     if (arg === '--help' || arg === '-h') usage();
-    if (arg.startsWith('--mode=')) flags.mode = arg.slice('--mode='.length);
+    if (arg === '--no-minimap') flags.minimap = false;
+    else if (arg.startsWith('--theme=')) flags.theme = arg.slice('--theme='.length);
+    else if (arg.startsWith('--mode=')) flags.mode = arg.slice('--mode='.length);
     else if (arg.startsWith('--name=')) flags.name = arg.slice('--name='.length);
     else if (arg.startsWith('--bridge=')) flags.bridge = arg.slice('--bridge='.length);
     else if (arg.startsWith('--playground=')) flags.playground = arg.slice('--playground='.length);
@@ -74,6 +83,10 @@ export function parseFlags(argv: readonly string[]): CliFlags {
   }
   if (flags.mode !== 'classic' && flags.mode !== 'fps' && flags.mode !== 'ortho') {
     console.error(`asciihack: unknown mode "${flags.mode}"`);
+    usage();
+  }
+  if (flags.theme !== 'cyber' && flags.theme !== 'gloom' && flags.theme !== 'solarized' && flags.theme !== 'amber') {
+    console.error(`asciihack: unknown theme "${flags.theme}"`);
     usage();
   }
   return flags;
@@ -112,7 +125,7 @@ async function main(): Promise<void> {
     options: flags.options.length > 0 ? flags.options : undefined,
   });
   const session = new NethackSession((r) => bridge.reply(r), { playerName: flags.name });
-  const app = new App({ session, term, mode: flags.mode });
+  const app = new App({ session, term, mode: flags.mode, theme: flags.theme as 'cyber' | 'gloom' | 'solarized' | 'amber', minimap: flags.minimap });
   app.enter();
   try {
     await runSession(bridge, session);
