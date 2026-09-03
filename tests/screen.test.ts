@@ -162,7 +162,9 @@ describe('term/screen Screen', () => {
     expect(() => s.paint(big)).not.toThrow();
     // Full repaint covering every one of the 6x3 cells, row 3 included.
     expect(t.writes[0]).toContain('\x1b[2J');
-    expect(stripAnsi(t.writes[0])).toBe('abcdefghijklRRRRRR');
+    const first = t.writes[0];
+    expect(first).toBeDefined();
+    expect(stripAnsi(first ?? '')).toBe('abcdefghijklRRRRRR');
     t.writes = [];
     s.paint(big);
     expect(t.writes).toEqual([]);
