@@ -75,6 +75,87 @@ renderer can reuse it. `CEILING_COLOR` is the ceiling base colour.
 | trap | `[0.60,0.20,0.60]` |
 | anything else | floor colour |
 
+## Ortho renderer (`src/render/ortho.ts`)
+
+Turns the remembered level into a 2:1 isometric (old Diablo / Fallout style)
+view, drawn into the same `FrameBuffer` so the same quantizer and screen writer
+show it. Pure and deterministic; golden-tested exactly like the raycaster.
+
+### Interface
+
+```ts
+renderOrtho(level, hero, sprites, fb, opts?)
+cellToScreen(x, y, origin) -> { sx, sy }
+screenToCell(c, r, origin) -> { x, y }
+```
+
+- `hero: {x, y}` — the cell the view is centred on (the caller passes the
+  hero's `@` as a sprite, exactly like any monster).
+- `opts?: OrthoOptions` — `wallRows` (2), `fogK` (0.06).
+
+### Projection (locked)
+
+Map cell `(x, y)` (x east, y south) has the screen anchor
+`sx = 2·(x − y) + ox`, `sy = (x + y) + oy`. Its floor is a **brick of 4
+columns × 1 row**: columns `sx−2 … sx+1` of row `sy`:
+
+```
+      ...
+   sx-2  sx-1  sx  sx+1      row sy   (the brick)
+```
+
+Bricks on consecutive rows are staggered by 2 columns, so every screen cell
+belongs to exactly one map cell. `(ox, oy)` is chosen so the hero's anchor
+lands at `(floor(cols/2), floor(rows/2))`:
+`ox = floor(cols/2) − 2·(hx − hy)`, `oy = floor(rows/2) − (hx + hy)`.
+
+**Inverse** (`screenToCell`), for origin-relative `c' = c − ox`, `r' = r − oy`:
+`p = r' mod 2` (non-negative), `k = floor((c' + 2 − 2p) / 4)`,
+`d = 2k + p` (this is `x − y`), `x = (r' + d) / 2`, `y = (r' − d) / 2`.
+
+### Painter's order
+
+Draw map cells in increasing `x + y`, ties by increasing `x` (north-west to
+south-east), only those whose bricks can touch the viewport. Every draw writes
+`rgb`, `depth = x + y` and clears `overlayCh` for the cells it covers, so later
+(nearer) draws occlude. The buffer is pre-filled each frame (`rgb` 0, `depth`
+Infinity, overlay 0) the way `renderFirstPerson` does — every cell is written
+every frame.
+
+### Terrain
+
+- **Floor** (`!isSolid(kind)`, kind ≠ `unexplored`): the brick in
+  `KIND_COLORS[kind]`, outer two columns (`sx−2`, `sx+1`) at 85 % so tile edges
+  read. `doorway`/`door_open` are floor in the door colour.
+- **Wall** (`isSolid(kind)`, kind ≠ `unexplored`): a block extruded `wallRows`
+  rows up. The vertical (south-east) face is the brick at row `sy` and rows
+  `sy−1 … sy−wallRows+1` at 60 % of `KIND_COLORS[kind]` (in shadow); the top
+  face is the brick at row `sy − wallRows` at 100 % (lit). For the default
+  `wallRows = 2` that is 3 rows: two shadowed face rows plus a lit top row.
+- **`unexplored`**: not drawn at all (stays black, depth Infinity), so the
+  dungeon floats in darkness like the classic map.
+
+### Sprites & occlusion
+
+A sprite on cell `(x, y)` draws with its tile (same painter step): its `ch`
+goes into `overlayCh` at `(sx, sy−1)` and `(sx−1, sy−1)` — two columns so
+letters read at 4-wide tiles — with `overlayRgb = sprite.rgb` attenuated like
+the tile. A wall drawn later (south-east) clears those overlay cells, which is
+the occlusion. The hero is an ordinary sprite here.
+
+### Fog & depth
+
+Every drawn colour is multiplied by `exp(−fogK · dist)` with `dist` the
+Chebyshev distance from the hero cell (`max(|x−hx|, |y−hy|)`), so far parts of
+the level fade. `depth = x + y` for every drawn cell.
+
+### Golden workflow
+
+`tests/ortho.test.ts` renders the `ROOM` fixture with the hero at its centre at
+80×24, quantizes it with the same test-local 10-glyph ramp the raycaster test
+uses, and compares it against `tests/ortho-golden.txt`. Regenerate with
+`UPDATE_GOLDEN=1 bash .tigerteam/scripts/run-tests.sh tests/ortho.test.ts`.
+
 ## Aspect correction
 
 A terminal cell is twice as tall as wide, so a square wall face projects to a
