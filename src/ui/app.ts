@@ -1,18 +1,21 @@
 /**
  * The terminal application shell (docs/architecture.md §6.3): owns the
  * compose-and-paint loop, message/status handling, overlay routing, mode
- * switching and global keys (Ctrl+L, Ctrl+P, F1–F3). Composition is
+ * switching and global keys (Ctrl+L, Ctrl+P, F1–F5). Composition is
  * `paintMessageLine` + the mode's `paintViewport` + `paintStatus` + the
  * pending request's overlay; keys go to the overlay, then the message pager,
- * then the mode. The fps/ortho modes are not implemented yet (T-0007/T-0008):
- * switching to them shows a "not yet" banner and stays in classic.
+ * then the mode. Fps/ortho modes render the dungeon in 3D with a minimap;
+ * the fps mode animates turns via `tick`/`requestFrame` (see docs/ui.md).
  */
 import type { NethackSession } from '../engine/session.js';
 import type { ScreenGrid } from '../model/types.js';
 import type { KeyEvent } from '../term/input.js';
+import type { Theme } from '../render/themes.js';
 import { Screen, type TermIO } from '../term/screen.js';
 import { blankGrid, putText, UI_BG, UI_FG } from './grid.js';
 import { ClassicMode, type Mode } from './modes/classic.js';
+import { FpsMode } from './modes/fps.js';
+import { OrthoMode } from './modes/ortho.js';
 import { createOverlay, keyToCode, TextOverlay, type Overlay } from './overlays.js';
 import { paintStatus } from './status.js';
 
@@ -20,6 +23,11 @@ import { paintStatus } from './status.js';
 export const MIN_COLS = 80;
 /** Minimum terminal height for the classic layout. */
 export const MIN_ROWS = 24;
+/** Frame pacing for turn animations: at most one repaint per 33 ms (≈30 fps). */
+export const FRAME_MS = 33;
+
+/** Theme cycle order for F5 (cyber → gloom → solarized → amber). */
+export const THEMES: readonly Theme[] = ['cyber', 'gloom', 'solarized', 'amber'];
 
 /** Options accepted by the `App` constructor. */
 export interface AppOptions {
@@ -27,6 +35,10 @@ export interface AppOptions {
   term: TermIO;
   /** Requested mode name: `classic`, `fps` or `ortho` (default `fps`). */
   mode?: string;
+  /** Initial render theme for the fps/ortho modes (default `cyber`). */
+  theme?: Theme;
+  /** Show the minimap in fps/ortho modes (default `true`). */
+  minimap?: boolean;
 }
 
 /**
@@ -38,9 +50,11 @@ export class App {
   private readonly session: NethackSession;
   private readonly term: TermIO;
   private readonly screen: Screen;
-  private readonly mode: Mode;
+  private readonly modes: Record<string, Mode>;
+  private mode: Mode;
   private requestedMode: string;
-  private banner: string | null;
+  private theme: Theme;
+  private showMinimap: boolean;
   private overlay: Overlay | null = null;
   private overlayReq: unknown = null;
   private readonly queue: KeyEvent[] = [];
@@ -48,18 +62,26 @@ export class App {
   private msgChunks: string[] = [''];
   private msgIdx = 0;
   private grid: ScreenGrid | null = null;
+  private frameTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly now: () => number;
 
-  /** @param opts - session, injectable `TermIO`, and the requested mode name. */
+  /** @param opts - session, injectable `TermIO`, requested mode, theme and minimap flag. */
   constructor(opts: AppOptions) {
     this.session = opts.session;
     this.term = opts.term;
     this.screen = new Screen(opts.term);
+    this.now = () => Date.now();
+    this.theme = opts.theme ?? 'cyber';
+    this.showMinimap = opts.minimap ?? true;
+    this.modes = {
+      classic: new ClassicMode(opts.session),
+      fps: new FpsMode(opts.session),
+      ortho: new OrthoMode(opts.session),
+    };
     this.requestedMode = opts.mode ?? 'fps';
-    this.mode = new ClassicMode(opts.session);
-    this.banner =
-      this.requestedMode === 'classic'
-        ? null
-        : `${this.requestedMode} mode not yet implemented — staying in classic`;
+    if (!this.modes[this.requestedMode]) this.requestedMode = 'fps';
+    this.mode = this.modes[this.requestedMode]!;
+    this.syncModeSettings();
 
     this.session.on('change', () => this.repaint());
     this.session.on('request', () => {
@@ -80,6 +102,11 @@ export class App {
     return this.screen;
   }
 
+  /** The active mode object (for tests). */
+  get activeMode(): Mode {
+    return this.mode;
+  }
+
   /** Enter the alternate screen and paint the first frame. */
   enter(): void {
     this.screen.enter();
@@ -88,6 +115,10 @@ export class App {
 
   /** Leave the alternate screen and restore the terminal. */
   leave(): void {
+    if (this.frameTimer !== null) {
+      clearTimeout(this.frameTimer);
+      this.frameTimer = null;
+    }
     this.screen.leave();
   }
 
@@ -96,12 +127,56 @@ export class App {
     return this.requestedMode;
   }
 
-  /** Switch the requested mode; fps/ortho show a banner and stay in classic. */
+  /** Switch the active mode (`classic` | `fps` | `ortho`). */
   switchMode(name: string): void {
+    const next = this.modes[name];
+    if (!next || next === this.mode) {
+      this.requestedMode = next ? name : this.requestedMode;
+      this.repaint();
+      return;
+    }
+    this.mode.onLeave();
     this.requestedMode = name;
-    this.banner =
-      name === 'classic' ? null : `${name} mode not yet implemented — staying in classic`;
+    this.mode = next;
+    this.syncModeSettings();
+    this.mode.onEnter();
     this.repaint();
+    this.maybeScheduleFrame();
+  }
+
+  /**
+   * Ask for another frame (used by modes animating a turn). While the active
+   * mode's `tick` keeps returning true, frames are repainted at ≤ 30 fps via
+   * `setTimeout` — never a busy loop. Safe to call when no animation runs.
+   */
+  requestFrame(): void {
+    if (this.frameTimer !== null) return;
+    this.frameTimer = setTimeout(() => {
+      this.frameTimer = null;
+      this.repaint();
+      this.maybeScheduleFrame();
+    }, FRAME_MS);
+    if (this.frameTimer && typeof (this.frameTimer as unknown as { unref?: () => void }).unref === 'function') {
+      (this.frameTimer as unknown as { unref: () => void }).unref();
+    }
+  }
+
+  /** Push the App-level theme/minimap settings into the fps/ortho modes. */
+  private syncModeSettings(): void {
+    for (const m of Object.values(this.modes)) {
+      if (m instanceof FpsMode || m instanceof OrthoMode) {
+        m.theme = this.theme;
+        m.showMinimap = this.showMinimap;
+      }
+    }
+  }
+
+  /** Schedule another frame while the active mode's `tick` asks for one. */
+  private maybeScheduleFrame(): void {
+    const tick = (this.mode as { tick?: (nowMs: number) => boolean }).tick;
+    if (typeof tick === 'function' && tick.call(this.mode, this.now())) {
+      this.requestFrame();
+    }
   }
 
   /** Compose and paint one frame. */
@@ -123,7 +198,6 @@ export class App {
     this.paintMessageLine(grid, w);
     this.mode.paintViewport(grid, { x: 0, y: 1, width: w, height: h - 3 });
     paintStatus(grid, this.session, 0, h - 2);
-    if (this.banner) this.paintBanner(grid, w);
     this.overlay?.paint(grid);
     this.grid = grid;
     this.screen.paint(grid);
@@ -162,12 +236,6 @@ export class App {
     putText(grid, 0, 0, line, UI_FG, UI_BG);
   }
 
-  /** Paint the "not yet implemented" banner (fps/ortho) at the top of the viewport. */
-  private paintBanner(grid: ScreenGrid, width: number): void {
-    const text = this.banner ?? '';
-    putText(grid, Math.max(0, Math.floor((width - text.length) / 2)), 1, text.slice(0, width), [0, 0, 0], [255, 255, 0]);
-  }
-
   /** Create (or keep) the overlay for the current pending request. */
   private syncOverlay(): void {
     const p = this.session.pending;
@@ -198,6 +266,18 @@ export class App {
       this.switchMode(e.key === 'F1' ? 'classic' : e.key === 'F2' ? 'fps' : 'ortho');
       return;
     }
+    if (e.key === 'F4') {
+      this.showMinimap = !this.showMinimap;
+      this.syncModeSettings();
+      this.repaint();
+      return;
+    }
+    if (e.key === 'F5') {
+      this.theme = THEMES[(THEMES.indexOf(this.theme) + 1) % THEMES.length]!;
+      this.syncModeSettings();
+      this.repaint();
+      return;
+    }
     if (e.ctrl && e.key === 'l') {
       this.screen.invalidate();
       this.repaint();
@@ -222,5 +302,6 @@ export class App {
     this.mode.handleKey(e, (k) => this.queue.push(k));
     this.flushQueue();
     this.repaint();
+    this.maybeScheduleFrame();
   }
 }
