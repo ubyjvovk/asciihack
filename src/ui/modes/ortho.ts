@@ -63,7 +63,7 @@ export class OrthoMode implements Mode {
   paintViewport(grid: ScreenGrid, rect: Rect): void {
     const hero = this.session.hero;
     if (hero === null) return;
-    const sprites = spritesFromMap(this.session.map, hero, true);
+    const sprites = spritesFromMap(this.session, hero, true);
     const theme = this.theme;
     const sub = this.viewport.render(
       { x: 0, y: 0, width: Math.max(1, rect.width), height: Math.max(1, rect.height) },

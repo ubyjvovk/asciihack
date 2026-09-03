@@ -9,7 +9,7 @@ import { paintMinimap } from '../src/ui/minimap.js';
 import { FpsMode } from '../src/ui/modes/fps.js';
 import { OrthoMode } from '../src/ui/modes/ortho.js';
 import { blankGrid } from '../src/ui/grid.js';
-import { clrToRgb, makeFrameBuffer, type GlyphInfo, type LevelView } from '../src/model/types.js';
+import { clrToRgb, makeFrameBuffer, type GlyphInfo } from '../src/model/types.js';
 import type { BridgeMsg, RetMsg } from '../src/engine/protocol.js';
 import { NethackSession } from '../src/engine/session.js';
 import type { KeyEvent } from '../src/term/input.js';
@@ -43,19 +43,6 @@ function ev(key: string, opts: { shift?: boolean; ctrl?: boolean } = {}): KeyEve
 
 function glyph(ch: string, cls: GlyphInfo['cls'] = 'mon', color = 15): GlyphInfo {
   return { glyph: 1, ch, color, cls, idx: 0, flags: 0 };
-}
-
-function tinyLevel(top: (x: number, y: number) => GlyphInfo | null): LevelView {
-  return {
-    width: 5,
-    height: 5,
-    kindAt: (x, y) => (x === 2 && y === 2 ? 'floor' : x === 0 || y === 0 ? 'wall' : 'floor'),
-    cellAt: (x, y) => {
-      if (x < 0 || y < 0 || x >= 5 || y >= 5) return null;
-      const t = top(x, y);
-      return { x, y, kind: t ? 'floor' : 'unexplored', terrain: null, top: t };
-    },
-  };
 }
 
 function freshSessionWithHero(replies: RetMsg[]): NethackSession {
@@ -169,23 +156,23 @@ describe('view3d turn/opposite/strafe wrap-around', () => {
 describe('view3d spritesFromMap', () => {
   it('skips terrain and (fps) the hero, includes the pet with its colour', () => {
     const petColor = 10;
-    const map = tinyLevel((x, y) => {
-      if (x === 2 && y === 2) return glyph('@', 'mon', 15); // hero cell
-      if (x === 3 && y === 2) return glyph('d', 'pet', petColor); // pet
-      if (x === 1 && y === 1) return glyph('#', 'cmap', 7); // terrain
-      return null;
-    });
-    const fps = spritesFromMap(map, { x: 2, y: 2 }, false);
-    expect(fps.some((s) => s.x === 2 && s.y === 2)).toBe(false);
-    expect(fps.some((s) => s.x === 1 && s.y === 1)).toBe(false);
-    const pet = fps.find((s) => s.x === 3 && s.y === 2)!;
+    const s = freshSessionWithHero([]);
+    const pg = (x: number, y: number, g: GlyphInfo): void =>
+      s.handle({ t: 'call', name: 'print_glyph', args: [3, x, y, g] } as unknown as BridgeMsg);
+    pg(2, 2, glyph('@', 'mon', 15)); // hero cell
+    pg(3, 2, glyph('d', 'pet', petColor)); // pet
+    pg(1, 1, glyph('#', 'cmap', 7)); // terrain
+    const fps = spritesFromMap(s, { x: 2, y: 2 }, false);
+    expect(fps.some((sp) => sp.x === 2 && sp.y === 2)).toBe(false);
+    expect(fps.some((sp) => sp.x === 1 && sp.y === 1)).toBe(false);
+    const pet = fps.find((sp) => sp.x === 3 && sp.y === 2)!;
     expect(pet.ch).toBe('d');
     const c = clrToRgb(petColor);
     expect(pet.rgb[0]).toBeCloseTo(c[0]! / 255);
     expect(pet.rgb[1]).toBeCloseTo(c[1]! / 255);
     expect(pet.rgb[2]).toBeCloseTo(c[2]! / 255);
-    const ortho = spritesFromMap(map, { x: 2, y: 2 }, true);
-    const hero = ortho.find((s) => s.x === 2 && s.y === 2)!;
+    const ortho = spritesFromMap(s, { x: 2, y: 2 }, true);
+    const hero = ortho.find((sp) => sp.x === 2 && sp.y === 2)!;
     expect(hero.ch).toBe('@');
   });
 });

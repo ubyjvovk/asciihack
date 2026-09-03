@@ -484,10 +484,63 @@ export function renderFirstPerson(
       }
       continue;
     }
-    // a shaped figure, base on the floor: monsters stand 0.45×0.9 cells,
-    // items lie low at 0.4×0.3 cells.
-    const fw = MONSTER_CLS.has(s.cls) ? 0.45 : 0.4;
-    const fh = MONSTER_CLS.has(s.cls) ? 0.9 : 0.3;
+    // A sprite with tile art samples the 16×16 tile as a square billboard
+    // (width = height cells; the cell aspect correction makes it square on
+    // screen): only where the tile has an opaque pixel do we write the letter.
+    if (s.tile) {
+      const h = s.height ?? 0.7;
+      const halfW = (fH * h) / (2 * tY);
+      const halfH = (fV * h) / (2 * tY);
+      const yBot = floorY;
+      const yTop = yBot - (fV * h) / tY;
+      const cellsW = 2 * halfW;
+      const cellsH = yBot - yTop;
+      if (cellsH < 2 || cellsW < 2) {
+        // far/undersized billboards collapse to a single letter in the sprite colour
+        const xc = Math.round(screenX);
+        const yc = Math.round((yTop + yBot) / 2);
+        if (xc < 0 || xc >= cols || yc < 0 || yc >= rows) continue;
+        const cell = yc * cols + xc;
+        if (fb.depth[cell]! < tY) continue;
+        fb.overlayCh[cell] = ch;
+        const o = cell * 3;
+        fb.overlayRgb[o] = s.rgb[0] * atten;
+        fb.overlayRgb[o + 1] = s.rgb[1] * atten;
+        fb.overlayRgb[o + 2] = s.rgb[2] * atten;
+        fb.depth[cell] = tY;
+        continue;
+      }
+      const x0 = Math.max(0, Math.floor(screenX - halfW));
+      const x1 = Math.min(cols - 1, Math.ceil(screenX + halfW));
+      const y0 = Math.max(0, Math.floor(yTop));
+      const y1 = Math.min(rows - 1, Math.ceil(yBot));
+      const tile = s.tile;
+      for (let y = y0; y <= y1; y++) {
+        const v = (y + 0.5 - yTop) / cellsH;
+        const vi = Math.min(15, Math.max(0, Math.floor(v * 16)));
+        const shade = 0.85 + 0.15 * (1 - v); // slight vertical shading, top brighter
+        for (let x = x0; x <= x1; x++) {
+          const cell = y * cols + x;
+          if (fb.depth[cell]! < tY) continue; // a closer wall/floor hides this cell
+          const u = (x + 0.5 - (screenX - halfW)) / cellsW;
+          const ui = Math.min(15, Math.max(0, Math.floor(u * 16)));
+          const pal = tile.pixels[vi * 16 + ui]!;
+          if (pal === 0) continue; // transparent pixel: floor shows through
+          const pc = tile.palette[pal]!;
+          fb.overlayCh[cell] = ch;
+          const o = cell * 3;
+          fb.overlayRgb[o] = (pc[0] / 255) * shade * atten;
+          fb.overlayRgb[o + 1] = (pc[1] / 255) * shade * atten;
+          fb.overlayRgb[o + 2] = (pc[2] / 255) * shade * atten;
+          fb.depth[cell] = tY;
+        }
+      }
+      continue;
+    }
+    // A shaped figure without a tile, standing on the floor at `s.height`
+    // (no longer a fixed 0.9): monsters fh×fw/2, items a low fh×(4/3)fh shape.
+    const fh = s.height ?? (MONSTER_CLS.has(s.cls) ? 0.9 : 0.3);
+    const fw = MONSTER_CLS.has(s.cls) ? fh * 0.5 : fh * (4 / 3);
     const halfW = (fH * fw) / (2 * tY);
     const halfH = (fV * fh) / (2 * tY);
     const yBot = floorY;

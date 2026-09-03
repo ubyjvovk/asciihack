@@ -14,6 +14,7 @@ import type {
   ExitMsg,
   HelloMsg,
   RetMsg,
+  TablesMsg,
 } from './protocol.js';
 import type { CellKind, GlyphInfo, LevelView, MapCell } from '../model/types.js';
 import { COLNO, ROWNO } from '../model/types.js';
@@ -169,6 +170,7 @@ export function stripGlyphEscape(v: string): string {
  */
 export class NethackSession extends EventEmitter {
   private _hello: HelloMsg | null = null;
+  private _tables: TablesMsg | null = null;
   private cells: MapCell[];
   private _hero: { x: number; y: number } | null = null;
   private _messages: string[] = [];
@@ -184,10 +186,10 @@ export class NethackSession extends EventEmitter {
   private blmask: Record<string, number> = {};
   private nhw: Record<string, number> = {};
   private S: Record<string, number> = {};
-  private mg: Record<string, number> = {};
 
   private replyFn: (r: RetMsg) => void;
   private playerName: string;
+  private mg_: Record<string, number> = {};
 
   /**
    * @param reply - callback that writes one reply line to the bridge (usually
@@ -244,6 +246,14 @@ export class NethackSession extends EventEmitter {
   get hello(): HelloMsg | null {
     return this._hello;
   }
+  /** NetHack's monster/object tables (the `tables` bridge line), or null before it arrives. */
+  get tables(): TablesMsg | null {
+    return this._tables;
+  }
+  /** The `mg` glyph-flag name → bit map from `hello` (e.g. `MG_FEMALE`). */
+  get mg(): Record<string, number> {
+    return this.mg_;
+  }
 
   // -------------------------------------------------------------------------
   // Ingest
@@ -261,6 +271,9 @@ export class NethackSession extends EventEmitter {
         return;
       case 'call':
         this.handleCall(msg);
+        return;
+      case 'tables':
+        this._tables = msg;
         return;
     }
   }
@@ -342,7 +355,7 @@ export class NethackSession extends EventEmitter {
     this.bl = msg.bl;
     this.blmask = msg.blmask;
     this.nhw = msg.nhw;
-    this.mg = msg.mg;
+    this.mg_ = msg.mg;
   }
 
   private handleExit(msg: ExitMsg): void {

@@ -108,7 +108,7 @@ export function parseBridgeLine(line: string): BridgeMsg | null {
   if (typeof parsed !== 'object' || parsed === null) return null;
   const rec = parsed as Record<string, unknown>;
   const t = rec['t'];
-  if (t !== 'hello' && t !== 'call' && t !== 'exit' && t !== 'log') return null;
+  if (t !== 'hello' && t !== 'call' && t !== 'exit' && t !== 'log' && t !== 'tables') return null;
   return rec as unknown as BridgeMsg;
 }
 

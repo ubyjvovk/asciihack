@@ -132,7 +132,7 @@ export class FpsMode implements Mode {
     const hero = this.session.hero;
     if (hero === null) return;
     this.advance(this.now());
-    const sprites = spritesFromMap(this.session.map, hero, false);
+    const sprites = spritesFromMap(this.session, hero, false);
     const theme = this.theme;
     const yaw = this.yaw;
     const vFovDeg = Math.min(FOV_MAX, Math.max(FOV_MIN, this.vFovDeg));

@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { renderFirstPerson, KIND_COLORS } from '../src/render/raycast.js';
+import { loadTiles, monsterTile, objectTile } from '../src/render/tiles.js';
 import { makeFrameBuffer, type FrameBuffer, type LevelView, type Pose, type Sprite } from '../src/model/types.js';
 import { levelFromAscii, ROOM, L_SHAPED } from './fixtures/levels.js';
 
@@ -314,7 +315,7 @@ describe('raycast/sprites', () => {
       '#...........#',
       '#############',
     ]);
-    const monster: Sprite = { x: 4, y: 1, ch: 'd', rgb: [0.8, 0.8, 0.8], cls: 'mon' };
+    const monster: Sprite = { x: 4, y: 1, ch: 'd', rgb: [0.8, 0.8, 0.8], cls: 'mon', height: 0.9 };
     const fb = makeFrameBuffer(80, 24);
     renderFirstPerson(level, pose(1.5, 1.5, Math.PI / 2), [monster], fb);
     const cells: Array<[number, number]> = [];
@@ -359,7 +360,7 @@ describe('raycast/sprites', () => {
       '#...........#',
       '#############',
     ]);
-    const item: Sprite = { x: 4, y: 1, ch: '*', rgb: [0.8, 0.2, 0.2], cls: 'obj' };
+    const item: Sprite = { x: 4, y: 1, ch: '*', rgb: [0.8, 0.2, 0.2], cls: 'obj', height: 0.35 };
     const fb = makeFrameBuffer(80, 24);
     renderFirstPerson(level, pose(1.5, 1.5, Math.PI / 2), [item], fb);
     const ys: number[] = [];
@@ -370,6 +371,122 @@ describe('raycast/sprites', () => {
     }
     expect(ys.length).toBeGreaterThan(0);
     expect(Math.min(...ys)).toBeGreaterThan(fb.height * 0.42); // entirely below the horizon
+  });
+
+  it('a tiled jackal at distance 3 writes overlay only where the tile is opaque', () => {
+    const level = levelFromAscii([
+      '#############',
+      '#...........#',
+      '#...........#',
+      '#...........#',
+      '#############',
+    ]);
+    const jackalTile = monsterTile(loadTiles(), 'jackal')!;
+    const sprite: Sprite = { x: 4, y: 1, ch: 'd', rgb: [0.8, 0.3, 0.3], cls: 'mon', height: 0.5, tile: jackalTile };
+    const fb = makeFrameBuffer(80, 24);
+    renderFirstPerson(level, pose(1.5, 1.5, Math.PI / 2), [sprite], fb);
+    const cells: Array<[number, number]> = [];
+    for (let y = 0; y < fb.height; y++) {
+      for (let x = 0; x < fb.width; x++) {
+        if (fb.overlayCh[y * fb.width + x] === 'd'.charCodeAt(0)) cells.push([x, y]);
+      }
+    }
+    expect(cells.length).toBeGreaterThan(0);
+    // project the billboard bbox for height 0.5 at tY = 3 (default camera)
+    const tY = 3;
+    const fV = 24 / (2 * Math.tan(Math.PI / 6));
+    const fH = 80 / (2 * Math.tan(Math.atan(Math.tan(Math.PI / 6) * (80 / (24 * 2)))));
+    const floorY = 0.42 * 24 + (fV * 0.5) / tY;
+    const halfW = (fH * 0.5) / (2 * tY);
+    const x0 = Math.floor(40 - halfW);
+    const y0 = Math.floor(floorY - (fV * 0.5) / tY);
+    const x1 = Math.ceil(40 + halfW);
+    const y1 = Math.ceil(floorY);
+    const area = (x1 - x0 + 1) * (y1 - y0 + 1);
+    // the tile has transparent pixels, so the letter fills less than the whole billboard
+    const opaque = jackalTile.pixels.reduce((n, p) => n + (p !== 0 ? 1 : 0), 0);
+    expect(opaque).toBeLessThan(256);
+    expect(cells.length).toBeLessThan(area);
+    // the billboard's top-left corner cell maps to the tile's transparent top-left pixel
+    expect(cells.some(([x, y]) => x === x0 && y === y0)).toBe(false);
+    // some body cell carries the letter in the tile's own (non-grey) colour
+    const nonGrey = cells.some(([x, y]) => {
+      const o = (y * fb.width + x) * 3;
+      const r = fb.overlayRgb[o]!;
+      const g = fb.overlayRgb[o + 1]!;
+      const b = fb.overlayRgb[o + 2]!;
+      return Math.max(r, g, b) - Math.min(r, g, b) > 0.05;
+    });
+    expect(nonGrey).toBe(true);
+  });
+
+  it('a newt-sized (tiny) sprite is at most a third as tall as a taller sprite at the same distance', () => {
+    const level = levelFromAscii([
+      '#############',
+      '#...........#',
+      '#...........#',
+      '#...........#',
+      '#############',
+    ]);
+    // two cells ahead so both heights stay measurable (a taller sprite's top is
+    // not cut off by the nearer ceiling)
+    const poseE = pose(1.5, 1.5, Math.PI / 2);
+    const tiny: Sprite = { x: 3, y: 1, ch: 'n', rgb: [0.8, 0.3, 0.3], cls: 'mon', height: 0.3 };
+    const tall: Sprite = { x: 3, y: 1, ch: 'M', rgb: [0.3, 0.8, 0.3], cls: 'mon', height: 1.0 };
+    const fbTiny = makeFrameBuffer(80, 24);
+    renderFirstPerson(level, poseE, [tiny], fbTiny);
+    const fbTall = makeFrameBuffer(80, 24);
+    renderFirstPerson(level, poseE, [tall], fbTall);
+    const top = (fb: FrameBuffer, ch: string): number => {
+      for (let y = 0; y < fb.height; y++) {
+        for (let x = 0; x < fb.width; x++) {
+          if (fb.overlayCh[y * fb.width + x] === ch.charCodeAt(0)) return y;
+        }
+      }
+      return -1;
+    };
+    // both stand with their feet on the same floor row (same distance), so their
+    // height is proportional to the topmost letter row.
+    const fV = 24 / (2 * Math.tan(Math.PI / 6));
+    const floorY = 0.42 * 24 + (fV * 0.5) / 2; // distance 2
+    const topTiny = top(fbTiny, 'n');
+    const topTall = top(fbTall, 'M');
+    expect(topTiny).toBeGreaterThan(0);
+    expect(topTall).toBeGreaterThan(0);
+    const hTiny = floorY - topTiny;
+    const hTall = floorY - topTall;
+    expect(hTiny).toBeLessThanOrEqual(hTall / 3 + 0.3);
+  });
+
+  it('a sprite without a tile still draws the ellipse at the requested height', () => {
+    const level = levelFromAscii([
+      '#############',
+      '#...........#',
+      '#...........#',
+      '#...........#',
+      '#############',
+    ]);
+    const poseE = pose(1.5, 1.5, Math.PI / 2);
+    const render = (h: number): number => {
+      const fb = makeFrameBuffer(80, 24);
+      renderFirstPerson(level, poseE, [{ x: 4, y: 1, ch: 'd', rgb: [0.8, 0.3, 0.3], cls: 'mon', height: h }], fb);
+      for (let y = 0; y < fb.height; y++) {
+        for (let x = 0; x < fb.width; x++) {
+          if (fb.overlayCh[y * fb.width + x] === 'd'.charCodeAt(0)) return y;
+        }
+      }
+      return -1;
+    };
+    const shortTop = render(0.5);
+    const tallTop = render(0.9);
+    expect(shortTop).toBeGreaterThan(0);
+    expect(tallTop).toBeGreaterThan(0);
+    // the taller height reaches higher, and the short one matches its own
+    // projection (top row 10, not the old fixed 0.9 figure's 7)
+    const fV = 24 / (2 * Math.tan(Math.PI / 6));
+    const floorY = 0.42 * 24 + (fV * 0.5) / 3;
+    expect(tallTop).toBeLessThan(shortTop);
+    expect(shortTop).toBe(Math.floor(floorY - (fV * 0.5) / 3));
   });
 });
 
@@ -701,10 +818,11 @@ describe('raycast/golden', () => {
 
   it('matches the committed default-detail (textured) golden render of ROOM at 80×24 facing east', () => {
     const fb = makeFrameBuffer(80, 24);
-    // pin the shaped sprites: one standing monster and one low item in view east
+    // pin the tiled sprites: a jackal and a potion (their real tiles) in view east
+    const tiles = loadTiles();
     const sprites: Sprite[] = [
-      { x: 9, y: 3, ch: 'd', rgb: [0.8, 0.3, 0.3], cls: 'mon' },
-      { x: 10, y: 4, ch: '*', rgb: [0.8, 0.8, 0.2], cls: 'obj' },
+      { x: 9, y: 3, ch: 'd', rgb: [0.8, 0.3, 0.3], cls: 'mon', height: 0.5, tile: monsterTile(tiles, 'jackal')! },
+      { x: 9, y: 4, ch: '!', rgb: [0.8, 0.8, 0.2], cls: 'obj', height: 0.35, tile: objectTile(tiles, undefined, 'potion')! },
     ];
     renderFirstPerson(ROOM, pose(7.5, 3.5, Math.PI / 2), sprites, fb);
     const out = quantize(fb);
@@ -720,11 +838,17 @@ describe('raycast/golden', () => {
 describe('raycast/performance', () => {
   it('renders 200×60 in under 8 ms on average over 20 runs with detail on', () => {
     const fb = makeFrameBuffer(200, 60);
-    const sprite: Sprite = { x: 6, y: 5, ch: 'k', rgb: [0.9, 0.9, 0.9], cls: 'mon' };
+    const tiles = loadTiles();
+    // three tiled sprites in view ahead of the camera
+    const sprites: Sprite[] = [
+      { x: 8, y: 3, ch: 'd', rgb: [0.9, 0.9, 0.9], cls: 'mon', height: 0.5, tile: monsterTile(tiles, 'jackal')! },
+      { x: 9, y: 2, ch: '!', rgb: [0.9, 0.9, 0.2], cls: 'obj', height: 0.35, tile: objectTile(tiles, undefined, 'potion')! },
+      { x: 8, y: 2, ch: 'k', rgb: [0.9, 0.9, 0.9], cls: 'mon', height: 0.5, tile: monsterTile(tiles, 'kitten')! },
+    ];
     const times: number[] = [];
     for (let i = 0; i < 20; i++) {
       const t0 = performance.now();
-      renderFirstPerson(ROOM, pose(7.5, 3.5, Math.PI / 4), [sprite], fb);
+      renderFirstPerson(ROOM, pose(7.5, 3.5, Math.PI / 4), sprites, fb);
       times.push(performance.now() - t0);
     }
     const avg = times.reduce((a, b) => a + b, 0) / times.length;

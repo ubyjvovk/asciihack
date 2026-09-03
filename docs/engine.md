@@ -79,6 +79,14 @@ State the UI reads:
   (`stripGlyphEscape`).
 - `session.windows: ReadonlyMap<winId, WindowState>` — text/menu content
   for windows the client did not consume yet.
+- `session.tables: TablesMsg | null` — NetHack's monster/object tables, sent
+  as a `tables` bridge line right after `init_nhwindows` (see `docs/bridge.md`
+  “hello and tables”). `monsters[idx]` gives `name` / `male` / `female` /
+  `letter` / `size` (MZ_* size class) / `color`; `objects[idx]` gives
+  `name` / `descr` / `cls`. The UI uses it (via `spritesFromMap`) to size
+  sprites by monster size class and pick their NetHack tile art; before the
+  line arrives it is `null`. `session.mg` exposes the `MG_*` glyph-flag map
+  from `hello` (e.g. `MG_FEMALE` for the female tile).
 - `session.pending: PendingRequest | null` — see below.
 
 ## Request / answer cycle

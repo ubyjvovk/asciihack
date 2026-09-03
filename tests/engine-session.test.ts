@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { NethackSession, stripGlyphEscape, type Answer } from '../src/engine/session.js';
-import type { BridgeMsg, HelloMsg, RetMsg } from '../src/engine/protocol.js';
+import type { BridgeMsg, HelloMsg, RetMsg, TablesMsg } from '../src/engine/protocol.js';
 import type { GlyphInfo } from '../src/model/types.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -181,6 +181,18 @@ describe('NethackSession — map bookkeeping', () => {
     // Null string: no-op (the shim also calls this on soft shutdowns).
     session.handle(tCall('exit_nhwindows', [null]));
     expect(messages).toEqual(['Be seeing you...']);
+  });
+
+  it('stores the tables line so session.tables.monsters[0].name is set', () => {
+    const { session } = fresh();
+    const tables: TablesMsg = {
+      t: 'tables',
+      monsters: [{ name: 'jackal', male: 'jackal', female: null, letter: 'd', size: 1, color: 3 }],
+      objects: [],
+    };
+    session.handle(tables);
+    expect(session.tables?.monsters[0]?.name).toBe('jackal');
+    expect(session.tables?.monsters[0]?.size).toBe(1);
   });
 
   it('preference_update and update_positionbar are not messages', () => {

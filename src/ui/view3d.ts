@@ -15,6 +15,7 @@ import {
   type Sprite,
 } from '../model/types.js';
 import type { NethackSession } from '../engine/session.js';
+import { loadTiles, monsterTile, objectTile } from '../render/tiles.js';
 import { quantizeInto } from '../render/ascii.js';
 import type { Theme } from '../render/themes.js';
 import type { KeyEvent } from '../term/input.js';
@@ -62,18 +63,40 @@ export function strafe(facing: Facing, dir: 1 | -1): Facing {
   return FACINGS[(i + dir * 2 + FACINGS.length) % FACINGS.length]!;
 }
 
+/** Monster classes that stand up and get a monster tile; statues too. */
+const MONSTER_CLS = new Set(['mon', 'pet', 'ridden', 'detected', 'invisible', 'statue']);
+
+/** NetHack monster size class (MZ_*) → billboard height in cells. */
+const MZ_HEIGHT: Record<number, number> = {
+  0: 0.3, // tiny
+  1: 0.5, // small
+  2: 0.7, // medium
+  3: 0.9, // large
+  4: 1.1, // huge
+  7: 1.3, // gigantic
+};
+
 /**
  * Collect billboard sprites for every remembered cell whose `top` glyph is a
  * thing standing on the terrain (monsters, pets, objects): cells whose `top`
  * is `cmap`/`unexplored`/`nothing` (or missing) are bare terrain and skipped.
- * The hero cell is excluded unless `includeHero` (ortho draws it as `@`).
+ * The hero cell is excluded unless `includeHero` (ortho draws it as `@`; it
+ * keeps the generic figure, never a tile — T-0026 out of scope).
+ *
+ * `height` is attached from the monster size class (objects 0.35, corpses
+ * 0.3) and `tile` from `session.tables` via the NetHack tile art; without
+ * tables the sprite gets no tile (monsters then get no height either).
  * Sprite colour is `clrToRgb(top.color) / 255`.
  */
 export function spritesFromMap(
-  map: LevelView,
+  session: NethackSession,
   hero: { x: number; y: number } | null,
   includeHero: boolean,
 ): Sprite[] {
+  const map = session.map;
+  const tables = session.tables;
+  const mgFemale = session.mg['MG_FEMALE'];
+  const tiles = tables ? loadTiles() : null;
   const out: Sprite[] = [];
   for (let y = 0; y < map.height; y++) {
     for (let x = 0; x < map.width; x++) {
@@ -83,13 +106,50 @@ export function spritesFromMap(
       const isHero = hero !== null && hero.x === x && hero.y === y;
       if (isHero && !includeHero) continue;
       const c = clrToRgb(top.color);
-      out.push({
+      const s: Sprite = {
         x,
         y,
         ch: isHero ? '@' : top.ch,
         rgb: [c[0] / 255, c[1] / 255, c[2] / 255],
         cls: top.cls,
-      });
+      };
+      if (isHero) {
+        out.push(s);
+        continue;
+      }
+      if (MONSTER_CLS.has(top.cls)) {
+        if (tables && tiles) {
+          const m = tables.monsters[top.idx];
+          if (m) {
+            const h = MZ_HEIGHT[m.size];
+            if (h !== undefined) s.height = h;
+            const female = mgFemale !== undefined && (top.flags & mgFemale) !== 0;
+            const tile = monsterTile(tiles, m.name, female);
+            if (tile) s.tile = tile;
+          }
+        }
+      } else if (top.cls === 'obj') {
+        s.height = 0.35;
+        if (tables && tiles) {
+          const o = tables.objects[top.idx];
+          if (o) {
+            if (o.name === 'boulder') s.height = 0.7;
+            else if (o.name === 'chest' || o.name === 'large box') s.height = 0.5;
+            const tile = objectTile(tiles, o.name ?? undefined, o.descr ?? undefined);
+            if (tile) s.tile = tile;
+          }
+        }
+      } else if (top.cls === 'body') {
+        s.height = 0.3;
+        if (tables && tiles) {
+          const o = tables.objects[top.idx];
+          if (o) {
+            const tile = objectTile(tiles, o.name ?? undefined, o.descr ?? undefined);
+            if (tile) s.tile = tile;
+          }
+        }
+      }
+      out.push(s);
     }
   }
   return out;

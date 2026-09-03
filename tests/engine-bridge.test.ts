@@ -82,6 +82,15 @@ describe('engine/bridge — parseBridgeLine', () => {
     expect(parseBridgeLine('{"t":"exit","code":0}')).toEqual({ t: 'exit', code: 0 });
   });
 
+  it('parses a tables line', () => {
+    const line =
+      '{"t":"tables","monsters":[{"name":"jackal","male":"jackal","female":"jackal","letter":"d","size":2}],"objects":[{"name":"potion","descr":"potion","cls":"potion"}]}';
+    const msg = parseBridgeLine(line);
+    expect(msg).not.toBeNull();
+    expect((msg as { t: string }).t).toBe('tables');
+    expect((msg as { monsters: { name: string }[] }).monsters[0].name).toBe('jackal');
+  });
+
   it('drops unparseable JSON and unknown message types', () => {
     expect(parseBridgeLine('not json')).toBeNull();
     expect(parseBridgeLine('{"t":"mystery"}')).toBeNull();

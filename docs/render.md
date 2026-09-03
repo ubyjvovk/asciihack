@@ -55,12 +55,12 @@ renderFirstPerson(level, pose, sprites, fb, opts?)
    left the map or exceeded `maxDepth`).
 7. **Sprites.** Sorted far-to-near, transformed into camera space, clipped per
    cell against `fb.depth` (a nearer wall/floor hides them). Monsters (classes
-   `mon`, `pet`, `ridden`, `detected`, `invisible`, `statue`) draw as a standing
-   figure 0.45 cells wide × 0.9 tall, items (`obj`, `body`) as a low shape
-   0.4 × 0.3 whose bottom sits on the floor row for its distance; both use the
-   ellipse shading and dark rim described under “Sprites” below. Other sprite
-   classes keep a rectangular billboard 0.7 × 0.9. A sprite on the camera cell
-   (the hero) is skipped.
+   `mon`, `pet`, `ridden`, `detected`, `invisible`, `statue`), items (`obj`)
+   and corpses (`body`) draw as billboards standing on the floor row for their
+   distance, sized by `s.height` in cells: a sprite with `tile` samples its
+   16×16 tile (see “Sprites” below), one without keeps the ellipse figure at
+   `s.height`. Other sprite classes keep a rectangular billboard 0.7 × 0.9.
+   A sprite on the camera cell (the hero) is skipped.
 
 ## Surface detail
 
@@ -138,26 +138,42 @@ game gives.
 
 ### Sprites
 
-Monsters (`mon`, `pet`, `ridden`, `detected`, `invisible`, `statue`) draw as
-standing figures and items (`obj`, `body`) as low shapes, replacing the flat
-rectangular billboard. A figure is an ellipse (semi-axes `halfW = fH·fw/(2·tY)`,
-`halfH = fV·fh/(2·tY)`) standing on the floor row for its distance
-`floorY = horizon + 0.5·fV/tY`, where `fw/fh` are 0.45/0.9 for monsters and
-0.4/0.3 for items. Within the screen bounding box, a cell with normalised
-offset `(dx, dy)` from the figure centre is:
+Monsters (`mon`, `pet`, `ridden`, `detected`, `invisible`, `statue`), items
+(`obj`) and corpses (`body`) draw as billboards standing on the floor row for
+their distance `floorY = horizon + 0.5·fV/tY`, sized by the sprite's `height`
+in cells (attached by `spritesFromMap` from the monster size class or object
+kind — see `src/ui/view3d.ts`).
+
+A sprite with `tile` art samples its 16×16 tile as a **square** billboard
+(width = height cells; the cell-aspect correction makes it square on screen):
+each screen cell in the billboard maps to a tile pixel
+`(floor(u·16), floor(v·16))` with `u, v ∈ [0,1]`. Transparent pixels (palette
+index 0) are skipped so the floor shows through; an opaque pixel writes the
+sprite's letter in that pixel's own palette colour (`palette/255`, linear-ish)
+times fog and a slight vertical shading `0.85 + 0.15·(1 − v)` (top brighter).
+The depth test is per cell as before. When the billboard is shorter than 2
+rows or narrower than 2 columns it collapses to a single letter in the
+sprite's colour (today's far rule).
+
+A sprite **without** a tile keeps the ellipse figure, but at the sprite's
+`height` (no longer a fixed 0.9): a monster is an ellipse
+(`halfW = fH·(h/2)/(2·tY)`, `halfH = fV·h/(2·tY)`), an item a low shape
+(`halfW = fH·(h·4/3)/(2·tY)`, `halfH = fV·h/(2·tY)`). Within the screen
+bounding box, a cell with normalised offset `(dx, dy)` from the figure centre
+is:
 
 - part of the body when `dx² + dy² ≤ 1`, shaded `1 − 0.45·(dx² + dy²)`
   (`1.0` at the centre, `0.55` at the edge) times the sprite colour before fog;
 - a dark rim when `1 < dx² + dy² ≤ 1.35`, the letter at brightness `0.22`;
 - skipped otherwise.
 
-Every figure and rim cell prints the sprite's letter. The depth test is per
-cell as before, so figures occlude against nearer walls/floor. Far sprites
-(fewer than 2 cells tall) collapse to a single letter at full brightness with
-no rim.
+Every figure and rim cell prints the sprite's letter. Far sprites (fewer than
+2 cells tall) collapse to a single letter at full brightness with no rim.
+Other sprite classes keep a rectangular billboard 0.7 × 0.9. A sprite on the
+camera cell (the hero) is skipped.
 
 Detail costs a little per-pixel hashing but stays well under the 8 ms budget
-for a 200×60 frame (measured ~1.3 ms with detail on).
+for a 200×60 frame (measured ~1.7 ms with three tiled sprites).
 
 ## Colour table
 
@@ -265,14 +281,21 @@ is ×1.1. Every painted cell writes depth and clears `overlayCh`.
 ### Sprites & occlusion
 
 Sprites draw with their tile in the same painter step, so a nearer wall drawn
-later clears their overlay cells (the occlusion). **Monsters**
-(`mon`/`pet`/`ridden`/`detected`/`invisible`/`statue`) and the **hero** are
-tall figures `2k−1` columns wide and `3.5k` rows tall standing with their feet
-at the tile centre row `sy` (so they overlap the tile behind, correct for 3/4),
-with an ellipse mask, radial brightness `0.55 + 0.45·(1 − r²)`, a rim ring at
-0.22 and the letter everywhere. **Items** (`obj`/`body`) are low shapes `2k−1`
-wide and `1.5k` tall centred on the tile. At `k = 1` every figure collapses to
-one or two cells with no rim.
+later clears their overlay cells (the occlusion). A sprite with `tile` art
+draws as a **square billboard** sampled from its 16×16 tile:
+`brows = round(height·3.5k/0.9)` rows tall and `2·brows` columns wide (×2
+keeps it square on screen with the 2:1 cell aspect), the tile's bottom edge
+(feet) on the tile centre row `sy`. Each cell maps to a tile pixel
+`(floor(u·16), floor(v·16))`; transparent pixels leave the floor visible,
+opaque ones write the sprite's letter in the pixel's palette colour times fog,
+with no rim. **Monsters** (`mon`/`pet`/`ridden`/`detected`/`invisible`/
+`statue`) and the **hero** without a tile are tall figures `2k−1` columns wide
+and `3.5k` rows tall standing with their feet at the tile centre row `sy` (so
+they overlap the tile behind, correct for 3/4), with an ellipse mask, radial
+brightness `0.55 + 0.45·(1 − r²)`, a rim ring at 0.22 and the letter
+everywhere. **Items** (`obj`/`body`) without a tile are low shapes `2k−1` wide
+and `1.5k` tall centred on the tile. At `k = 1` every figure collapses to one
+or two cells with no rim.
 
 ### Cutaway
 
@@ -297,9 +320,11 @@ unexplored stays at Infinity.
 ### Golden workflow
 
 `tests/ortho.test.ts` renders the `ROOM` fixture with the hero at its centre at
-80×24 (`k = 1`) and at 120×56 (`k = 2`, with hero + monster + item sprites),
-quantizes each with the test-local 10-glyph ramp, and compares against
-`tests/ortho-golden.txt` and `tests/ortho-zoom-golden.txt`. Regenerate with
+80×24 (`k = 1`) and at 160×104 (`k = 4`, with the hero plus tiled jackal and
+potion sprites), quantizes each with the test-local 10-glyph ramp, and
+compares against `tests/ortho-golden.txt` and `tests/ortho-zoom-golden.txt`.
+(k = 4 keeps the potion's thin 2-column bottle wider than one screen column so
+it actually shows in the zoom golden.) Regenerate with
 `UPDATE_GOLDEN=1 bash .tigerteam/scripts/run-tests.sh tests/ortho.test.ts`.
 
 ## Aspect correction
