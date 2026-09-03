@@ -82,8 +82,9 @@ export function themeMix(tint: Rgb, v: number, mask: number, theme: number): Rgb
 }
 
 /** Amber's own density curve: black-point cut then a steeper gamma. */
-export function amberDensity(v: number, gamma: number): number {
-  return Math.pow(clamp01((v - 0.06) / 0.94), gamma * 1.5);
+export function amberDensity(v: number, gamma: number, blackPoint: number): number {
+  const span = Math.max(1 - blackPoint, 1e-6);
+  return Math.pow(clamp01((v - blackPoint) / span), gamma * 1.5);
 }
 
 /**
@@ -91,8 +92,14 @@ export function amberDensity(v: number, gamma: number): number {
  * pre-`dens·0.7 + 0.4`). Yields the glyph colour at `mask = 1` and the black
  * phosphor screen at `mask = 0`.
  */
-export function amberMix(rawTint: Rgb, v: number, mask: number, gamma: number): Rgb {
-  const aDens = amberDensity(v, gamma);
+export function amberMix(
+  rawTint: Rgb,
+  v: number,
+  mask: number,
+  gamma: number,
+  blackPoint: number,
+): Rgb {
+  const aDens = amberDensity(v, gamma, blackPoint);
   const gr = clamp01((rawTint[1] - 0.5 * (rawTint[0] + rawTint[2])) * 2);
   const chroma: Rgb = [
     1.0 + (0.75 - 1.0) * gr,

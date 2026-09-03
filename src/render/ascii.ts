@@ -25,8 +25,10 @@ export interface QuantizeOptions {
   ramp?: string;
   /** Pre-exposure multiplier on linear RGB. Default 1.7. */
   exposure?: number;
-  /** Density power (gamma). Default 0.45. */
+  /** Density power (gamma). Default 0.7. */
   gamma?: number;
+  /** Black-point cutoff on the exposed brightness `v`: `vc = clamp((v − bp)/(1 − bp))`. Default 0.08. */
+  blackPoint?: number;
   /** Colour theme (see docs/terminal.md — Themes). Default `'cyber'`. */
   theme?: Theme;
 }
@@ -60,6 +62,7 @@ function cellFromRgb(
   ramp: string,
   exposure: number,
   gamma: number,
+  blackPoint: number,
   theme: Theme,
   bg: readonly [number, number, number],
 ): ScreenCell {
@@ -71,23 +74,31 @@ function cellFromRgb(
   const rawTint: [number, number, number] = [r / t, g / t, b / t];
 
   if (theme === 'amber') {
-    const aDens = amberDensity(v, gamma);
+    const aDens = amberDensity(v, gamma, blackPoint);
     const idx = Math.min(
       Math.max(Math.floor(aDens * (ramp.length - 1) + 0.5), 0),
       ramp.length - 1,
     );
-    const fg = toRgb255(amberMix(rawTint, v, 1, gamma));
+    const fg = toRgb255(amberMix(rawTint, v, 1, gamma, blackPoint));
     return { ch: ramp[idx] ?? ' ', fg, bg: [bg[0], bg[1], bg[2]] };
   }
 
-  const dens = Math.pow(clamp01(v), gamma);
-  const idx = glyphIndex(v, ramp.length, gamma);
-  const boost = clamp01(dens * 0.7 + 0.4);
-  const tint: [number, number, number] = [
-    rawTint[0] * boost,
-    rawTint[1] * boost,
-    rawTint[2] * boost,
+  const span = Math.max(1 - blackPoint, 1e-6);
+  const vc = clamp01((v - blackPoint) / span);
+  const dens = Math.pow(vc, gamma);
+  const idx = Math.min(
+    Math.max(Math.floor(dens * (ramp.length - 1) + 0.5), 0),
+    ramp.length - 1,
+  );
+  const grey = 0.299 * rawTint[0] + 0.587 * rawTint[1] + 0.114 * rawTint[2];
+  const sat = clamp01(dens * 1.5);
+  const desat: [number, number, number] = [
+    grey + (rawTint[0] - grey) * sat,
+    grey + (rawTint[1] - grey) * sat,
+    grey + (rawTint[2] - grey) * sat,
   ];
+  const boost = clamp01(dens * 0.7 + 0.4);
+  const tint: [number, number, number] = [desat[0] * boost, desat[1] * boost, desat[2] * boost];
   const fg = toRgb255(themeMix(tint, v, 1, themeIndex(theme)));
   return { ch: ramp[idx] ?? ' ', fg, bg: [bg[0], bg[1], bg[2]] };
 }
@@ -110,13 +121,14 @@ function cellFromOverlay(
 
 /**
  * Quantize a frame buffer into a freshly allocated `ScreenGrid` (one cell per
- * sample). Options default to exposure 1.7, gamma 0.45, `DEFAULT_RAMP`,
- * theme `'cyber'`.
+ * sample). Options default to exposure 1.7, gamma 0.7, blackPoint 0.08,
+ * `DEFAULT_RAMP`, theme `'cyber'`.
  */
 export function quantize(fb: FrameBuffer, opts: QuantizeOptions = {}): ScreenGrid {
   const ramp = opts.ramp ?? DEFAULT_RAMP;
   const exposure = opts.exposure ?? 1.7;
-  const gamma = opts.gamma ?? 0.45;
+  const gamma = opts.gamma ?? 0.7;
+  const blackPoint = opts.blackPoint ?? 0.08;
   const theme = opts.theme ?? 'cyber';
   const bg = themeBackground(theme);
   const n = fb.width * fb.height;
@@ -127,7 +139,7 @@ export function quantize(fb: FrameBuffer, opts: QuantizeOptions = {}): ScreenGri
     cells[i] =
       overlay !== 0
         ? cellFromOverlay(fb.overlayRgb, off, String.fromCharCode(overlay!), exposure, bg)
-        : cellFromRgb(fb.rgb, off, ramp, exposure, gamma, theme, bg);
+        : cellFromRgb(fb.rgb, off, ramp, exposure, gamma, blackPoint, theme, bg);
   }
   return { width: fb.width, height: fb.height, cells };
 }
@@ -140,7 +152,8 @@ export function quantize(fb: FrameBuffer, opts: QuantizeOptions = {}): ScreenGri
 export function quantizeInto(fb: FrameBuffer, grid: ScreenGrid, opts: QuantizeOptions = {}): ScreenGrid {
   const ramp = opts.ramp ?? DEFAULT_RAMP;
   const exposure = opts.exposure ?? 1.7;
-  const gamma = opts.gamma ?? 0.45;
+  const gamma = opts.gamma ?? 0.7;
+  const blackPoint = opts.blackPoint ?? 0.08;
   const theme = opts.theme ?? 'cyber';
   const bg = themeBackground(theme);
   grid.width = fb.width;
@@ -157,7 +170,7 @@ export function quantizeInto(fb: FrameBuffer, grid: ScreenGrid, opts: QuantizeOp
     const c =
       overlay !== 0
         ? cellFromOverlay(fb.overlayRgb, off, String.fromCharCode(overlay!), exposure, bg)
-        : cellFromRgb(fb.rgb, off, ramp, exposure, gamma, theme, bg);
+        : cellFromRgb(fb.rgb, off, ramp, exposure, gamma, blackPoint, theme, bg);
     cell.ch = c.ch;
     cell.fg = c.fg;
     cell.bg = c.bg;
