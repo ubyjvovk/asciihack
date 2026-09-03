@@ -63,6 +63,12 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   before the first ticket.
 
 ## Board snapshot
+- 2026-09-03 23:00 — T-0015 (polish: Saving... auto-dismiss + farewell) and
+  T-0014 (ssh: bin/asciihack-login, scripts/ssh-serve.sh, docs/ssh.md)
+  accepted; 15 done. `--playground` now means the per-player target dir
+  (copied from the build on first use). Doc debt: docs/ui.md CLI section
+  still describes the old --playground meaning (fold into the next UI
+  ticket). In progress: T-0016 (surface detail, ds-1, ~30 min).
 - 2026-09-03 22:15 — **T-0007 accepted: fps + ortho modes playable** (muse,
   2 attempts, $0.11 + rework). 13 done. `npm start` = first-person NetHack.
   In progress: T-0016 (surface detail, ds-1). Claimable: T-0014 (ssh),
