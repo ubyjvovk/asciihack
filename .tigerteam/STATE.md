@@ -58,6 +58,10 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   before the first ticket.
 
 ## Board snapshot
+- 2026-09-03 17:35 — T-0001 accepted (build scripts; vanilla NetHack 5.0 verified
+  playable in a pty by the PM). T-0005 reworked once (stale overlay plane +
+  unpainted horizon row for odd heights). T-0002 claimed by opus-1, T-0006 by
+  ds-3. Spend so far ≈ $0.11.
 - 2026-09-03 16:55 — wave 1 planned: T-0001 (build scripts, P0) → T-0002
   (C bridge, P0/C3 frontier) → T-0003 (TS engine client) → T-0004 (classic
   terminal UI, also needs T-0006); T-0005 (raycaster) and T-0006
@@ -65,11 +69,13 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   yet.
 
 ## Next actions
-1. Smoke one worker (`tigerteam worker run ds --once` on T-0005/T-0006),
-   check the report lands in review/ sanely, then `rm .tigerteam/STOP`.
-2. Review T-0001 as soon as it lands (the whole chain waits on it); run
-   `bash scripts/nethack-build.sh tty` on the host and actually play a few
-   turns of the console game.
+1. Review T-0006 and the T-0005 rework when they land.
+2. Note for T-0004/T-0007: `libnethack.a` bakes `SYSCF_FILE` and `HACKDIR`
+   as absolute paths into `build/nethack/lib/playground/`; the bridge's
+   playground copy under `~/.asciihack/` must keep the build dir's `sysconf`
+   reachable (or pass `-d`/`NETHACKDIR` and confirm SYSCF still resolves).
+   Also `nethack-build.sh` copies the submodule's `.git` file into src-tree
+   (harmless; exclude it in a later cleanup).
 3. After T-0002: reconcile `docs/architecture.md` §3 with `docs/bridge.md`
    deviations before T-0003 starts (T-0003 is told to follow the bridge).
 4. Wave 2 tickets to write once T-0004 + T-0005 land: T-0007 fps mode
