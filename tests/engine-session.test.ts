@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
-import { NethackSession, stripGlyphEscape } from '../src/engine/session.js';
+import { NethackSession, stripGlyphEscape, type Answer } from '../src/engine/session.js';
 import type { BridgeMsg, HelloMsg, RetMsg } from '../src/engine/protocol.js';
 import type { GlyphInfo } from '../src/model/types.js';
 
@@ -150,6 +150,24 @@ describe('NethackSession — map bookkeeping', () => {
     s.handle(tCall('putstr', [1, 0, 'You hit a jackal!']));
     expect(s.messages).toEqual(['Welcome to NetHack.', 'You hit a jackal!']);
   });
+
+  it('raw_print lands in messages like a putstr on the message window', () => {
+    const messages: string[] = [];
+    const replies: RetMsg[] = [];
+    const s = new NethackSession((r) => replies.push(r));
+    s.on('message', (m: string) => messages.push(m));
+    s.handle(makeHello());
+    createWindow(s, 1, 1, replies); // NHW_MESSAGE (id 1)
+    s.handle(tCall('raw_print', ['Velkommen, welcome to NetHack!']));
+    // putstr to the message window still works and appends after the raw_print.
+    s.handle(tCall('putstr', [1, 0, 'You see here 2 gold pieces.']));
+    expect(s.messages).toEqual([
+      'Velkommen, welcome to NetHack!',
+      'You see here 2 gold pieces.',
+    ]);
+    // Both a raw_print and a putstr fired a `message` event, in order.
+    expect(messages).toEqual(['Velkommen, welcome to NetHack!', 'You see here 2 gold pieces.']);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -292,6 +310,30 @@ describe('NethackSession — menus and requests', () => {
     const s = new NethackSession(() => {});
     s.handle(makeHello());
     expect(() => s.answer({ kind: 'key', key: 32 })).toThrow(/no pending request/);
+  });
+
+  it('answer rejects an unknown payload kind (cast through unknown) — throws, no reply sent', () => {
+    const replies: RetMsg[] = [];
+    const s = new NethackSession((r) => replies.push(r));
+    s.handle(makeHello());
+    s.handle(tCall('nhgetch', [], 1));
+    // A kind outside the `Answer` union is rejected before buildRetMsg runs;
+    // the `default: throw` in buildRetMsg is the belt-and-suspenders guard
+    // that keeps an unhandled payload from ever reaching replyFn as `undefined`.
+    expect(() => s.answer({ kind: 'bogus', key: 1 } as unknown as Answer)).toThrow();
+    expect(replies).toHaveLength(0);
+  });
+
+  it('answer accepts display as a synonym for dismiss', () => {
+    const replies: RetMsg[] = [];
+    const s = new NethackSession((r) => replies.push(r));
+    s.handle(makeHello());
+    const msgWin = createWindow(s, 1, 20, replies);
+    s.handle(tCall('display_nhwindow', [msgWin, true], 15));
+    expect(s.pending?.kind).toBe('display');
+    s.answer({ kind: 'display' });
+    expect(s.pending).toBeNull();
+    expect(replies.at(-1)).toEqual({ id: 15, ret: 0 });
   });
 
   it('emits change once per handleBatch and request when a pending is set', () => {

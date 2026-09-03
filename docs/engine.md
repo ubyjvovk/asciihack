@@ -67,8 +67,9 @@ State the UI reads:
   the raw `MapCell` (terrain glyph, top glyph, `CellKind`).
 - `session.hero: {x, y} | null` — from `curs` on the map window; the
   `MG_HERO` flag on `print_glyph` is used as a cross-check.
-- `session.messages: readonly string[]` — every `putstr` NetHack sent to
-  `WIN_MESSAGE`, in order.
+- `session.messages: readonly string[]` — every game message, in order:
+  `putstr` NetHack sent to `WIN_MESSAGE` **and** `raw_print`/`raw_print_bold`
+  (see “Where messages come from”).
 - `session.status: ReadonlyMap<blIdx, string | number>` — raw
   `status_update` values (numbers for `BL_CONDITION`, strings otherwise;
   `BL_FLUSH`/`BL_RESET` nulls are dropped).
@@ -107,13 +108,29 @@ Request kinds and the answer payloads they accept:
 | `yn`              | `yn_function`           | `{kind:'yn', ch: number}`                   |
 | `getlin`          | `getlin`                | `{kind:'getlin', text: string}`             |
 | `menu`            | `select_menu`           | `{kind:'menu', selected: [{i,count}]}`      |
-| `display`         | `display_nhwindow(_,true)` | `{kind:'dismiss'}`                       |
+| `display`         | `display_nhwindow(_,true)` | `{kind:'dismiss'}` or `{kind:'display'}` |
 | `file`            | `display_file`          | `{kind:'file'}` (or `{kind:'file', ret}`)   |
 | `extcmd`          | `get_ext_cmd`           | `{kind:'extcmd', index: number}`            |
 | `message-menu`    | `message_menu`          | `{kind:'message-menu', ch: number}`         |
 
 `answer(...)` throws if nothing is pending or if the payload kind doesn't
-match the pending kind.
+match the pending kind. An unknown payload kind also throws (a `default:`
+guard in `buildRetMsg`), so no malformed answer can ever reach the bridge.
+`{kind:'display'}` is accepted as a synonym for `{kind:'dismiss'}` on a
+pending `display` request.
+
+## Where messages come from
+
+NetHack's `pline()` (src/pline.c:239) falls back to `raw_print` while
+`iflags.window_inited` is false, and the shim port never sets that flag — so
+real game messages arrive as `raw_print`/`raw_print_bold`, not as
+`putstr(WIN_MESSAGE)`. `NethackSession` treats `raw_print` and
+`raw_print_bold` exactly like a `putstr` on `WIN_MESSAGE`: it appends the
+text to `session.messages` and emits `message`. Early text (the welcome
+blurb) and late text (“Saving…”, errors) still come through `raw_print`
+even after `iflags.window_inited` is set (ticket T-0012), so nothing is
+ever lost. The UI should show everything in `session.messages` that arrived
+since the previous key request.
 
 Menu building: `start_menu` clears the window's item list, each `add_menu`
 appends an item (header rows arrive with `identIndex === -1`, keep them —

@@ -139,6 +139,7 @@ export type Answer =
   | { kind: 'getlin'; text: string }
   | { kind: 'menu'; selected: ReadonlyArray<{ i: number; count: number }> }
   | { kind: 'dismiss' }
+  | { kind: 'display' }
   | { kind: 'extcmd'; index: number }
   | { kind: 'message-menu'; ch: number }
   | { kind: 'file'; ret?: number };
@@ -310,6 +311,7 @@ export class NethackSession extends EventEmitter {
         };
       }
       case 'dismiss':
+      case 'display':
         return { id: p.id, ret: 0 };
       case 'extcmd':
         return { id: p.id, ret: a.index };
@@ -317,6 +319,10 @@ export class NethackSession extends EventEmitter {
         return { id: p.id, ret: a.ch };
       case 'file':
         return { id: p.id, ret: a.ret ?? 0 };
+      default:
+        throw new Error(
+          `NethackSession.answer: unknown payload kind '${String((a as { kind?: unknown }).kind)}'`,
+        );
     }
   }
 
@@ -516,7 +522,18 @@ export class NethackSession extends EventEmitter {
       case 'preference_update':
       case 'update_positionbar':
       case 'raw_print':
-      case 'raw_print_bold':
+      case 'raw_print_bold': {
+        // NetHack's pline() falls back to raw_print until iflags.window_inited
+        // is set (the shim never sets it), so early/late game text arrives
+        // here rather than as putstr(WIN_MESSAGE). Treat it exactly like a
+        // putstr on the message window so no game message is ever lost.
+        const text = args[0] as string | null;
+        if (typeof text === 'string') {
+          this._messages.push(text);
+          this.emit('message', text);
+        }
+        return;
+      }
       case 'get_nh_event':
       case 'resume_nhwindows':
       case 'suspend_nhwindows':
