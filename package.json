@@ -1,0 +1,20 @@
+{
+  "name": "asciihack",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Play NetHack in the terminal (or over ssh) rendered as an ASCII first-person or ortho view.",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "tsx src/cli.ts",
+    "check": "bash scripts/check.sh"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}

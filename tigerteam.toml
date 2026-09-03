@@ -1,0 +1,59 @@
+# tigerteam project config — the one committed config file (v4).
+# Resolution chain: defaults -> ~/.tigerteam.toml -> <root>/tigerteam.toml -> --set key=value.
+# NO SECRETS in this file — only env var NAMES. Values live in <root>/.env (gitignored).
+
+test_cmd = "bash scripts/test.sh"          # self-bootstrapping: npm ci if needed, then vitest run "$@"
+verify_cmds = ["bash scripts/check.sh"]   # full gate on the host: install, typecheck, unit, build
+staging = false                           # single-branch: accepts merge into master (same posture as asciicity)
+quiet_load = 10.0                         # 12-core host shared with the worker containers
+debounce_s = 60
+artifact_globs = ["tests/__shots__/*.txt"]
+
+[github]
+repo = "ubyjvovk/asciihack"
+token_env = "GITHUB_TOKEN"                # value in <root>/.env
+sync = true                               # one-way board -> issues mirror (tt:* labels)
+sync_interval_s = 120
+watch = false                             # GH intake off (same as asciicity: public repo, no guardrails)
+comment_label = "tt:agent"
+
+[pm]
+nudge = true
+
+[workers]
+max_concurrent = 8                        # 12-core host; each container gets --cpus 2; NetHack C builds are short
+memory = "4g"
+image = "tigerteam-agents:base"           # machine-local; also set in ~/.tigerteam.toml
+agents_home = "/home/d/.agents-home"
+secrets_dir = "/home/d/.tigerteam-secrets"
+
+[worker.grok]
+engine = "grok"
+max_complexity = 3                        # earned C3 on the tigerteam board
+capabilities = ["frontier"]
+ticket_timeout_s = 5400
+scale = 0
+
+[worker.opus]
+engine = "claude"                         # Claude Opus via agents-home login state (user: "quota to burn")
+model = "opus"
+login_auth = true
+max_complexity = 3
+capabilities = ["frontier"]
+ticket_timeout_s = 5400
+scale = 2
+
+[worker.ds]
+engine = "pi"                             # DeepSeek V4 Flash via DeepInfra (pi catalog in secrets bundle)
+model = "deepseek-ai/DeepSeek-V4-Flash-0731"
+max_complexity = 2
+env_passthrough = ["DEEPINFRA_KEY"]
+scale = 4
+
+# [worker.glm]  — GLM-5.2 on DeepInfra is too slow (user, 2026-08-23); re-enable only
+#                 when DeepInfra ships GLM-5.3.
+# engine = "pi"
+# model = "zai-org/GLM-5.3"
+# max_complexity = 2
+# env_passthrough = ["DEEPINFRA_KEY"]
+# scale = 2
