@@ -16,9 +16,17 @@ export interface KeyEvent {
 /** Sentinel returned by the escape parsers when more bytes are required. */
 const INCOMPLETE = Symbol('incomplete');
 
+/** Sentinel for a byte that is invalid UTF-8 and must be skipped, not held. */
+const INVALID = Symbol('invalid');
+
 interface Parsed {
   event: KeyEvent;
   next: number;
+}
+
+/** A consumed-but-unmapped escape sequence (e.g. a mouse report): drop `next` bytes, emit nothing. */
+interface Dropped {
+  drop: number;
 }
 
 /** Build a `KeyEvent` with the standard flag defaults and its raw `seq`. */
@@ -26,8 +34,12 @@ function ev(key: string, seq: string, f: { ctrl?: boolean; shift?: boolean; alt?
   return { key, ctrl: f.ctrl ?? false, shift: f.shift ?? false, alt: f.alt ?? false, seq };
 }
 
-/** Decode a UTF-8 sequence starting at `data[i]`; null if incomplete, else {char, len}. */
-function decodeUtf8(data: Uint8Array, i: number): { char: string; len: number } | null {
+/**
+ * Decode a UTF-8 sequence starting at `data[i]`. Returns `{char, len}`, or
+ * `INCOMPLETE` when the lead is valid but the buffer ends mid-sequence (hold),
+ * or `INVALID` when the byte is not valid UTF-8 at all (skip it and continue).
+ */
+function decodeUtf8(data: Uint8Array, i: number): { char: string; len: number } | typeof INCOMPLETE | typeof INVALID {
   const b0 = data[i]!;
   let len = 0;
   let code = 0;
@@ -41,12 +53,12 @@ function decodeUtf8(data: Uint8Array, i: number): { char: string; len: number } 
     len = 4;
     code = b0 & 0x07;
   } else {
-    return null; // invalid lead byte or bare continuation → caller skips it
+    return INVALID; // invalid lead (0x80–0xC1, 0xF8+) or bare continuation → skip one byte
   }
-  if (i + len > data.length) return null; // incomplete at the buffer end
+  if (i + len > data.length) return INCOMPLETE; // valid lead, buffer ends mid-sequence → hold
   for (let k = 1; k < len; k++) {
     const b = data[i + k]!;
-    if (b < 0x80 || b > 0xbf) return null; // not a continuation byte → invalid
+    if (b < 0x80 || b > 0xbf) return INVALID; // bad continuation → skip the lead byte
     code = (code << 6) | (b & 0x3f);
   }
   return { char: String.fromCodePoint(code), len };
@@ -159,7 +171,11 @@ function parseModifier(raw: string | undefined): { shift: boolean; alt: boolean;
  * Parse a CSI (`ESC [ ...`) or SS3 (`ESC O ...`) sequence starting at `data[i]`.
  * Returns a parsed event, `INCOMPLETE`, or null (invalid → skip one byte).
  */
-function parseSequence(data: Uint8Array, i: number, isSs3: boolean): Parsed | typeof INCOMPLETE | null {
+function parseSequence(
+  data: Uint8Array,
+  i: number,
+  isSs3: boolean,
+): Parsed | typeof INCOMPLETE | Dropped {
   const start = i + 2;
   let j = start;
   while (j < data.length && !(data[j]! >= 0x40 && data[j]! <= 0x7e)) j++;
@@ -178,12 +194,21 @@ function parseSequence(data: Uint8Array, i: number, isSs3: boolean): Parsed | ty
     // `Z` (Shift+Tab) via CSI implies shift.
     if (finalCh === 'Z') mod.shift = true;
   }
-  if (key === null) return null;
-  return { event: ev(key, seq, mod), next: j + 1 };
+  if (key !== null) return { event: ev(key, seq, mod), next: j + 1 };
+
+  // Unknown sequence (mouse report, focus event, DA response…): consume it
+  // whole and emit nothing, so stray bytes don't leak as keystrokes.
+  let drop = j + 1;
+  if (!isSs3 && finalCh === 'M' && start === j && params[0] === '') {
+    // X10 mouse report "ESC [ M b x y" — three payload bytes follow the final.
+    drop = j + 4;
+  }
+  if (drop > data.length) return INCOMPLETE; // wait for the mouse payload bytes
+  return { drop };
 }
 
 /** Parse an escape sequence starting at `data[i]` (which must be ESC). */
-function parseEscape(data: Uint8Array, i: number): Parsed | typeof INCOMPLETE | null {
+function parseEscape(data: Uint8Array, i: number): Parsed | typeof INCOMPLETE | Dropped {
   if (i + 1 >= data.length) return INCOMPLETE; // lone ESC
   const b2 = data[i + 1]!;
   if (b2 === 0x5b /* '[' */) return parseSequence(data, i, false);
@@ -211,8 +236,8 @@ export function parseKeys(buf: Uint8Array, pending: Uint8Array): { events: KeyEv
     if (b === 0x1b) {
       const res = parseEscape(data, i);
       if (res === INCOMPLETE) break;
-      if (res === null) {
-        i++;
+      if ('drop' in res) {
+        i = res.drop; // unknown sequence: consume it whole, no event
         continue;
       }
       events.push(res.event);
@@ -234,7 +259,11 @@ export function parseKeys(buf: Uint8Array, pending: Uint8Array): { events: KeyEv
       i++;
     } else if (b >= 0x80) {
       const u = decodeUtf8(data, i);
-      if (u === null) break; // partial or invalid UTF-8 → hold the tail in rest
+      if (u === INCOMPLETE) break; // partial UTF-8 → hold the tail in rest
+      if (u === INVALID) {
+        i++; // invalid UTF-8 byte → skip it and keep parsing, don't wedge
+        continue;
+      }
       events.push(ev(u.char, String.fromCharCode(...data.subarray(i, i + u.len))));
       i += u.len;
     } else {

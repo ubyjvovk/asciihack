@@ -93,10 +93,19 @@ export function diff(prev: ScreenGrid | null, next: ScreenGrid): string {
   return out;
 }
 
+/** Mutable shape of the private copy cells (fg/bg are writable arrays here). */
+interface CopyCell {
+  ch: string;
+  fg: [number, number, number];
+  bg: [number, number, number];
+}
+
 /**
- * Terminal screen wrapper: keeps the last painted grid, paints diffs onto the
- * `TermIO`, redraws everything after `invalidate()` or a resize, and switches
- * the alternate screen on enter/leave.
+ * Terminal screen wrapper: keeps its own private copy of the last painted
+ * cells, paints diffs onto the `TermIO`, redraws everything after
+ * `invalidate()` or a resize, and switches the alternate screen on
+ * enter/leave. The private copy (rather than the caller's grid object) means
+ * a grid mutated in place by `quantizeInto` still diffs correctly next frame.
  */
 export class Screen {
   private readonly term: TermIO;
@@ -112,7 +121,31 @@ export class Screen {
   paint(grid: ScreenGrid): void {
     const out = diff(this.prev, grid);
     if (out !== '') this.term.write(out);
-    this.prev = grid;
+    this.remember(grid);
+  }
+
+  /** Copy `grid` into the private buffer, reusing cell storage across frames. */
+  private remember(grid: ScreenGrid): void {
+    if (this.prev === null) {
+      const n = grid.width * grid.height;
+      const cells: CopyCell[] = new Array(n);
+      for (let i = 0; i < n; i++) cells[i] = { ch: ' ', fg: [0, 0, 0], bg: [0, 0, 0] };
+      this.prev = { width: grid.width, height: grid.height, cells };
+    }
+    const copy = this.prev as { width: number; height: number; cells: CopyCell[] };
+    copy.width = grid.width;
+    copy.height = grid.height;
+    for (let i = 0; i < grid.cells.length; i++) {
+      const src = grid.cells[i]!;
+      const dst = copy.cells[i]!;
+      dst.ch = src.ch;
+      dst.fg[0] = src.fg[0];
+      dst.fg[1] = src.fg[1];
+      dst.fg[2] = src.fg[2];
+      dst.bg[0] = src.bg[0];
+      dst.bg[1] = src.bg[1];
+      dst.bg[2] = src.bg[2];
+    }
   }
 
   /** Force the next `paint` to redraw the whole grid. */

@@ -145,4 +145,20 @@ describe('term/screen Screen', () => {
     s.paint(g);
     expect(t.writes[1]).toContain('\x1b[2J');
   });
+
+  it('repaints a cell mutated in place in the same grid object', () => {
+    const t = new FakeTermIO();
+    const s = new Screen(t);
+    const g = grid(2, 1, () => cell('a', RED));
+    s.paint(g);
+    t.writes = [];
+    // Simulate quantizeInto reusing the same grid: mutate a cell in place.
+    g.cells[1] = cell('X', GREEN);
+    s.paint(g);
+    expect(t.writes).toHaveLength(1);
+    const out = t.writes[0]!;
+    expect(out).toContain('\x1b[1;2H');
+    expect(out).toContain('X');
+    expect(stripAnsi(out)).toBe('X');
+  });
 });

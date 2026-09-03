@@ -129,4 +129,42 @@ describe('term/input', () => {
     expect(e.key).toBe('x');
     expect(e.alt).toBe(true);
   });
+
+  it('skips an invalid UTF-8 lead byte', () => {
+    const r = parseKeys(new Uint8Array([0xff, 0x61]), EMPTY);
+    expect(r.events.map((e) => e.key)).toEqual(['a']);
+    expect(r.rest).toEqual(EMPTY);
+  });
+
+  it('skips a bare continuation byte', () => {
+    const r = parseKeys(new Uint8Array([0x80, 0x61]), EMPTY);
+    expect(r.events.map((e) => e.key)).toEqual(['a']);
+    expect(r.rest).toEqual(EMPTY);
+  });
+
+  it('holds a partial UTF-8 sequence until it completes', () => {
+    // First two bytes of € (U+20AC = E2 82 AC): not complete → held.
+    let r = parseKeys(new Uint8Array([0xe2, 0x82]), EMPTY);
+    expect(r.events).toEqual([]);
+    expect(r.rest).toEqual(new Uint8Array([0xe2, 0x82]));
+    // The third byte completes it.
+    r = parseKeys(new Uint8Array([0xac]), r.rest);
+    expect(r.events).toHaveLength(1);
+    expect(r.events[0]!.key).toBe('€');
+    expect(r.rest).toEqual(EMPTY);
+  });
+
+  it('drops an unknown CSI sequence whole', () => {
+    // Focus-in report ESC [ I, then a printable k → only k survives.
+    const r = parseKeys(esc('\x1b[Ik'), EMPTY);
+    expect(r.events.map((e) => e.key)).toEqual(['k']);
+    expect(r.rest).toEqual(EMPTY);
+  });
+
+  it('drops an SGR mouse report whole', () => {
+    // ESC [ <0;10;20M then j → only j survives.
+    const r = parseKeys(esc('\x1b[<0;10;20Mj'), EMPTY);
+    expect(r.events.map((e) => e.key)).toEqual(['j']);
+    expect(r.rest).toEqual(EMPTY);
+  });
 });

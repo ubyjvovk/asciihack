@@ -108,7 +108,12 @@ repaint would not be.
 Wraps `diff` over an injectable `TermIO { write, columns, rows, onResize,
 onKey }` so tests use a fake:
 
-- `paint(grid)` — writes `diff(prev, grid)` and stores the grid as `prev`.
+- `paint(grid)` — writes `diff(prev, grid)`, then copies `grid` into a
+  **private buffer** (reusing that storage frame to frame) rather than storing
+  the caller's grid object. This means a grid mutated in place by
+  `quantizeInto` (the intended per-frame loop) still diffs correctly on the
+  next `paint` — the screen compares against its own snapshot, not against the
+  caller's now-changed grid.
 - `invalidate()` — forgets `prev` so the next paint is a full repaint.
 - `enter()` — `CSI ?1049 h` (alternate screen) + `CSI ?25 l` (hide cursor).
 - `leave()` — `CSI ?1049 l` (leave alt screen) + `CSI 0 m` (reset SGR) +
@@ -138,6 +143,20 @@ All complete events are returned; anything not yet decodable is returned as
 | `ESC [ <final>` / `ESC [ <n>~` / `ESC O <final>` | arrows, `Home`, `End`, `PageUp`, `PageDown`, `Insert`, `Delete`, `F1`–`F12` |
 | `;2` / `;3` / `;5` modifier params | `shift` / `alt` / `ctrl` (xterm bitmask: `;6` = shift+ctrl, `;7` = alt+ctrl) |
 | lone `ESC` at the end of the buffer | kept in `rest` — the caller waits ~25 ms, then calls `flushEscape(rest)` |
+
+**Unknown sequences are dropped whole.** A CSI/SS3 whose final byte is not a
+recognised key (mouse reports `ESC [ M …` and `ESC [ <…M/m`, focus events
+`ESC [ I` / `ESC [ O`, DA responses, …) is consumed up to and including its
+final byte and produces **no** event — the bytes never leak as printable
+keystrokes. `ESC [ M` additionally consumes the three mouse-payload bytes
+that follow it. An incomplete unknown sequence is held in `rest` until its
+final byte arrives.
+
+**Invalid UTF-8 is skipped, not held.** A byte that is not a valid UTF-8 lead
+(bare continuation 0x80–0xBF, 0xC0/0xC1, 0xF8+) or a sequence with a bad
+continuation is skipped one byte at a time, so a stray byte never wedges the
+parser; only a *genuinely partial* UTF-8 sequence at the buffer end is held in
+`rest`.
 
 The named keys are exactly: `Escape Enter Tab Backspace Up Down Left Right
 Home End PageUp PageDown Insert Delete F1 … F12`. `KeyEvent` carries `key`,
