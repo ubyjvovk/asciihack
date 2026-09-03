@@ -6,6 +6,18 @@
  * stays browser-clean.
  */
 import type { Tile } from '../model/types.js';
+import tilesJson from './tiles.json' with { type: 'json' };
+
+let loadedSet: TileSet | null = null;
+
+/**
+ * The bundled tile set (`tiles.json`, imported statically so this works in
+ * Node and in the browser alike), parsed once and cached.
+ */
+export function loadTiles(): TileSet {
+  if (loadedSet === null) loadedSet = tileSetFromFile(tilesJson as unknown as TileFile);
+  return loadedSet;
+}
 
 /** Raw JSON shape of `tiles.json` (see docs/tiles.md). */
 export interface TileFile {
