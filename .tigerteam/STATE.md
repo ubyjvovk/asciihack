@@ -59,6 +59,11 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   before the first ticket.
 
 ## Board snapshot
+- 2026-09-03 20:35 — T-0003 (engine client) accepted after two reworks
+  (raw_print → messages, answer() guard, switch fall-through); T-0012
+  (window_inited) and T-0013 (tsc fix) accepted. 11 done. Master type-checks
+  and passes 88+ tests. T-0004 (classic UI) is now claimable; T-0007 waits
+  on it. Wave-3 candidates: ssh serving, lit/dark rooms, message history.
 - 2026-09-03 19:40 — T-0010 (bridge hardening) and T-0011 (themes gloom/
   solarized/amber) accepted; 8 done. T-0003 (engine client) still with
   opus-1. T-0004 next; then write T-0007 (fps mode) against T-0004's mode
