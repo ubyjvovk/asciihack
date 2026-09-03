@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { renderFirstPerson, KIND_COLORS } from '../src/render/raycast.js';
-import { makeFrameBuffer, type FrameBuffer, type Pose, type Sprite } from '../src/model/types.js';
+import { makeFrameBuffer, type FrameBuffer, type LevelView, type Pose, type Sprite } from '../src/model/types.js';
 import { levelFromAscii, ROOM, L_SHAPED } from './fixtures/levels.js';
 
 const GOLDEN = fileURLToPath(new URL('./raycast-golden.txt', import.meta.url));
@@ -47,6 +47,12 @@ function pose(x: number, y: number, yaw: number): Pose {
 /** Depth read at the centre column of a buffer. */
 function centreDepth(fb: FrameBuffer): number {
   return fb.depth[Math.floor(fb.width / 2) + Math.floor(fb.height / 2) * fb.width]!;
+}
+
+/** Max overlay (sprite) RGB brightness at a cell. */
+function overlayMax(fb: FrameBuffer, x: number, y: number): number {
+  const o = (y * fb.width + x) * 3;
+  return Math.max(fb.overlayRgb[o]!, fb.overlayRgb[o + 1]!, fb.overlayRgb[o + 2]!);
 }
 
 /** True when every field of two buffers is bit-identical. */
@@ -147,20 +153,66 @@ describe('raycast/walls', () => {
     expect(shades.some((s) => Math.abs(s - 1.0) < 0.05)).toBe(true);
   });
 
-  it('stops rays at unexplored cells, which render as dark stone', () => {
-    const level = levelFromAscii(['##########', '#.....   #', '##########']);
+  it('renders an unexplored face 2 cells away as a dark speckled veil with no mortar/edge structure', () => {
+    const level = levelFromAscii(['##########', '#...      #', '##########']);
     const fb = makeFrameBuffer(80, 24);
-    renderFirstPerson(level, pose(1.5, 1.5, Math.PI / 2), [], fb);
+    renderFirstPerson(level, pose(2.0, 1.5, Math.PI / 2), [], fb);
     const d = centreDepth(fb);
     expect(Number.isFinite(d)).toBe(true);
-    expect(d).toBeCloseTo(4.5, 1); // west face of the first unexplored cell (col 6)
+    expect(d).toBeCloseTo(2, 1); // west face of the first unexplored cell (x=4)
     const c = Math.floor(fb.width / 2);
-    const mid = Math.floor(fb.height / 2);
-    // the unexplored wall is near-black (stone colour), not a bright floor
-    const r = fb.rgb[(mid * fb.width + c) * 3]!;
-    const g = fb.rgb[(mid * fb.width + c) * 3 + 1]!;
-    const b = fb.rgb[(mid * fb.width + c) * 3 + 2]!;
-    expect(Math.max(r, g, b)).toBeLessThan(0.06);
+    // only the wall-face rows (depth == d) — the veil is dark: nothing brighter than 0.30
+    const levels = new Set<number>();
+    for (let y = 0; y < fb.height; y++) {
+      const cell = y * fb.width + c;
+      if (Math.abs(fb.depth[cell]! - d) > 0.01) continue;
+      const o = cell * 3;
+      const v = Math.max(fb.rgb[o]!, fb.rgb[o + 1]!, fb.rgb[o + 2]!);
+      expect(v).toBeLessThanOrEqual(0.3); // base (max 0.05) + speckle ≤ 0.25
+      levels.add(Math.round(v * 1000));
+    }
+    // no mortar/edge structure: fewer than 4 distinct brightness levels per column
+    expect(levels.size).toBeLessThan(4);
+  });
+
+  it('renders a stone face as flat grey with only a top edge line', () => {
+    // hero on a floor strip two cells west of an S_stone cell (fixtures have no
+    // stone glyph, so build a minimal LevelView inline)
+    const stoneLevel: LevelView = {
+      width: 3,
+      height: 3,
+      kindAt(x, y) {
+        if (x === 0 || x === 1) return 'floor';
+        return 'stone';
+      },
+      cellAt: () => null,
+    };
+    const fb = makeFrameBuffer(80, 24);
+    renderFirstPerson(stoneLevel, pose(0.5, 1.5, Math.PI / 2), [], fb);
+    const c = Math.floor(fb.width / 2);
+    const d = centreDepth(fb);
+    expect(d).toBeCloseTo(1.5, 1); // west face of the stone cell (x=2)
+    const rows: Array<{ r: number; g: number; b: number }> = [];
+    for (let y = 0; y < fb.height; y++) {
+      const cell = y * fb.width + c;
+      if (Math.abs(fb.depth[cell]! - d) > 0.01) continue;
+      const o = cell * 3;
+      rows.push({ r: fb.rgb[o]!, g: fb.rgb[o + 1]!, b: fb.rgb[o + 2]! });
+    }
+    expect(rows.length).toBeGreaterThan(1);
+    // flat grey: every interior row shares one brightness and is near-neutral
+    const interior = rows.slice(1);
+    const interiorLevels = new Set(
+      interior.map(({ r, g, b }) => Math.round(Math.max(r, g, b) * 1000)),
+    );
+    expect(interiorLevels.size).toBe(1);
+    const mid = interior[0]!;
+    const midMin = Math.min(mid.r, mid.g, mid.b);
+    const midMax = Math.max(mid.r, mid.g, mid.b);
+    expect(midMax - midMin).toBeLessThan(0.02);
+    // top edge: the topmost wall row is brighter than the flat interior
+    const topV = Math.max(rows[0]!.r, rows[0]!.g, rows[0]!.b);
+    expect(topV).toBeGreaterThan(midMax);
   });
 
   it('treats a closed door as solid and door-coloured, an open door as passable', () => {
@@ -254,6 +306,70 @@ describe('raycast/sprites', () => {
     expect(nCells).toBeGreaterThan(0);
     expect(fCells).toBeGreaterThan(0);
     expect(nCells).toBeGreaterThan(fCells);
+  });
+
+  it('renders a monster at distance 3 as a tall figure: taller than wide, corners clear, centre brightest', () => {
+    const level = levelFromAscii([
+      '#############',
+      '#...........#',
+      '#...........#',
+      '#...........#',
+      '#############',
+    ]);
+    const monster: Sprite = { x: 4, y: 1, ch: 'd', rgb: [0.8, 0.8, 0.8], cls: 'mon' };
+    const fb = makeFrameBuffer(80, 24);
+    renderFirstPerson(level, pose(1.5, 1.5, Math.PI / 2), [monster], fb);
+    const cells: Array<[number, number]> = [];
+    for (let y = 0; y < fb.height; y++) {
+      for (let x = 0; x < fb.width; x++) {
+        if (fb.overlayCh[y * fb.width + x] === 'd'.charCodeAt(0)) cells.push([x, y]);
+      }
+    }
+    expect(cells.length).toBeGreaterThan(0);
+    const xs = cells.map(([x]) => x);
+    const ys = cells.map(([, y]) => y);
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    // taller than wide (a standing figure)
+    expect(maxY - minY + 1).toBeGreaterThan(maxX - minX + 1);
+    // the ellipse's bounding-box corners are empty (no overlay cells there)
+    const isCell = (x: number, y: number) => cells.some(([cx, cy]) => cx === x && cy === y);
+    expect(isCell(minX, minY)).toBe(false);
+    expect(isCell(maxX, minY)).toBe(false);
+    expect(isCell(minX, maxY)).toBe(false);
+    expect(isCell(maxX, maxY)).toBe(false);
+    // the centre cell is brighter than the brightest perimeter cell
+    const centreBright = overlayMax(fb, Math.floor((minX + maxX) / 2), Math.floor((minY + maxY) / 2));
+    let maxEdge = 0;
+    for (const [x, y] of cells) {
+      if (x === minX || x === maxX || y === minY || y === maxY) {
+        maxEdge = Math.max(maxEdge, overlayMax(fb, x, y));
+      }
+    }
+    expect(centreBright).toBeGreaterThan(maxEdge);
+  });
+
+  it('renders an item at distance 3 as a low shape whose top row is below the horizon', () => {
+    const level = levelFromAscii([
+      '#############',
+      '#...........#',
+      '#...........#',
+      '#...........#',
+      '#############',
+    ]);
+    const item: Sprite = { x: 4, y: 1, ch: '*', rgb: [0.8, 0.2, 0.2], cls: 'obj' };
+    const fb = makeFrameBuffer(80, 24);
+    renderFirstPerson(level, pose(1.5, 1.5, Math.PI / 2), [item], fb);
+    const ys: number[] = [];
+    for (let y = 0; y < fb.height; y++) {
+      for (let x = 0; x < fb.width; x++) {
+        if (fb.overlayCh[y * fb.width + x] === '*'.charCodeAt(0)) ys.push(y);
+      }
+    }
+    expect(ys.length).toBeGreaterThan(0);
+    expect(Math.min(...ys)).toBeGreaterThan(fb.height / 2); // entirely below the horizon
   });
 });
 
@@ -440,7 +556,12 @@ describe('raycast/golden', () => {
 
   it('matches the committed default-detail (textured) golden render of ROOM at 80×24 facing east', () => {
     const fb = makeFrameBuffer(80, 24);
-    renderFirstPerson(ROOM, pose(7.5, 3.5, Math.PI / 2), [], fb);
+    // pin the shaped sprites: one standing monster and one low item in view east
+    const sprites: Sprite[] = [
+      { x: 9, y: 3, ch: 'd', rgb: [0.8, 0.3, 0.3], cls: 'mon' },
+      { x: 10, y: 4, ch: '*', rgb: [0.8, 0.8, 0.2], cls: 'obj' },
+    ];
+    renderFirstPerson(ROOM, pose(7.5, 3.5, Math.PI / 2), sprites, fb);
     const out = quantize(fb);
     if (process.env.UPDATE_GOLDEN === '1') {
       writeFileSync(TEXTURED_GOLDEN, out);

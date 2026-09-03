@@ -66,3 +66,18 @@ export function gridShade(fX: number, fY: number, edge = 0.7): number {
   if (dx < 0.05 || dy < 0.05) return edge;
   return 1.0;
 }
+
+/**
+ * Speckle brightness for the never-seen (`unexplored`) veil: 0 for most
+ * samples (no speckle), else one of a small set of values in 0.10–0.22 chosen
+ * by the hash over an 8×8 sample grid and the cell `seed`, so each veil cell
+ * is a sparse, stable dark static that never reads as masonry or mortar.
+ */
+export function veilShade(u: number, v: number, seed: number): number {
+  const iu = Math.floor(u * 8) & 7;
+  const iv = Math.floor(v * 8) & 7;
+  const h = hash3(iu, iv, seed);
+  if (h >= 0.12) return 0;
+  // ≈12 % of samples: one of two discrete speckle levels in 0.10–0.22.
+  return Math.floor(h / 0.06) * 0.12 + 0.1;
+}
