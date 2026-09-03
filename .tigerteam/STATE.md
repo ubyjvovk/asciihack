@@ -59,6 +59,12 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   before the first ticket.
 
 ## Board snapshot
+- 2026-09-03 18:20 — T-0006 accepted after one rework; its leftover edge
+  (private copy not reallocated on grid growth) filed as T-0009 (C1). T-0008
+  (ortho renderer) claimed by ds-3. T-0002 (bridge) still with opus-1 (~25 min).
+  Supervisor quirk: idle lanes exit after 8×15 s; a newly eligible ticket then
+  waited 5 min unclaimed until a busy lane freed up — if that recurs, run
+  `tigerteam worker run ds --once` by hand.
 - 2026-09-03 18:00 — T-0005 accepted after one rework (buffer pre-fill). T-0006
   reworked once (Screen.paint aliasing, UTF-8 wedge, unknown CSI leak); ds-3
   on it. T-0002 with opus-1 (~10 min in). Spend ≈ $0.15.
