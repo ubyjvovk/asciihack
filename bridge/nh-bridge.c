@@ -559,6 +559,11 @@ handle_callback(const char *name, void *ret_ptr, const char *fmt, va_list ap)
         }
         fputc(']', stdout);
         emit_call_end_noreply();
+        /* Every real window port sets this at the end of its
+         * init_nhwindows (win/tty/wintty.c ~1885). Until it is TRUE,
+         * pline() routes every message through raw_print() instead of the
+         * message window, so set it here to route pline() to putstr. */
+        iflags.window_inited = TRUE;
         return;
     }
 

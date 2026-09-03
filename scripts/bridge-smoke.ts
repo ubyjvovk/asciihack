@@ -71,6 +71,8 @@ async function main(): Promise<void> {
   let printGlyphCount = 0;
   let sawHeroGlyph = false;
   let nextWindowId = 1;
+  let msgWinId: number | null = null;
+  let sawWelcomePutstr = false;
   let done = false;
 
   function write(obj: Record<string, unknown>): void {
@@ -122,9 +124,19 @@ async function main(): Promise<void> {
         if (hello.nhw.NHW_MAP === win) hero = { x, y };
         break;
       }
-      case 'create_nhwindow':
-        write({ id, ret: nextWindowId++ });
+      case 'create_nhwindow': {
+        const [type] = call.args as [number];
+        const wid = nextWindowId++;
+        if (type === hello.nhw.NHW_MESSAGE) msgWinId = wid;
+        write({ id, ret: wid });
         break;
+      }
+      case 'putstr': {
+        const [win, , s] = call.args as [number, number, string | null];
+        if (win === msgWinId && typeof s === 'string' && s.includes('welcome to NetHack'))
+          sawWelcomePutstr = true;
+        break;
+      }
       case 'player_selection_or_tty':
         write({ id, ret: false });
         break;
@@ -171,7 +183,9 @@ async function main(): Promise<void> {
         }
         if (!sawHeroGlyph) die('no glyph carried MG_HERO before input');
         if (!hero) die('hero position unknown before input');
+        if (!sawWelcomePutstr) die('welcome message not seen via putstr before input');
         console.log(`hero at (${hero.x}, ${hero.y}), ${mapCells.size} map cells, ${printGlyphCount} print_glyph calls`);
+        console.log('welcome via putstr: ok');
         write({ id, ret: 27 }); // ESC → NetHack should try to quit / cancel
         done = true;
         break;

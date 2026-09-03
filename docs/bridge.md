@@ -11,6 +11,21 @@ slot, zeroes exactly the width the call's fmt first character names (`c`/`b`/`0`
 → 1 byte, `2` → `short`, `i` → `int`, `s`/`p` → pointer, `v` → nothing) rather
 than a whole machine word, so a 1- or 2-byte return slot is never overrun.
 
+## Messages
+
+NetHack's `pline()` (`nethack/src/pline.c`) sends every message through
+`raw_print()` while `iflags.window_inited` is false — that is the case until a
+window port's `init_nhwindows` completes. Every real port sets the flag to
+`TRUE` at the end of its `init_nhwindows` (`win/tty/wintty.c` ~1885,
+`win/curses/cursmain.c` ~493), but the shim port never did, so all game
+messages bypassed the message window (no message-window `putstr`, no history,
+no forced `--More--`). The bridge now sets `iflags.window_inited = TRUE;`
+right after forwarding `shim_init_nhwindows`, so `pline()` routes through
+`putstr` on the message window. `raw_print` still appears for text emitted
+before `init_nhwindows` finishes or after shutdown, and for recursive
+`pline()` calls — the `raw_printed` counter in `include/flag.h` tracks how
+many messages went out that way.
+
 ## Build and run
 
 ```
