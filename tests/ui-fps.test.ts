@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { App } from '../src/ui/app.js';
 import { FACINGS, opposite, poseFor, spritesFromMap, strafe, turn, blitGrid, Viewport3D } from '../src/ui/view3d.js';
 import { paintMinimap } from '../src/ui/minimap.js';
@@ -127,6 +128,12 @@ function countChars(grid: ScreenGrid, ch: string): number {
   let n = 0;
   for (const c of grid.cells) if (c.ch === ch) n++;
   return n;
+}
+
+function row0Text(grid: ScreenGrid): string {
+  let s = '';
+  for (let x = 0; x < grid.width; x++) s += grid.cells[x]!.ch;
+  return s;
 }
 
 // ---------------------------------------------------------------------------
@@ -426,5 +433,58 @@ describe('fps/ortho mode controls', () => {
     const session = freshSessionWithHero(replies);
     expect(new FpsMode(session).name).toBe('fps');
     expect(new OrthoMode(session).name).toBe('ortho');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FOV tuning (F6/F7) + settings persistence
+
+describe('FOV tuning and settings', () => {
+  it('F7 twice then F6 leaves the fps mode at 65° and wrote the file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'asciihack-fov-'));
+    const file = join(dir, 'settings.json');
+    const replies: RetMsg[] = [];
+    const session = freshSessionWithHero(replies);
+    const app = new App({ session, term: new FakeTerm(), mode: 'fps', settingsFile: file });
+    expect((app.activeMode as FpsMode).vFovDeg).toBe(60);
+    app.handleKey(ev('F7')); // 65
+    app.handleKey(ev('F7')); // 70
+    app.handleKey(ev('F6')); // 65
+    expect((app.activeMode as FpsMode).vFovDeg).toBe(65);
+    expect(JSON.parse(readFileSync(file, 'utf8')).fov).toBe(65);
+  });
+
+  it('--fov=90 beats a saved 50 and is then saved', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'asciihack-fov-'));
+    const file = join(dir, 'settings.json');
+    writeFileSync(file, JSON.stringify({ fov: 50, theme: 'cyber', minimap: false }));
+    const replies: RetMsg[] = [];
+    const session = freshSessionWithHero(replies);
+    const app = new App({ session, term: new FakeTerm(), mode: 'fps', fov: 90, settingsFile: file });
+    expect((app.activeMode as FpsMode).vFovDeg).toBe(90);
+    expect(JSON.parse(readFileSync(file, 'utf8')).fov).toBe(90);
+  });
+
+  it('F6/F7 are ignored in ortho mode', () => {
+    const replies: RetMsg[] = [];
+    const session = freshSessionWithHero(replies);
+    const app = new App({ session, term: new FakeTerm(), mode: 'ortho' });
+    app.handleKey(ev('F7'));
+    // No crash, and ortho has no vFovDeg; the app simply ignores the key.
+    expect(app.currentMode).toBe('ortho');
+  });
+
+  it('the toast text appears on the message line after F7 and is gone after 2 s', () => {
+    let clock = 1000;
+    const dir = mkdtempSync(join(tmpdir(), 'asciihack-fov-'));
+    const file = join(dir, 'settings.json');
+    const replies: RetMsg[] = [];
+    const session = freshSessionWithHero(replies);
+    const app = new App({ session, term: new FakeTerm(), mode: 'fps', settingsFile: file, now: () => clock });
+    app.handleKey(ev('F7'));
+    expect(row0Text(app.lastGrid!)).toContain('FOV 65°');
+    clock += 2000;
+    app.handleKey(ev('F5')); // any key repaints; the toast has expired
+    expect(row0Text(app.lastGrid!)).not.toContain('FOV 65°');
   });
 });

@@ -13,6 +13,7 @@ import type { KeyEvent } from '../term/input.js';
 import type { Theme } from '../render/themes.js';
 import { Screen, type TermIO } from '../term/screen.js';
 import { blankGrid, putText, UI_BG, UI_FG } from './grid.js';
+import { clampFov, loadSettings, saveSettings, settingsPath, type Settings } from './settings.js';
 import { ClassicMode, type Mode } from './modes/classic.js';
 import { FpsMode } from './modes/fps.js';
 import { OrthoMode } from './modes/ortho.js';
@@ -29,16 +30,25 @@ export const FRAME_MS = 33;
 /** Theme cycle order for F5 (cyber → gloom → solarized → amber). */
 export const THEMES: readonly Theme[] = ['cyber', 'gloom', 'solarized', 'amber'];
 
+/** How long the FOV toast stays on the message line (ms). */
+export const TOAST_MS = 1500;
+
 /** Options accepted by the `App` constructor. */
 export interface AppOptions {
   session: NethackSession;
   term: TermIO;
   /** Requested mode name: `classic`, `fps` or `ortho` (default `fps`). */
   mode?: string;
-  /** Initial render theme for the fps/ortho modes (default `cyber`). */
+  /** Render theme for the fps/ortho modes (CLI override; default/saved `amber`). */
   theme?: Theme;
-  /** Show the minimap in fps/ortho modes (default `true`). */
+  /** Show the minimap in fps/ortho modes (CLI override; default/saved `true`). */
   minimap?: boolean;
+  /** Vertical FOV in degrees (CLI `--fov` override; beats the saved setting). */
+  fov?: number;
+  /** Path to the settings file (default `~/.asciihack/settings.json`). */
+  settingsFile?: string;
+  /** Clock source for the FOV toast (tests inject a fake clock). */
+  now?: () => number;
 }
 
 /**
@@ -55,6 +65,10 @@ export class App {
   private requestedMode: string;
   private theme: Theme;
   private showMinimap: boolean;
+  private fovDeg: number;
+  private readonly settingsFile: string | null;
+  private toastText: string | null = null;
+  private toastUntil = 0;
   private overlay: Overlay | null = null;
   private overlayReq: unknown = null;
   private readonly queue: KeyEvent[] = [];
@@ -65,14 +79,19 @@ export class App {
   private frameTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly now: () => number;
 
-  /** @param opts - session, injectable `TermIO`, requested mode, theme and minimap flag. */
+  /** @param opts - session, injectable `TermIO`, requested mode, theme/minimap/fov and the settings file. */
   constructor(opts: AppOptions) {
     this.session = opts.session;
     this.term = opts.term;
     this.screen = new Screen(opts.term);
-    this.now = () => Date.now();
-    this.theme = opts.theme ?? 'cyber';
-    this.showMinimap = opts.minimap ?? true;
+    this.now = opts.now ?? (() => Date.now());
+    this.settingsFile = opts.settingsFile ?? null;
+    // Precedence: CLI flag > saved setting > built-in default.
+    const loaded: Settings =
+      this.settingsFile !== null ? loadSettings(this.settingsFile) : { fov: 60, theme: 'amber', minimap: true };
+    this.fovDeg = opts.fov !== undefined ? clampFov(opts.fov) : loaded.fov;
+    this.theme = opts.theme ?? loaded.theme;
+    this.showMinimap = opts.minimap ?? loaded.minimap;
     this.modes = {
       classic: new ClassicMode(opts.session),
       fps: new FpsMode(opts.session),
@@ -82,6 +101,10 @@ export class App {
     if (!this.modes[this.requestedMode]) this.requestedMode = 'fps';
     this.mode = this.modes[this.requestedMode]!;
     this.syncModeSettings();
+    // Persist any CLI flag override so it sticks for the next run.
+    if (this.settingsFile !== null && (opts.fov !== undefined || opts.theme !== undefined || opts.minimap !== undefined)) {
+      this.persistSettings();
+    }
 
     this.session.on('change', () => this.repaint());
     this.session.on('request', () => {
@@ -202,14 +225,27 @@ export class App {
     }
   }
 
-  /** Push the App-level theme/minimap settings into the fps/ortho modes. */
+  /** Push the App-level theme/minimap/fov settings into the fps/ortho modes. */
   private syncModeSettings(): void {
     for (const m of Object.values(this.modes)) {
       if (m instanceof FpsMode || m instanceof OrthoMode) {
         m.theme = this.theme;
         m.showMinimap = this.showMinimap;
       }
+      if (m instanceof FpsMode) m.vFovDeg = this.fovDeg;
     }
+  }
+
+  /** Write the current settings to the settings file (never crashes). */
+  private persistSettings(): void {
+    if (this.settingsFile === null) return;
+    saveSettings(this.settingsFile, { fov: this.fovDeg, theme: this.theme, minimap: this.showMinimap });
+  }
+
+  /** Show a one-line toast on the message line for `TOAST_MS` without touching NetHack's messages. */
+  private showToast(text: string): void {
+    this.toastText = text;
+    this.toastUntil = this.now() + TOAST_MS;
   }
 
   /** Schedule another frame while the active mode's `tick` asks for one. */
@@ -270,9 +306,10 @@ export class App {
     this.msgIdx = 0;
   }
 
-  /** Paint row 0: the latest message (or its first chunk + `--More--`). */
+  /** Paint row 0: the latest message (or the FOV toast while one is active). */
   private paintMessageLine(grid: ScreenGrid, width: number): void {
-    const text = this.msgChunks[this.msgIdx] ?? '';
+    const toasting = this.toastText !== null && this.now() < this.toastUntil;
+    const text = toasting ? (this.toastText ?? '') : (this.msgChunks[this.msgIdx] ?? '');
     const line = this.msgMore ? `${text}--More--`.slice(0, width) : text.slice(0, width);
     putText(grid, 0, 0, line, UI_FG, UI_BG);
   }
@@ -310,12 +347,24 @@ export class App {
     if (e.key === 'F4') {
       this.showMinimap = !this.showMinimap;
       this.syncModeSettings();
+      this.persistSettings();
       this.repaint();
       return;
     }
     if (e.key === 'F5') {
       this.theme = THEMES[(THEMES.indexOf(this.theme) + 1) % THEMES.length]!;
       this.syncModeSettings();
+      this.persistSettings();
+      this.repaint();
+      return;
+    }
+    if (e.key === 'F6' || e.key === 'F7') {
+      if (this.mode.name !== 'fps') return; // FOV tuning works in fps only
+      const delta = e.key === 'F7' ? 5 : -5;
+      this.fovDeg = clampFov(this.fovDeg + delta);
+      this.syncModeSettings();
+      this.showToast(`FOV ${Math.round(this.fovDeg)}°`);
+      this.persistSettings();
       this.repaint();
       return;
     }
