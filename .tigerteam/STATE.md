@@ -96,6 +96,12 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   yet.
 
 ## Next actions
+0a. Before T-0007 can be claimed (i.e. right after accepting T-0004 while no
+    attempt runs): restart the supervisor so it loads `OPENROUTER_KEY`
+    (`.env` changed 18:36, supervisor started 17:03) — `tigerteam down
+    --keep-services`, then `tmux split-window -v -t tigerteam-asciihack:0.1 -c
+    /home/d/asciihack 'tigerteam up'`. Then the muse lane (scale 1) claims
+    T-0007 on its own.
 0. Review checklist addition (2026-09-03): run `npx tsc --noEmit` (or
    `bash scripts/check.sh`) in the worktree before accepting any ticket that
    touches TypeScript — vitest does not type-check, and T-0009 slipped a
