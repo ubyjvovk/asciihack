@@ -143,6 +143,11 @@ Not forwarded (the bridge answers itself): `getmsghistory` → `NULL`,
   **No `NHW_STATUS` window is created**; status arrives only via
   `status_update`. A fresh level sends only the *seen* cells (~40–100
   `print_glyph`s), not 1700.
+- Messages: the shim never sets `iflags.window_inited`, so until T-0012
+  lands `pline()` delivers messages through `raw_print`; afterwards
+  through `putstr(WIN_MESSAGE)`. The client treats both as messages and
+  paces them itself (§6.3): NetHack never waits between messages except
+  for an explicit blocking `display_nhwindow(WIN_MESSAGE, true)`.
 - `player_selection_or_tty`: reply `false` always (`true` would make
   NetHack run its tty character setup on the bridge's stdio).
 - `BL_GOLD` arrives as `\GXXXXXXXX:<amount>` (NetHack's glyph escape);
