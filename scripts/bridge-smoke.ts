@@ -27,10 +27,13 @@ interface CallMsg {
   name: string;
   args: unknown[];
 }
+interface MonsterEntry { name: string | null; male: string | null; female: string | null; letter: string; size: number; color: number }
+interface ObjectEntry { name: string | null; descr: string | null; cls: string }
 interface HelloMsg { t: 'hello'; proto: number; S: Record<string, number>; extra?: { extcmds?: unknown[] }; mg: Record<string, number>; nhw: Record<string, number> }
+interface TablesMsg { t: 'tables'; monsters: MonsterEntry[]; objects: ObjectEntry[] }
 interface ExitMsg  { t: 'exit'; code: number; reason?: string }
 interface LogMsg   { t: 'log'; msg: string }
-type BridgeMsg = HelloMsg | CallMsg | ExitMsg | LogMsg;
+type BridgeMsg = HelloMsg | TablesMsg | CallMsg | ExitMsg | LogMsg;
 
 function die(msg: string): never {
   console.error(`bridge-smoke: FAIL — ${msg}`);
@@ -95,6 +98,18 @@ async function main(): Promise<void> {
       const cmds = h.extra.extcmds as Array<{ name?: unknown }>;
       if (!cmds.some((e) => isRecord(e) && e.name === 'quit')) die('extcmds lacks "quit"');
       hello = h;
+      continue;
+    }
+
+    if ((msg as { t: string }).t === 'tables') {
+      const t = msg as unknown as TablesMsg;
+      const jackal = t.monsters.find((m) => m.name === 'jackal');
+      if (!jackal) die('tables.monsters lacks "jackal"');
+      if (jackal.letter !== 'd') die(`jackal letter is ${jackal.letter}, expected d`);
+      if (jackal.size !== 1) die(`jackal size is ${jackal.size}, expected 1 (MZ_SMALL)`);
+      console.log(`monster jackal: letter=${jackal.letter} size=${jackal.size}: ok`);
+      if (!t.objects.some((o) => o.name === 'dagger')) die('tables.objects lacks "dagger"');
+      console.log('object dagger: ok');
       continue;
     }
 
