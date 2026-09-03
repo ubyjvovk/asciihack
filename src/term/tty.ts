@@ -15,13 +15,15 @@ const ESCAPE_TIMEOUT_MS = 25;
 /** Real terminal transport: raw-mode stdin → `KeyEvent`s, stdout writes, resize. */
 export class TtyTerm implements TermIO {
   private keyCb: ((e: KeyEvent) => void) | null = null;
-  private resizeCb: (() => void) | null = null;
+  private resizeCbs: Array<() => void> = [];
   private pending: Uint8Array = new Uint8Array(0);
   private escapeTimer: NodeJS.Timeout | null = null;
   private restored = false;
 
   private readonly dataListener = (chunk: string | Buffer): void => this.handleData(chunk);
-  private readonly resizeListener = (): void => this.resizeCb?.();
+  private readonly resizeListener = (): void => {
+    for (const cb of this.resizeCbs) cb();
+  };
 
   constructor() {
     process.stdin.setRawMode(true);
@@ -56,7 +58,7 @@ export class TtyTerm implements TermIO {
   }
 
   onResize(cb: () => void): void {
-    this.resizeCb = cb;
+    this.resizeCbs.push(cb);
   }
 
   onKey(cb: (e: KeyEvent) => void): void {

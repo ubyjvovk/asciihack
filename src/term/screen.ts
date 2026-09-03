@@ -12,6 +12,8 @@ export interface TermIO {
   write(s: string): void;
   columns: number;
   rows: number;
+  /** Register a resize callback. Multiple listeners are supported (Screen
+   *  invalidates the buffer; App recomposes and paints at the new size). */
   onResize(cb: () => void): void;
   onKey(cb: (e: KeyEvent) => void): void;
 }
