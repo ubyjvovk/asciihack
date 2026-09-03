@@ -26,8 +26,8 @@ renderFirstPerson(level, pose, sprites, fb, opts?)
    its forward vector is `(sin yaw, −cos yaw)`, perpendicular camera plane of
    length `tan(hFov/2)`.
 2. **Walls.** One grid-DDA ray per column (Wolfenstein-style). A ray stops at
-   the first `isSolid` cell; `unexplored` counts as solid so the world ends in
-   dark stone where knowledge ends. Doorways and open doors are passable — the
+   the first `isSolid` cell; `unexplored` counts as solid so the world ends
+   where knowledge ends. Doorways and open doors are passable — the
    ray continues and the floor under them is tinted in the door colour
    (approximating the spec's "thin frame", which cannot carry door orientation
    through the `CellKind` model). Perpendicular distance is used for the wall
@@ -46,10 +46,13 @@ renderFirstPerson(level, pose, sprites, fb, opts?)
    floor/ceiling cells; it is `Infinity` only where no wall was hit (the ray
    left the map or exceeded `maxDepth`).
 7. **Sprites.** Sorted far-to-near, transformed into camera space, clipped per
-   cell against `fb.depth` (a nearer wall/floor hides them). Each sprite is a
-   billboard 0.7 cells wide × 0.9 tall standing on its cell; its screen
-   rectangle gets `overlayCh = sprite.ch` and `overlayRgb = sprite.rgb ×
-   attenuation`. A sprite on the camera cell (the hero) is skipped.
+   cell against `fb.depth` (a nearer wall/floor hides them). Monsters (classes
+   `mon`, `pet`, `ridden`, `detected`, `invisible`, `statue`) draw as a standing
+   figure 0.45 cells wide × 0.9 tall, items (`obj`, `body`) as a low shape
+   0.4 × 0.3 whose bottom sits on the floor row for its distance; both use the
+   ellipse shading and dark rim described under “Sprites” below. Other sprite
+   classes keep a rectangular billboard 0.7 × 0.9. A sprite on the camera cell
+   (the hero) is skipped.
 
 ## Surface detail
 
@@ -87,7 +90,46 @@ commits); the default is covered by `raycast-textured-golden.txt`.
   is at 1.25× (light edge) and the bottom row at 0.8× (contact shadow). A
   column whose hit cell or hit side differs from its left neighbour's (a
   corner or a different wall block) gets its whole wall span at 1.15× —
-  vertical corner lines. Edge and corner lines apply to `wall` cells.
+  vertical corner lines. Edge and corner lines apply to `wall` cells; `stone`
+  gets only the top edge line (flat known rock, no mortar or corners).
+
+### The unknown
+
+Never-explored (`unexplored`) cells stay opaque — rays still stop at them —
+but they paint as a dark veil, not masonry. The face is the flat base colour
+`[0.03, 0.03, 0.05]` with **no brick texture, no top/bottom edge lines and no
+corner lines**, plus `veilShade(u, v, seed)` added to the base: `0` for most
+samples and, for ≈ 12 % of them, one of two discrete speckle levels in
+`0.10–0.22` chosen by the hash over an 8×8 sample grid and the cell `seed`.
+The speckle is stable per cell and per sample (no flicker) and sparse enough
+that a face reads as dark static — visibly different from the regular mortar
+and brick of a real wall. Depth is still written for these cells, so sprites
+and fog behave as if the veil were a wall. Known rock (`stone`, an `S_stone`
+glyph NetHack actually displayed) stays a flat dark grey `[0.12, 0.12, 0.13]`
+with the top edge line — solid and known, distinct from both bricks and the
+veil. Corridor sides and dead ends are `unexplored` in NetHack's own model, so
+a corridor reads as a lit path through darkness, exactly the information the
+game gives.
+
+### Sprites
+
+Monsters (`mon`, `pet`, `ridden`, `detected`, `invisible`, `statue`) draw as
+standing figures and items (`obj`, `body`) as low shapes, replacing the flat
+rectangular billboard. A figure is an ellipse (semi-axes `halfW = fH·fw/(2·tY)`,
+`halfH = fV·fh/(2·tY)`) standing on the floor row for its distance
+`floorY = horizon + 0.5·fV/tY`, where `fw/fh` are 0.45/0.9 for monsters and
+0.4/0.3 for items. Within the screen bounding box, a cell with normalised
+offset `(dx, dy)` from the figure centre is:
+
+- part of the body when `dx² + dy² ≤ 1`, shaded `1 − 0.45·(dx² + dy²)`
+  (`1.0` at the centre, `0.55` at the edge) times the sprite colour before fog;
+- a dark rim when `1 < dx² + dy² ≤ 1.35`, the letter at brightness `0.22`;
+- skipped otherwise.
+
+Every figure and rim cell prints the sprite's letter. The depth test is per
+cell as before, so figures occlude against nearer walls/floor. Far sprites
+(fewer than 2 cells tall) collapse to a single letter at full brightness with
+no rim.
 
 Detail costs a little per-pixel hashing but stays well under the 8 ms budget
 for a 200×60 frame (measured ~1.3 ms with detail on).
@@ -104,7 +146,8 @@ renderer can reuse it. `CEILING_COLOR` is the ceiling base colour.
 | door_open / doorway | `[0.45,0.30,0.12]` |
 | tree | `[0.15,0.45,0.15]` |
 | bars | `[0.30,0.60,0.65]` |
-| stone / unexplored | `[0.06,0.06,0.07]` |
+| stone | `[0.12,0.12,0.13]` |
+| unexplored | `[0.03,0.03,0.05]` |
 | floor | `[0.40,0.37,0.33]` |
 | corridor | `[0.28,0.22,0.16]` |
 | water | `[0.10,0.25,0.60]` |

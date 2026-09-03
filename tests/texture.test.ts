@@ -4,7 +4,7 @@
  * node with no renderer or I/O.
  */
 import { describe, expect, it } from 'vitest';
-import { barsShade, brickShade, gridShade, plankShade } from '../src/render/texture.js';
+import { barsShade, brickShade, gridShade, plankShade, veilShade } from '../src/render/texture.js';
 
 describe('texture/brickShade', () => {
   it('returns mortar (0.65) at row and column boundaries and brick body elsewhere', () => {
@@ -68,5 +68,28 @@ describe('texture/gridShade', () => {
 
   it('uses a stronger edge factor for stairs', () => {
     expect(gridShade(0.03, 0.5, 0.5)).toBe(0.5);
+  });
+});
+
+describe('texture/veilShade', () => {
+  it('is sparse (≈12 % ± 4 % non-zero) and stable, with non-zero values in 0.10–0.22', () => {
+    let nonZero = 0;
+    const samples = 10000;
+    const seed = 7;
+    for (let s = 0; s < samples; s++) {
+      const u = (s % 80) / 80;
+      const v = (s % 60) / 60;
+      const val = veilShade(u, v, seed);
+      if (val !== 0) {
+        nonZero++;
+        expect(val).toBeGreaterThanOrEqual(0.1);
+        expect(val).toBeLessThanOrEqual(0.22);
+      }
+      // same inputs must give the same output (stable per cell and per sample)
+      expect(veilShade(u, v, seed)).toBe(val);
+    }
+    const frac = nonZero / samples;
+    expect(frac).toBeGreaterThanOrEqual(0.08);
+    expect(frac).toBeLessThanOrEqual(0.16);
   });
 });

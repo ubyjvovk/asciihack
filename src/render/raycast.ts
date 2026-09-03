@@ -4,7 +4,7 @@
  * fills the buffer and returns nothing. No I/O, no globals.
  */
 import { isSolid, type CellKind, type FrameBuffer, type LevelView, type Pose, type Sprite } from '../model/types.js';
-import { barsShade, brickShade, gridShade, plankShade } from './texture.js';
+import { barsShade, brickShade, gridShade, plankShade, veilShade } from './texture.js';
 
 /** Per-kind linear RGB (0..1, before exposure and fog). Anything not listed is floor-coloured. */
 export const KIND_COLORS: Record<CellKind, readonly [number, number, number]> = {
@@ -14,8 +14,8 @@ export const KIND_COLORS: Record<CellKind, readonly [number, number, number]> = 
   door_open: [0.45, 0.3, 0.12],
   tree: [0.15, 0.45, 0.15],
   bars: [0.3, 0.6, 0.65],
-  stone: [0.06, 0.06, 0.07],
-  unexplored: [0.06, 0.06, 0.07],
+  stone: [0.12, 0.12, 0.13],
+  unexplored: [0.03, 0.03, 0.05],
   floor: [0.4, 0.37, 0.33],
   corridor: [0.28, 0.22, 0.16],
   water: [0.1, 0.25, 0.6],
@@ -235,12 +235,23 @@ export function renderFirstPerson(
             if (y === y0) texFactor *= 1.25;
             else if (y === y1) texFactor *= 0.8;
             texFactor *= corner;
+          } else if (hitKind === 'stone' && y === y0) {
+            texFactor *= 1.25; // known rock: flat grey with only the top edge line
           }
-          const factor = faceFactor * texFactor;
           const i = (y * cols + c) * 3;
-          fb.rgb[i] = baseColor[0] * factor * atten;
-          fb.rgb[i + 1] = baseColor[1] * factor * atten;
-          fb.rgb[i + 2] = baseColor[2] * factor * atten;
+          if (hitKind === 'unexplored') {
+            // the unknown: a dark veil, not a wall — flat base plus a sparse
+            // speckle, no brick, no edge/corner lines, so it reads as never seen.
+            const veil = veilShade(uFrac, v, seed);
+            fb.rgb[i] = (baseColor[0] + veil) * atten;
+            fb.rgb[i + 1] = (baseColor[1] + veil) * atten;
+            fb.rgb[i + 2] = (baseColor[2] + veil) * atten;
+          } else {
+            const factor = faceFactor * texFactor;
+            fb.rgb[i] = baseColor[0] * factor * atten;
+            fb.rgb[i + 1] = baseColor[1] * factor * atten;
+            fb.rgb[i + 2] = baseColor[2] * factor * atten;
+          }
           fb.depth[y * cols + c] = d;
         }
       }
@@ -348,29 +359,84 @@ export function renderFirstPerson(
     .sort((a, b) => b.dx * b.dx + b.dy * b.dy - (a.dx * a.dx + a.dy * a.dy));
 
   const invDet = 1 / (planeX * dirY - dirX * planeY);
+  // figure classes: standing monsters vs low items lying on the floor
+  const MONSTER_CLS = new Set(['mon', 'pet', 'ridden', 'detected', 'invisible', 'statue']);
+  const ITEM_CLS = new Set(['obj', 'body']);
   for (const { s, dx, dy } of ordered) {
     const tX = invDet * (dirY * dx - dirX * dy);
     const tY = invDet * (-planeY * dx + planeX * dy);
     if (tY <= 1e-6) continue; // behind the camera
     const screenX = (cols / 2) * (1 + tX / tY);
-    const halfW = (fH * 0.7) / (2 * tY); // billboard 0.7 cells wide
-    const yTop = horizon - (fV * 0.4) / tY; // billboard 0.9 cells tall, base at floor
-    const yBot = horizon + (fV * 0.5) / tY;
+    const atten = Math.exp(-fogK * tY);
+    const ch = s.ch.charCodeAt(0);
+    const floorY = horizon + (fV * 0.5) / tY; // floor row at this distance
+    if (!MONSTER_CLS.has(s.cls) && !ITEM_CLS.has(s.cls)) {
+      // unusual sprite classes keep the legacy rectangular billboard
+      const halfW = (fH * 0.7) / (2 * tY);
+      const yTop = horizon - (fV * 0.4) / tY;
+      const yBot = floorY;
+      const x0 = Math.max(0, Math.floor(screenX - halfW));
+      const x1 = Math.min(cols - 1, Math.ceil(screenX + halfW));
+      const yy0 = Math.max(0, Math.floor(yTop));
+      const yy1 = Math.min(rows - 1, Math.ceil(yBot));
+      for (let y = yy0; y <= yy1; y++) {
+        for (let x = x0; x <= x1; x++) {
+          const cell = y * cols + x;
+          if (fb.depth[cell]! < tY) continue; // a closer wall/floor hides this sprite cell
+          fb.overlayCh[cell] = ch;
+          const o = cell * 3;
+          fb.overlayRgb[o] = s.rgb[0] * atten;
+          fb.overlayRgb[o + 1] = s.rgb[1] * atten;
+          fb.overlayRgb[o + 2] = s.rgb[2] * atten;
+          fb.depth[cell] = tY;
+        }
+      }
+      continue;
+    }
+    // a shaped figure, base on the floor: monsters stand 0.45×0.9 cells,
+    // items lie low at 0.4×0.3 cells.
+    const fw = MONSTER_CLS.has(s.cls) ? 0.45 : 0.4;
+    const fh = MONSTER_CLS.has(s.cls) ? 0.9 : 0.3;
+    const halfW = (fH * fw) / (2 * tY);
+    const halfH = (fV * fh) / (2 * tY);
+    const yBot = floorY;
+    const yTop = yBot - (fV * fh) / tY;
+    const centreY = (yTop + yBot) / 2;
+    if (yBot - yTop < 2) {
+      // far sprites collapse to a single letter at full brightness, no rim
+      const xc = Math.round(screenX);
+      const yc = Math.round(centreY);
+      if (xc < 0 || xc >= cols || yc < 0 || yc >= rows) continue;
+      const cell = yc * cols + xc;
+      if (fb.depth[cell]! < tY) continue;
+      fb.overlayCh[cell] = ch;
+      const o = cell * 3;
+      fb.overlayRgb[o] = s.rgb[0] * atten;
+      fb.overlayRgb[o + 1] = s.rgb[1] * atten;
+      fb.overlayRgb[o + 2] = s.rgb[2] * atten;
+      fb.depth[cell] = tY;
+      continue;
+    }
     const x0 = Math.max(0, Math.floor(screenX - halfW));
     const x1 = Math.min(cols - 1, Math.ceil(screenX + halfW));
     const y0 = Math.max(0, Math.floor(yTop));
     const y1 = Math.min(rows - 1, Math.ceil(yBot));
-    const atten = Math.exp(-fogK * tY);
-    const ch = s.ch.charCodeAt(0);
     for (let y = y0; y <= y1; y++) {
       for (let x = x0; x <= x1; x++) {
         const cell = y * cols + x;
         if (fb.depth[cell]! < tY) continue; // a closer wall/floor hides this sprite cell
+        const dxn = (x + 0.5 - screenX) / halfW;
+        const dyn = (y + 0.5 - centreY) / halfH;
+        const r2 = dxn * dxn + dyn * dyn;
+        if (r2 > 1.35) continue; // outside the figure and its dark rim
+        // figure cells shade from 1.0 at the centre to 0.55 at the ellipse edge;
+        // the 1 < r² ≤ 1.35 ring is the letter at 0.22 (a dark separating rim).
+        const bright = r2 <= 1 ? 1 - 0.45 * r2 : 0.22;
         fb.overlayCh[cell] = ch;
         const o = cell * 3;
-        fb.overlayRgb[o] = s.rgb[0] * atten;
-        fb.overlayRgb[o + 1] = s.rgb[1] * atten;
-        fb.overlayRgb[o + 2] = s.rgb[2] * atten;
+        fb.overlayRgb[o] = s.rgb[0] * bright * atten;
+        fb.overlayRgb[o + 1] = s.rgb[1] * bright * atten;
+        fb.overlayRgb[o + 2] = s.rgb[2] * bright * atten;
         fb.depth[cell] = tY;
       }
     }
