@@ -63,6 +63,10 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   before the first ticket.
 
 ## Board snapshot
+- 2026-09-04 01:00 — T-0020 reinstated + merged (user), T-0021 (ortho v2)
+  accepted; 21 done. README screenshots refreshed (fps + new ortho) and
+  pushed. Queued: T-0022 (ortho cutaway). Board otherwise empty; browser
+  wave still awaits the user's WASM-vs-thin-client decision.
 - 2026-09-04 00:20 — T-0019 (opaque panels, muse, fast and clean) and T-0017
   (veil for the unknown + shaped sprites) accepted; 19 done. T-0021 (ortho
   v2) claimable. TODO after T-0021: refresh docs/screenshot-fps.png (kitten

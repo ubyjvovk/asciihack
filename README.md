@@ -11,6 +11,13 @@ stairs, the kitten, the compass ribbon and the minimap](docs/screenshot-fps.png)
 Top-right: minimap with the hero as a facing arrow. Bottom: NetHack's
 status lines.*
 
+![Isometric view of the same room: raised brick walls with lit tops and
+shaded faces, the hero and the kitten as figures, a faint lattice over
+unexplored space](docs/screenshot-ortho.png)
+
+*The same room in the ortho view (`F3`). Tiles scale with the terminal so
+the hero stays about a seventh of the screen height.*
+
 ## What it is
 
 - **Unmodified NetHack.** The game is the `nethack/` git submodule, built
@@ -26,10 +33,11 @@ status lines.*
   and as a minimap. Four looks ported from AsciiCity's shaders: cyber,
   gloom, solarized, amber.
 
-Status (September 2026): playable end to end in all three modes. In
-progress: shaped monster sprites and "unknown space as darkness" in the
-first-person view, opaque menu panels, and a zoomable 3/4 ortho view. The
-browser build that reuses AsciiCity's three.js styles is not started.
+Status (September 2026): playable end to end in all three modes, with
+textured walls, shaped sprites, unknown space rendered as darkness, a
+compass, opaque menu panels and a zoomable 3/4 ortho view. In progress:
+cutaway walls so the hero is never hidden in the ortho view. The browser
+build that reuses AsciiCity's three.js styles is not started.
 
 ## Build
 
