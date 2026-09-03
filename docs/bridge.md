@@ -6,6 +6,11 @@ defined in `docs/architecture.md` §3. It is the single native piece of
 this project — everything upstream of it (`src/engine/*`, renderers,
 UI) reads and writes JSON only.
 
+For an unknown call the bridge logs it and, when the shim passes a return
+slot, zeroes exactly the width the call's fmt first character names (`c`/`b`/`0`
+→ 1 byte, `2` → `short`, `i` → `int`, `s`/`p` → pointer, `v` → nothing) rather
+than a whole machine word, so a 1- or 2-byte return slot is never overrun.
+
 ## Build and run
 
 ```
