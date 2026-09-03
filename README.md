@@ -39,7 +39,7 @@ your saves persist and the build directory stays clean.
 | `--no-minimap` | – | hide the minimap overlay in fps/ortho |
 | `--name=` | `asciihack` | character name |
 | `--bridge=` | `build/nethack/bridge/nh-bridge` | path to the bridge binary |
-| `--playground=` | `build/nethack/bridge/playground` | source dir copied to `~/.asciihack/playground` on first run |
+| `--playground=` | `~/.asciihack/playground` | per-player playground dir (used as `NETHACKDIR`); copied from the build on first use |
 | `--options=` | – | extra `NETHACKOPTIONS` (comma-separated) |
 
 ## Key bindings
@@ -57,6 +57,14 @@ your saves persist and the build directory stays clean.
 
 Menus, text windows, `yn`/`getlin` prompts and extended-command lines appear as
 boxed overlays centred on the viewport.
+
+## Play over ssh
+
+`ssh play@host` drops straight into AsciiHack (first-person view), with one
+NetHack playground per player name — e.g. `ssh -t play@host mia` plays as `mia`.
+Everything a host operator needs is `bin/asciihack-login` plus
+`scripts/ssh-serve.sh`; see **`docs/ssh.md`** for the full walk-through
+(build, setup, test, names → playgrounds, saves, security, terminal needs).
 
 ## Layout
 
