@@ -59,6 +59,10 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   before the first ticket.
 
 ## Board snapshot
+- 2026-09-03 19:05 — T-0002 (bridge, opus, ~$?) and T-0008 (ortho) accepted;
+  6 done. T-0003 claimed by opus-1. Host has `build/nethack/{lib,bridge}`
+  built and the smoke passing. architecture.md §3 now carries the as-built
+  facts + bridge hardening backlog.
 - 2026-09-03 18:20 — T-0006 accepted after one rework; its leftover edge
   (private copy not reallocated on grid growth) filed as T-0009 (C1). T-0008
   (ortho renderer) claimed by ds-3. T-0002 (bridge) still with opus-1 (~25 min).
@@ -86,8 +90,8 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
    reachable (or pass `-d`/`NETHACKDIR` and confirm SYSCF still resolves).
    Also `nethack-build.sh` copies the submodule's `.git` file into src-tree
    (harmless; exclude it in a later cleanup).
-3. After T-0002: reconcile `docs/architecture.md` §3 with `docs/bridge.md`
-   deviations before T-0003 starts (T-0003 is told to follow the bridge).
+3. (done) §3 reconciled with `docs/bridge.md`; T-0003's Context carries
+   the live-bridge observations.
 4. Wave 2 tickets to write once T-0004 + T-0005 land: T-0007 fps mode
    (viewport painter + controls §6.4 + minimap overlay), T-0008 ortho
    renderer + mode (§5.3), T-0009 ssh serving (`ForceCommand`/login-shell

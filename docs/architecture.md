@@ -131,6 +131,32 @@ Not forwarded (the bridge answers itself): `getmsghistory` → `NULL`,
 `get_color_string` → `NULL`, `set_shim_font_name` → 0, `ctrl_nhwindow` →
 `NULL`.
 
+**As built (T-0002, 2026-09-03) — facts the client relies on**, details in
+`docs/bridge.md`:
+
+- Startup order: `init_nhwindows` → `create_nhwindow(NHW_MESSAGE)` →
+  `status_init` → `create_nhwindow(NHW_MAP)` → (tutorial prompt as an
+  `NHW_MENU` window + `select_menu`, unless `!tutorial`) →
+  `display_nhwindow` message + map → `player_selection` (reply `0`; with
+  role/race/gender/align unset NetHack picks at random itself) →
+  `cliparound`/`curs` → `status_update`s → `print_glyph`s → `nhgetch`.
+  **No `NHW_STATUS` window is created**; status arrives only via
+  `status_update`. A fresh level sends only the *seen* cells (~40–100
+  `print_glyph`s), not 1700.
+- `player_selection_or_tty`: reply `false` always (`true` would make
+  NetHack run its tty character setup on the bridge's stdio).
+- `BL_GOLD` arrives as `\GXXXXXXXX:<amount>` (NetHack's glyph escape);
+  strip the escape.
+- `hello.mg`: `MG_BW_SINK`, `MG_BW_ENGR`, `MG_BW_ICE` share one bit.
+- The bridge `chdir`s to `NETHACKDIR` before `nhmain` (the lib is built
+  without `CHDIR`), and the installed `sysconf` has `GDBPATH` disabled.
+- `exit` carries `reason: "atexit"` (code 0) when NetHack calls `exit()`
+  itself; `reason` otherwise only on the error path.
+- Known hardening backlog (harmless today, bundle into the next bridge
+  ticket): read `start_menu`'s `mbehavior` as `unsigned long`; the
+  unknown-call fallback must zero only the return width named by `fmt`;
+  bounds-check the window id in `select_menu`.
+
 ### 3.4 Glyph info
 
 Every `glyph_info *` becomes an object matching `GlyphInfo` in
