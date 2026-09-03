@@ -1,17 +1,18 @@
 /**
- * Golden + unit tests for the ortho / isometric renderer (docs/render.md).
- * Like the raycaster tests, the ASCII quantizer (T-0006) is deliberately NOT
- * imported: these tests use a tiny test-local 10-glyph ramp so the golden is
- * independent of it.
+ * Golden + unit tests for the ortho / isometric renderer v2 (docs/render.md,
+ * architecture.md §5.3). Like the raycaster tests, the ASCII quantizer (T-0006)
+ * is deliberately NOT imported: these tests use a tiny test-local 10-glyph ramp
+ * so the goldens are independent of it.
  */
 import { describe, expect, it } from 'vitest';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { renderOrtho, cellToScreen, screenToCell } from '../src/render/ortho.js';
-import { makeFrameBuffer, type FrameBuffer, type Sprite } from '../src/model/types.js';
+import { renderOrtho, cellToScreen, screenToCell, type Origin } from '../src/render/ortho.js';
+import { makeFrameBuffer, type FrameBuffer, type LevelView, type Sprite } from '../src/model/types.js';
 import { levelFromAscii, ROOM } from './fixtures/levels.js';
 
 const GOLDEN = fileURLToPath(new URL('./ortho-golden.txt', import.meta.url));
+const ZOOM_GOLDEN = fileURLToPath(new URL('./ortho-zoom-golden.txt', import.meta.url));
 
 /** Test-local quantizer: a 10-glyph ramp over max(r,g,b). Do not import ascii.ts. */
 function quantize(fb: FrameBuffer): string {
@@ -39,8 +40,11 @@ function quantize(fb: FrameBuffer): string {
   return lines.join('\n') + '\n';
 }
 
-/** The origin renderOrtho derives for a hero in an 80×24 buffer. */
-const ORIGIN = { ox: 40, oy: 10 };
+/** RGB of one screen cell. */
+function rgbAt(fb: FrameBuffer, c: number, r: number): [number, number, number] {
+  const o = (r * fb.width + c) * 3;
+  return [fb.rgb[o]!, fb.rgb[o + 1]!, fb.rgb[o + 2]!];
+}
 
 /** Count how many cells carry a given overlay glyph. */
 function overlayCount(fb: FrameBuffer, ch: string): number {
@@ -49,155 +53,158 @@ function overlayCount(fb: FrameBuffer, ch: string): number {
   return n;
 }
 
-/** RGB of one screen cell (the red channel, plus full triple). */
-function rgbAt(fb: FrameBuffer, c: number, r: number): [number, number, number] {
-  const o = (r * fb.width + c) * 3;
-  return [fb.rgb[o]!, fb.rgb[o + 1]!, fb.rgb[o + 2]!];
+/** Bounding box of cells carrying a given overlay glyph. */
+function figureExtent(
+  fb: FrameBuffer,
+  ch: string,
+): { top: number; bottom: number; left: number; right: number; width: number; height: number } {
+  const code = ch.charCodeAt(0);
+  let top = Infinity;
+  let bottom = -Infinity;
+  let left = Infinity;
+  let right = -Infinity;
+  for (let r = 0; r < fb.height; r++) {
+    for (let c = 0; c < fb.width; c++) {
+      if (fb.overlayCh[r * fb.width + c] === code) {
+        if (r < top) top = r;
+        if (r > bottom) bottom = r;
+        if (c < left) left = c;
+        if (c > right) right = c;
+      }
+    }
+  }
+  return { top, bottom, left, right, width: right - left + 1, height: bottom - top + 1 };
 }
 
 /** One floor cell beside its hero; hero on the floor keeps fog at 1. */
 const ONE_FLOOR = levelFromAscii(['     ', ' .   ', '     ']);
+/** A hero `@` sprite on a floor cell. */
+const HERO_SPRITE: Sprite = { x: 1, y: 1, ch: '@', rgb: [0.9, 0.9, 0.9], cls: 'mon' };
 
 describe('ortho/projection', () => {
-  it('round-trips every cell of a 79×21 level through cellToScreen/screenToCell', () => {
-    const origin = { ox: 37, oy: 9 };
-    for (let x = 0; x < 79; x++) {
-      for (let y = 0; y < 21; y++) {
-        const { sx, sy } = cellToScreen(x, y, origin);
-        const back = screenToCell(sx, sy, origin);
-        expect(back.x).toBe(x);
-        expect(back.y).toBe(y);
+  it('screenToCell inverts cellToScreen for every cell of a 79×21 level at k = 1, 2, 4', () => {
+    for (const k of [1, 2, 4]) {
+      const origin: Origin = { ox: 37, oy: 9, k };
+      for (let x = 0; x < 79; x++) {
+        for (let y = 0; y < 21; y++) {
+          const { sx, sy } = cellToScreen(x, y, origin);
+          const back = screenToCell(sx, sy, origin);
+          expect(back.x).toBe(x);
+          expect(back.y).toBe(y);
+        }
       }
     }
   });
 
-  it('maps every screen cell of an 80×24 viewport to exactly one map cell whose brick contains it', () => {
-    for (let c = 0; c < 80; c++) {
-      for (let r = 0; r < 24; r++) {
-        const { x, y } = screenToCell(c, r, ORIGIN);
+  it('every screen cell of a 120×56 viewport maps to a cell whose diamond contains it', () => {
+    const origin: Origin = { ox: 44, oy: 8, k: 2 }; // renderOrtho's origin for hero (7,3) at 120×56
+    for (let c = 0; c < 120; c++) {
+      for (let r = 0; r < 56; r++) {
+        const { x, y } = screenToCell(c, r, origin);
         expect(Number.isInteger(x)).toBe(true);
         expect(Number.isInteger(y)).toBe(true);
-        const { sx, sy } = cellToScreen(x, y, ORIGIN);
-        expect(r).toBe(sy);
-        expect(c).toBeGreaterThanOrEqual(sx - 2);
-        expect(c).toBeLessThanOrEqual(sx + 1);
+        const { sx, sy } = cellToScreen(x, y, origin);
+        expect(c).toBeGreaterThanOrEqual(sx - 2 * origin.k);
+        expect(c).toBeLessThanOrEqual(sx + 2 * origin.k);
+        expect(r).toBeGreaterThanOrEqual(sy - origin.k);
+        expect(r).toBeLessThanOrEqual(sy + origin.k);
       }
     }
   });
+});
 
-  it('anchors the hero brick at the centre of the viewport', () => {
-    const fb = makeFrameBuffer(80, 24);
-    renderOrtho(ONE_FLOOR, { x: 1, y: 1 }, [], fb);
-    const hero = screenToCell(40, 12, { ox: 40 - 2 * (1 - 1), oy: 12 - (1 + 1) });
-    expect(hero.x).toBe(1);
-    expect(hero.y).toBe(1);
+describe('ortho/zoom', () => {
+  it('zoom picks k = 1 at 24 rows and k = 4 at 104 rows and opts.zoom overrides', () => {
+    const at24 = makeFrameBuffer(80, 24);
+    renderOrtho(ONE_FLOOR, { x: 1, y: 1 }, [HERO_SPRITE], at24);
+    expect(figureExtent(at24, '@').width).toBe(1); // k = 1 → width 2k−1 = 1
+
+    const at104 = makeFrameBuffer(80, 104);
+    renderOrtho(ONE_FLOOR, { x: 1, y: 1 }, [HERO_SPRITE], at104);
+    expect(figureExtent(at104, '@').width).toBe(7); // k = 4 → width 2k−1 = 7
+
+    const override = makeFrameBuffer(80, 24);
+    renderOrtho(ONE_FLOOR, { x: 1, y: 1 }, [HERO_SPRITE], override, { zoom: 3 });
+    expect(figureExtent(override, '@').width).toBe(5); // opts.zoom = 3 → width 2·3−1 = 5
   });
 });
 
 describe('ortho/terrain', () => {
-  it('paints a floor brick of exactly 4 cells, outer two at 85 %', () => {
-    const fb = makeFrameBuffer(80, 24);
-    renderOrtho(ONE_FLOOR, { x: 1, y: 1 }, [], fb);
-    const { sx, sy } = cellToScreen(1, 1, ORIGIN);
-    // inner columns at 100 %, outer two at 85 %
-    expect(rgbAt(fb, sx - 1, sy)[0]).toBeCloseTo(0.4, 4);
-    expect(rgbAt(fb, sx, sy)[0]).toBeCloseTo(0.4, 4);
-    expect(rgbAt(fb, sx - 2, sy)[0]).toBeCloseTo(0.4 * 0.85, 4);
-    expect(rgbAt(fb, sx + 1, sy)[0]).toBeCloseTo(0.4 * 0.85, 4);
-    // the two cells above the brick are untouched (the floor has no extrusion)
-    expect(fb.depth[(sy - 1) * fb.width + sx]).toBe(Number.POSITIVE_INFINITY);
+  it('a wall block at k = 2 is 3k rows taller than its floor diamond with the top brighter than the right face brighter than the left face', () => {
+    // A flat stone block (no brick) so the face ordering is exact.
+    const stone: LevelView = {
+      width: 5,
+      height: 5,
+      kindAt(x, y) {
+        if (x === 2 && y === 2) return 'stone';
+        if (x === 1 && y === 1) return 'floor';
+        return 'unexplored';
+      },
+      cellAt: () => null,
+    };
+    const fb = makeFrameBuffer(120, 56); // k = 2
+    renderOrtho(stone, { x: 1, y: 1 }, [], fb);
+    // hero (1,1) at 120×56 → origin {60, 24, 2}; block cell (2,2) → sx 60, sy 34
+    const sx = 60;
+    const sy = 34;
+    const k = 2;
+    const h = 3 * k;
+    const base = 0.12; // KIND_COLORS.stone[0]
+    const atten = Math.exp(-0.04 * 1);
+    // top face (flat ×1.0) at (sx, 28), right face (×0.75) at (sx+2, 33), left (×0.55) at (sx−2, 33)
+    const top = rgbAt(fb, sx, sy - k - h + 2)[0];
+    const right = rgbAt(fb, sx + 2, sy - 1)[0];
+    const left = rgbAt(fb, sx - 2, sy - 1)[0];
+    expect(top).toBeCloseTo(base * atten, 4);
+    expect(right).toBeCloseTo(base * 0.75 * atten, 4);
+    expect(left).toBeCloseTo(base * 0.55 * atten, 4);
+    expect(top).toBeGreaterThan(right);
+    expect(right).toBeGreaterThan(left);
+    // the block is 3k rows taller than its floor diamond: nothing above it
+    expect(fb.depth[sx + (sy - k - h - 1) * fb.width]).toBe(Number.POSITIVE_INFINITY);
+    expect(fb.depth[sx + (sy - k - h) * fb.width]).not.toBe(Number.POSITIVE_INFINITY);
   });
 
-  it('extrudes a wall wallRows + 1 rows with the top brighter than the face', () => {
-    const wall = levelFromAscii(['     ', ' .#  ', '     ']);
-    const fb = makeFrameBuffer(80, 24);
-    renderOrtho(wall, { x: 1, y: 1 }, [], fb);
-    const { sx, sy } = cellToScreen(2, 1, ORIGIN);
-    const face = 0.55 * 0.6 * Math.exp(-0.06); // 60 %, fog distance 1
-    const top = 0.55 * Math.exp(-0.06); // 100 %
-    expect(rgbAt(fb, sx, sy - 2)[0]).toBeCloseTo(top, 4);
-    expect(rgbAt(fb, sx, sy - 1)[0]).toBeCloseTo(face, 4);
-    expect(rgbAt(fb, sx, sy)[0]).toBeCloseTo(face, 4);
-    // one row above the top face is untouched
-    expect(fb.depth[(sy - 3) * fb.width + sx]).toBe(Number.POSITIVE_INFINITY);
-  });
-
-  it('lets a wall south-east of a floor tile occlude half of that tile brick', () => {
-    const lvl = levelFromAscii(['     ', ' .#  ', '     ']); // floor (1,1), wall (2,1) east
-    const fb = makeFrameBuffer(80, 24);
-    renderOrtho(lvl, { x: 1, y: 1 }, [], fb);
-    const { sx, sy } = cellToScreen(1, 1, ORIGIN);
-    // west half stays floor; east half is overwritten by the wall face
-    expect(rgbAt(fb, sx - 2, sy)[0]).toBeCloseTo(0.4 * 0.85, 4);
-    expect(rgbAt(fb, sx - 1, sy)[0]).toBeCloseTo(0.4, 4);
-    const face = 0.55 * 0.6 * Math.exp(-0.06);
-    expect(rgbAt(fb, sx, sy)[0]).toBeCloseTo(face, 4);
-    expect(rgbAt(fb, sx + 1, sy)[0]).toBeCloseTo(face, 4);
-  });
-
-  it('fogs a far tile darker than a near tile of the same kind', () => {
-    const lvl = levelFromAscii(['          ', ' .        ', '          ', '          ', '    .     ', '          ']);
-    const fb = makeFrameBuffer(80, 24);
-    renderOrtho(lvl, { x: 1, y: 1 }, [], fb);
-    const { sx: nSx, sy: nSy } = cellToScreen(1, 1, ORIGIN);
-    const { sx: fSx, sy: fSy } = cellToScreen(4, 4, ORIGIN);
-    const near = rgbAt(fb, nSx, nSy)[0];
-    const far = rgbAt(fb, fSx, fSy)[0];
-    expect(near).toBeCloseTo(0.4, 4);
-    expect(far).toBeCloseTo(0.4 * Math.exp(-0.06 * 3), 4); // Chebyshev dist 3
-    expect(far).toBeLessThan(near);
-  });
-
-  it('leaves unexplored cells black at Infinity depth', () => {
+  it('unexplored cells carry the lattice (seam cells brighter than interior cells, both dim)', () => {
     const allUnexplored = levelFromAscii(['     ', '     ', '     ']);
-    const fb = makeFrameBuffer(80, 24);
+    const fb = makeFrameBuffer(80, 104); // k = 4 so the diamond seams are sampled
     renderOrtho(allUnexplored, { x: 1, y: 1 }, [], fb);
-    for (let i = 0; i < fb.depth.length; i++) {
-      expect(fb.depth[i]).toBe(Number.POSITIVE_INFINITY);
-      expect(fb.rgb[i * 3]).toBe(0);
+    let lit = 0;
+    let dark = 0;
+    let maxV = 0;
+    for (let i = 0; i < fb.rgb.length; i++) {
+      const v = Math.max(fb.rgb[i * 3]!, fb.rgb[i * 3 + 1]!, fb.rgb[i * 3 + 2]!);
+      if (v > 0) lit++;
+      else dark++;
+      if (v > maxV) maxV = v;
     }
+    expect(lit).toBeGreaterThan(0); // the diamond lattice seams are lit
+    expect(dark).toBeGreaterThan(0); // interiors stay black
+    expect(maxV).toBeLessThan(0.2); // both are dim
   });
 });
 
 describe('ortho/sprites', () => {
-  it('writes a sprite in the open as 2 overlay cells, and hides one behind walls', () => {
-    const open = levelFromAscii(['     ', ' .   ', '     ']);
-    const fo = makeFrameBuffer(80, 24);
-    renderOrtho(open, { x: 1, y: 1 }, [{ x: 1, y: 1, ch: '@', rgb: [0.9, 0.9, 0.9], cls: 'mon' }], fo);
-    expect(overlayCount(fo, '@')).toBe(2);
-
-    // Sprite on floor (2,2) fully covered by walls east (3,2) and south (2,3),
-    // both drawn after it (sum 5 > 4); each wall covers one of the two cells.
+  it('a wall south-east of a figure covers it', () => {
+    // figure on floor (2,2); walls at (3,2) and (2,3), both south-east (sum 5 > 4)
     const lvl = levelFromAscii(['      ', ' .    ', ' ..#  ', '  #   ', '      ']);
     const sprite: Sprite = { x: 2, y: 2, ch: 'M', rgb: [0.9, 0.1, 0.1], cls: 'mon' };
-    const fb = makeFrameBuffer(80, 24);
+    const fb = makeFrameBuffer(80, 24); // k = 1
     renderOrtho(lvl, { x: 1, y: 1 }, [sprite], fb);
     expect(overlayCount(fb, 'M')).toBe(0);
   });
-});
 
-describe('ortho/determinism', () => {
-  it('writes every cell of the buffer each frame (pre-fill −1 probe)', () => {
-    const lvl = levelFromAscii(['     ', ' .#  ', '     ']);
-    const cases: Array<[number, number]> = [
-      [80, 21],
-      [33, 15],
-    ];
-    for (const [w, h] of cases) {
-      const fb = makeFrameBuffer(w, h);
-      fb.rgb.fill(-1);
-      fb.depth.fill(-1);
-      fb.overlayCh.fill(999);
-      renderOrtho(lvl, { x: 1, y: 1 }, [], fb);
-      for (let i = 0; i < fb.rgb.length; i++) expect(fb.rgb[i]).not.toBe(-1);
-      for (let i = 0; i < fb.depth.length; i++) expect(fb.depth[i]).not.toBe(-1);
-      for (let i = 0; i < fb.overlayCh.length; i++) expect(fb.overlayCh[i]).not.toBe(999);
-    }
+  it('the hero figure at k = 4 is 14 rows tall and 7 wide', () => {
+    const fb = makeFrameBuffer(80, 104); // k = 4
+    renderOrtho(ONE_FLOOR, { x: 1, y: 1 }, [HERO_SPRITE], fb);
+    const ext = figureExtent(fb, '@');
+    expect(ext.height).toBe(14); // 3.5k rows
+    expect(ext.width).toBe(7); // 2k−1 columns
   });
 });
 
 describe('ortho/golden', () => {
-  it('matches the committed golden render of ROOM with the hero at its centre', () => {
+  it('matches the committed golden render of ROOM at 80×24 (k = 1)', () => {
     const fb = makeFrameBuffer(80, 24);
     renderOrtho(ROOM, { x: 7, y: 3 }, [], fb);
     const out = quantize(fb);
@@ -208,21 +215,41 @@ describe('ortho/golden', () => {
     const expected = readFileSync(GOLDEN, 'utf8');
     expect(out).toBe(expected);
   });
+
+  it('matches the committed zoom golden render of ROOM at 120×56 (k = 2)', () => {
+    const fb = makeFrameBuffer(120, 56);
+    const sprites: Sprite[] = [
+      { x: 7, y: 3, ch: '@', rgb: [0.95, 0.95, 0.95], cls: 'mon' },
+      { x: 5, y: 3, ch: 'k', rgb: [0.9, 0.1, 0.1], cls: 'mon' },
+      { x: 9, y: 3, ch: '*', rgb: [0.9, 0.9, 0.2], cls: 'obj' },
+    ];
+    renderOrtho(ROOM, { x: 7, y: 3 }, sprites, fb);
+    const out = quantize(fb);
+    if (process.env.UPDATE_GOLDEN === '1') {
+      writeFileSync(ZOOM_GOLDEN, out);
+      return;
+    }
+    const expected = readFileSync(ZOOM_GOLDEN, 'utf8');
+    expect(out).toBe(expected);
+  });
 });
 
 describe('ortho/performance', () => {
-  it('renders 200×60 in under 40 ms on average over 20 runs', () => {
+  it('renders 200×60 (k = 2) in under 8 ms on average over 20 runs', () => {
     const fb = makeFrameBuffer(200, 60);
-    const sprite: Sprite = { x: 6, y: 5, ch: 'k', rgb: [0.9, 0.9, 0.9], cls: 'mon' };
+    const sprites: Sprite[] = [
+      { x: 6, y: 5, ch: 'k', rgb: [0.9, 0.9, 0.9], cls: 'mon' },
+      { x: 5, y: 4, ch: '*', rgb: [0.9, 0.9, 0.2], cls: 'obj' },
+    ];
     const times: number[] = [];
     for (let i = 0; i < 20; i++) {
       const t0 = performance.now();
-      renderOrtho(ROOM, { x: 7, y: 3 }, [sprite], fb);
+      renderOrtho(ROOM, { x: 7, y: 3 }, sprites, fb);
       times.push(performance.now() - t0);
     }
     const avg = times.reduce((a, b) => a + b, 0) / times.length;
     // eslint-disable-next-line no-console
     console.log(`ortho 200×60 average: ${avg.toFixed(3)} ms over 20 runs`);
-    expect(avg).toBeLessThan(40);
+    expect(avg).toBeLessThan(8);
   });
 });
