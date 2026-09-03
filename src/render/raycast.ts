@@ -79,6 +79,15 @@ export function renderFirstPerson(
 
   const cols = fb.width;
   const rows = fb.height;
+
+  // Every frame the whole buffer is (re)written, including cells no pass covers:
+  // clears stale overlay glyphs from a previous frame and guarantees the gap
+  // rows left by an odd-height horizon (and columns whose ray escapes the map or
+  // exceeds maxDepth) hold black at infinite depth instead of old data.
+  fb.overlayCh.fill(0);
+  fb.overlayRgb.fill(0);
+  fb.rgb.fill(0);
+  fb.depth.fill(Number.POSITIVE_INFINITY);
   const fovRad = (fovDeg * Math.PI) / 180;
   // Vertical FOV is aspect-corrected: a terminal cell is twice as tall as wide.
   const vFovRad = (fovRad * rows * cellAspect) / cols;
