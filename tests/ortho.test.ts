@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { renderOrtho, cellToScreen, screenToCell, type Origin } from '../src/render/ortho.js';
+import { KIND_COLORS } from '../src/render/raycast.js';
 import { makeFrameBuffer, type FrameBuffer, type LevelView, type Sprite } from '../src/model/types.js';
 import { levelFromAscii, ROOM } from './fixtures/levels.js';
 
@@ -226,7 +227,7 @@ describe('ortho/cutaway', () => {
     const far = rgbAt(fb, 72, 61)[0];
     expect(adj).toBeLessThanOrEqual(0.4 * far);
     expect(adj).toBeLessThan(far);
-    expect(far).toBeCloseTo(0.55, 2); // KIND_COLORS.wall red, kept full
+    expect(far).toBeCloseTo(KIND_COLORS.wall[0]!, 2); // wall red, kept full
   });
 
   it('the hero figure centre cell still carries the hero letter when a wall block covers it', () => {
