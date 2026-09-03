@@ -312,13 +312,22 @@ FrameBuffer, opts?: RaycastOptions)`:
 - Pure: no I/O, no globals; deterministic for a given input. Tested with a
   golden ASCII dump of a synthetic room (see §9).
 
-### 5.3 Ortho renderer (`src/render/ortho.ts`) — wave 2
+### 5.3 Ortho renderer (`src/render/ortho.ts`) — v2 (T-0021)
 
-`renderOrtho(level, hero, sprites, fb, opts)`: 2:1 isometric projection
-(classic "diamond" tiles, 4 cells wide × 2 rows tall per map cell) centred
-on the hero, walls extruded 1 cell up with a lit top and a shaded east face,
-sprites standing on their tile via the overlay plane. Specified in detail by
-the wave-2 ticket; the interface above is fixed.
+`renderOrtho(level, hero, sprites, fb, opts)`: a zoomable 2:1 isometric
+projection centred on the hero. `k = clamp(round(rows / 28), 1, 6)` (or
+`opts.zoom`); a map cell is a diamond `4k` columns wide and `2k` rows
+tall. Screen position of map point `(X, Y)`: `c = ox + 2k·(X − Y)`,
+`r = oy + k·(X + Y)`; the inverse maps a screen cell through its centre
+(`u = (c + 0.5 − ox)/2k`, `v = (r + 0.5 − oy)/k`, `X = (u + v)/2`,
+`Y = (v − u)/2`, cell = floor), so every screen cell belongs to exactly
+one map cell. North is up-right on screen, east down-right. Walls are
+blocks extruded `3k` rows with a lit top and two shaded side faces (SW
+0.55, SE 0.75, brick-textured); painter's order back to front; monsters
+and the hero are shaped figures `3.5k` rows tall standing on their tile;
+items are low shapes; unexplored space shows the diamond lattice faintly
+so the map never floats in pure black. Fog `exp(−0.04·dist)`.
+(v1, T-0008, was the fixed `k = 1` brick projection.)
 
 ### 5.4 ASCII quantizer (`src/render/ascii.ts`)
 
