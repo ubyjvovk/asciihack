@@ -168,6 +168,20 @@ describe('NethackSession — map bookkeeping', () => {
     // Both a raw_print and a putstr fired a `message` event, in order.
     expect(messages).toEqual(['Velkommen, welcome to NetHack!', 'You see here 2 gold pieces.']);
   });
+
+  it('preference_update and update_positionbar are not messages', () => {
+    const messages: string[] = [];
+    const replies: RetMsg[] = [];
+    const s = new NethackSession((r) => replies.push(r));
+    s.on('message', (m: string) => messages.push(m));
+    s.handle(makeHello());
+    createWindow(s, 1, 1, replies); // NHW_MESSAGE (id 1)
+    // Both carry string args that must NOT leak into the message history.
+    s.handle(tCall('preference_update', ['statuslines']));
+    s.handle(tCall('update_positionbar', ['S:St:14 Dx:10 Co:10']));
+    expect(s.messages).toEqual([]);
+    expect(messages).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------

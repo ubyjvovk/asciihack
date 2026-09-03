@@ -521,6 +521,18 @@ export class NethackSession extends EventEmitter {
       case 'change_background':
       case 'preference_update':
       case 'update_positionbar':
+      case 'get_nh_event':
+      case 'resume_nhwindows':
+      case 'suspend_nhwindows':
+      case 'exit_nhwindows':
+      case 'putmsghistory':
+      case 'update_inventory':
+      case 'cliparound':
+      case 'mark_synch':
+      case 'wait_synch':
+      case 'nhbell':
+      case 'delay_output':
+        return;
       case 'raw_print':
       case 'raw_print_bold': {
         // NetHack's pline() falls back to raw_print until iflags.window_inited
@@ -534,18 +546,6 @@ export class NethackSession extends EventEmitter {
         }
         return;
       }
-      case 'get_nh_event':
-      case 'resume_nhwindows':
-      case 'suspend_nhwindows':
-      case 'exit_nhwindows':
-      case 'putmsghistory':
-      case 'update_inventory':
-      case 'cliparound':
-      case 'mark_synch':
-      case 'wait_synch':
-      case 'nhbell':
-      case 'delay_output':
-        return;
       case 'player_selection': {
         if (typeof id === 'number') this.replyFn({ id, ret: 0 });
         return;
