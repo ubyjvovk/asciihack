@@ -49,8 +49,12 @@ the doc disagree, flag it in your report instead of guessing.
   the same CFLAGS as `libnethack.a` (struct layouts depend on them).
 - Tests: vitest `describe/it/expect`, one file per module, numbers via
   `toBeCloseTo`. Every ticket lists the cases its tests must cover — cover
-  them all, by name, so the reviewer can find them. Tests must not need
-  the C build unless guarded with `describe.skipIf(!bridgeBuilt)`.
+  them all, by name, so the reviewer can find them. **Choose tests
+  carefully; do not pad.** No TDD ritual, no test per function, no
+  duplicate or trivial assertions (constructors, getters, "returns an
+  object"): a test earns its place by pinning down behaviour a reviewer
+  cares about or a bug you actually hit. Tests must not need the C build
+  unless guarded with `describe.skipIf(!bridgeBuilt)`.
 - Docs: a one-line JSDoc on every exported function/class; each ticket
   names the `docs/*.md` file to write or update.
 - Commits: `[T-NNNN] <title>`, only files inside the ticket's scope.
