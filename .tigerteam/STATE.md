@@ -63,6 +63,10 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   before the first ticket.
 
 ## Board snapshot
+- 2026-09-04 00:20 — T-0019 (opaque panels, muse, fast and clean) and T-0017
+  (veil for the unknown + shaped sprites) accepted; 19 done. T-0021 (ortho
+  v2) claimable. TODO after T-0021: refresh docs/screenshot-fps.png (kitten
+  now a figure) + add an ortho screenshot, push.
 - 2026-09-03 23:50 — T-0018 (compass/minimap arrow/rose) accepted; T-0020
   (resize repaint) cancelled by the user after landing (record in drafts/,
   branch deleted). README rewritten with docs/screenshot-fps.png
