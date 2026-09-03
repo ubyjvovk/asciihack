@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { App } from '../src/ui/app.js';
+import { blankGrid, PANEL_BG, UI_BG } from '../src/ui/grid.js';
+import { createOverlay } from '../src/ui/overlays.js';
 import { NethackSession } from '../src/engine/session.js';
 import type { HelloMsg, RetMsg } from '../src/engine/protocol.js';
 import type { ScreenGrid } from '../src/model/types.js';
@@ -315,5 +317,63 @@ describe('App — Saving auto-dismiss', () => {
     app.handleKey(ev(' '));
     expect(session.pending).toBeNull();
     expect(replies.at(-1)).toEqual({ id: 61, ret: 0 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Opaque panel (T-0019)
+
+describe('overlay panel background', () => {
+  it('overlay box clears its interior and margin', () => {
+    const { session, replies, hello } = makeReady();
+    session.handle({ t: 'call', name: 'create_nhwindow', args: [hello.nhw.NHW_MENU], id: 4 });
+    const win = replies.at(-1)!.ret as number;
+    session.handle({ t: 'call', name: 'start_menu', args: [win, 0] });
+    session.handle({ t: 'call', name: 'add_menu', args: [win, null, 0, 'a', '', 0, 0, 'Apple', 0] });
+    session.handle({ t: 'call', name: 'end_menu', args: [win, 'Pick'] });
+    session.handle({ t: 'call', name: 'select_menu', args: [win, 1], id: 70 });
+    const pending = session.pending;
+    if (pending === null || pending.kind !== 'menu') throw new Error('expected menu pending');
+    const overlay = createOverlay(pending, session);
+    expect(overlay).not.toBeNull();
+
+    // Scene stand-in: every cell '#' on red.
+    const grid = blankGrid(80, 24);
+    const red: readonly [number, number, number] = [255, 0, 0];
+    for (const cell of grid.cells) {
+      cell.ch = '#';
+      cell.bg = red;
+    }
+    overlay!.paint(grid);
+
+    // Recover the box rect from the inner rect (inner = box inset by 1).
+    // Menu with 1 item: bodyW = 24, boxW = 26, boxH = 5; centred on 80x24.
+    const boxW = 26;
+    const boxH = 5;
+    const bx = Math.floor(80 / 2) - Math.floor(boxW / 2);
+    const by = Math.floor(24 / 2) - Math.floor(boxH / 2);
+    // Every cell inside the box (border included): PANEL_BG, no '#'.
+    for (let y = by; y < by + boxH; y++) {
+      for (let x = bx; x < bx + boxW; x++) {
+        const cell = grid.cells[y * grid.width + x]!;
+        expect(cell.bg).toEqual([...PANEL_BG]);
+        expect(cell.ch).not.toBe('#');
+      }
+    }
+    // One-cell margin: cleared to ' ' on UI_BG.
+    for (let x = bx - 1; x <= bx + boxW; x++) {
+      for (const y of [by - 1, by + boxH]) {
+        const cell = grid.cells[y * grid.width + x]!;
+        expect(cell.ch).toBe(' ');
+        expect(cell.bg).toEqual([...UI_BG]);
+      }
+    }
+    for (let y = by; y < by + boxH; y++) {
+      for (const x of [bx - 1, bx + boxW]) {
+        const cell = grid.cells[y * grid.width + x]!;
+        expect(cell.ch).toBe(' ');
+        expect(cell.bg).toEqual([...UI_BG]);
+      }
+    }
   });
 });
