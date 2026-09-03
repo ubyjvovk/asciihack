@@ -205,22 +205,28 @@ describe('App — terminal too small', () => {
 // Mode switching
 
 describe('App — mode switching', () => {
-  it('F2 shows the "not yet" banner and stays in classic', () => {
+  it.skipIf(loadFixture('start.jsonl').length === 0)('F2 switches to fps mode', () => {
+    const fixture = loadFixture('start.jsonl');
     const replies: RetMsg[] = [];
     const session = freshSession(replies);
     const term = new FakeTerm();
     const app = new App({ session, term, mode: 'classic' });
 
-    session.handleBatch([]);
+    // Replay to the start state (dismissing the intro display on the way).
+    let r = feedUntilPending(session, fixture, 0);
+    expect(r.pending?.kind).toBe('display');
+    app.handleKey(ev('Escape'));
+    r = feedUntilPending(session, fixture, r.idx);
+    expect(r.pending?.kind).toBe('pos');
+    const classicRow = rowText(app.lastGrid!, 11);
+
     app.handleKey(ev('F2'));
 
     expect(app.currentMode).toBe('fps');
+    expect(app.activeMode.name).toBe('fps');
     const grid = app.lastGrid!;
-    expect(rowText(grid, 1)).toContain('not yet implemented');
-
-    // Classic is still active: pressing F1 clears the banner, map still drawn.
-    app.handleKey(ev('F1'));
-    expect(app.currentMode).toBe('classic');
-    expect(rowText(app.lastGrid!, 1)).not.toContain('not yet implemented');
+    expect(rowText(grid, 1)).not.toContain('not yet implemented');
+    // The viewport now shows the 3D view, not the classic map row.
+    expect(rowText(grid, 11)).not.toBe(classicRow);
   });
 });

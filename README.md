@@ -46,7 +46,7 @@ your saves persist and the build directory stays clean.
 
 - **Classic mode**: every key goes straight to NetHack (`hjkl` to move, `i`
   inventory, `S` save, `#` extended commands, …).
-- **Fps mode**: `Left`/`Right` turn, `Up`/`Down` walk forward/back, `Shift`+arrows
+- **Fps mode**: `Left`/`Right` turn 45°, `Up`/`Down` walk forward/back, `Shift`+arrows
   strafe; typing a vi-key (`hjklyubn`) moves that way and turns to face it.
 - **Ortho mode**: arrows are plain moves (`h`/`l`/`k`/`j`); vi-keys work too.
 - `F1` classic · `F2` fps · `F3` ortho · `F4` toggle minimap · `F5` cycle theme

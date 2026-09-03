@@ -206,7 +206,7 @@ describe('view3d poseFor and Viewport3D', () => {
 // fps/ortho App key routing
 
 describe('fps mode key routing', () => {
-  it('Right then Up sends l (east) without any key for the turn itself', () => {
+  it('Right then Up sends u (north-east); Right twice then Up sends l (east)', () => {
     const replies: RetMsg[] = [];
     const session = freshSessionWithHero(replies);
     const term = new FakeTerm();
@@ -218,10 +218,17 @@ describe('fps mode key routing', () => {
     app.handleKey(ev('Right'));
     expect(session.pending?.kind).toBe('key'); // turn consumed, request still pending
     expect(replies.length).toBe(before);
-    expect(fps.currentFacing.name).toBe('E');
+    expect(fps.currentFacing.name).toBe('NE');
     app.handleKey(ev('Up'));
     expect(session.pending).toBeNull();
-    expect(replies.at(-1)).toEqual({ id: 7, ret: 'l'.charCodeAt(0) });
+    expect(replies.at(-1)).toEqual({ id: 7, ret: 'u'.charCodeAt(0) });
+
+    // A second turn steps to east, so Up then sends 'l'.
+    session.handle({ t: 'call', name: 'nhgetch', args: [], id: 70 } as unknown as BridgeMsg);
+    app.handleKey(ev('Right'));
+    expect(fps.currentFacing.name).toBe('E');
+    app.handleKey(ev('Up'));
+    expect(replies.at(-1)).toEqual({ id: 70, ret: 'l'.charCodeAt(0) });
   });
 
   it('Down after facing north sends j', () => {
@@ -234,15 +241,16 @@ describe('fps mode key routing', () => {
     expect(replies.at(-1)).toEqual({ id: 8, ret: 'j'.charCodeAt(0) });
   });
 
-  it('Shift+Left sends the strafe key', () => {
+  it('Shift+Right strafes 90° right and sends l when facing north', () => {
     const replies: RetMsg[] = [];
     const session = freshSessionWithHero(replies);
     const term = new FakeTerm();
     const app = new App({ session, term, mode: 'fps' });
     session.handle({ t: 'call', name: 'nhgetch', args: [], id: 9 } as unknown as BridgeMsg);
-    app.handleKey(ev('Left', { shift: true }));
-    // Facing north, strafing left = west = 'h'.
-    expect(replies.at(-1)).toEqual({ id: 9, ret: 'h'.charCodeAt(0) });
+    app.handleKey(ev('Right', { shift: true }));
+    // Facing north, strafing right = east = 'l'; the facing is unchanged.
+    expect(replies.at(-1)).toEqual({ id: 9, ret: 'l'.charCodeAt(0) });
+    expect((app.activeMode as FpsMode).currentFacing.name).toBe('N');
   });
 
   it('typing y sends y and sets facing NW so the next Up sends y', () => {
@@ -278,7 +286,7 @@ describe('fps mode key routing', () => {
     }
     expect(ticks).toBeLessThanOrEqual(6);
     expect(mode.tick(t + 1000)).toBe(false);
-    expect(mode.currentYaw).toBeCloseTo(Math.PI / 2);
+    expect(mode.currentYaw).toBeCloseTo(Math.PI / 4);
   });
 });
 

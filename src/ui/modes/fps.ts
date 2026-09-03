@@ -158,11 +158,9 @@ export class FpsMode implements Mode {
     if (e.key === 'Left' || e.key === 'Right') {
       const dir = e.key === 'Right' ? 1 : -1;
       if (!e.shift) {
-        // Turn: consumed, never sent to NetHack. One press steps two 45°
-        // facings (90°) so a single Right from north faces east (the
-        // acceptance criterion); 45° facings remain for vi-key sync.
-        const step = dir === 1 ? 1 : -1;
-        this.startTurn(turn(turn(this.facing, step), step));
+        // Turn: consumed, never sent to NetHack. One press steps a single
+        // 45° facing (the 8 facings map to NetHack's 8 directions).
+        this.startTurn(turn(this.facing, dir));
         return;
       }
       // Strafe: send the sidestep key, facing unchanged.
