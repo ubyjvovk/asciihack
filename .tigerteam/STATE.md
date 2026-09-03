@@ -63,6 +63,14 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   before the first ticket.
 
 ## Board snapshot
+- 2026-09-03 21:20 — **T-0004 accepted: NetHack is playable in classic mode
+  through our stack** (PM playtested in tmux: intro text overlay, messages,
+  movement, inventory menu, save, restore, exit 0). 12 done. Supervisor
+  restarted 19:09 with OPENROUTER_KEY; T-0007 (fps+ortho, assignee muse) is
+  now claimable. UI polish backlog for a later ticket: yn overlay prints
+  `[]` for the default when it is a control char; menu cancel should send
+  ret −1 (needs a session path); consider auto-dismissing the final
+  `--More--` when the bridge has already exited.
 - 2026-09-03 20:35 — T-0003 (engine client) accepted after two reworks
   (raw_print → messages, answer() guard, switch fall-through); T-0012
   (window_inited) and T-0013 (tsc fix) accepted. 11 done. Master type-checks
@@ -96,7 +104,7 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   yet.
 
 ## Next actions
-0a. Before T-0007 can be claimed (i.e. right after accepting T-0004 while no
+0a. (done 19:09) Before T-0007 can be claimed (i.e. right after accepting T-0004 while no
     attempt runs): restart the supervisor so it loads `OPENROUTER_KEY`
     (`.env` changed 18:36, supervisor started 17:03) — `tigerteam down
     --keep-services`, then `tmux split-window -v -t tigerteam-asciihack:0.1 -c
