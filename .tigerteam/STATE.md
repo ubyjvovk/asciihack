@@ -63,6 +63,12 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   before the first ticket.
 
 ## Board snapshot
+- 2026-09-03 21:50 — T-0007 (muse lane, first bake): fps + ortho modes work
+  in the PM playtest; reworked once for 45° turns (PM's acceptance line was
+  inconsistent with the Context — muse flagged it) and the obsolete classic
+  placeholder test. muse: 31 min, $0.11, honest report, solid code — keep
+  at C2, consider scale 2. Flat untextured walls look like a uniform block
+  up close → T-0016 (procedural textures, floor grid, door frames).
 - 2026-09-03 21:20 — **T-0004 accepted: NetHack is playable in classic mode
   through our stack** (PM playtested in tmux: intro text overlay, messages,
   movement, inventory menu, save, restore, exit 0). 12 done. Supervisor
