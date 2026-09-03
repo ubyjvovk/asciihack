@@ -87,6 +87,10 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   yet.
 
 ## Next actions
+0. Review checklist addition (2026-09-03): run `npx tsc --noEmit` (or
+   `bash scripts/check.sh`) in the worktree before accepting any ticket that
+   touches TypeScript — vitest does not type-check, and T-0009 slipped a
+   TS2345 through (fixed by T-0013).
 1. Review T-0006 and the T-0005 rework when they land.
 2. Note for T-0004/T-0007: `libnethack.a` bakes `SYSCF_FILE` and `HACKDIR`
    as absolute paths into `build/nethack/lib/playground/`; the bridge's
