@@ -138,6 +138,7 @@ export type Answer =
   | { kind: 'yn'; ch: number }
   | { kind: 'getlin'; text: string }
   | { kind: 'menu'; selected: ReadonlyArray<{ i: number; count: number }> }
+  | { kind: 'menu'; cancelled: true }
   | { kind: 'dismiss' }
   | { kind: 'display' }
   | { kind: 'extcmd'; index: number }
@@ -303,11 +304,17 @@ export class NethackSession extends EventEmitter {
       case 'getlin':
         return { id: p.id, ret: a.text };
       case 'menu': {
-        if (a.selected.length === 0) return { id: p.id, ret: 0, selected: [] };
+        // `cancelled` (ESC) and "no selection" (Enter with nothing picked)
+        // are different at the protocol level: cancel is `ret -1` with no
+        // `selected` field, no-selection is `ret 0` with `selected: []`
+        // (docs/architecture.md §3.3 `select_menu`).
+        if ('cancelled' in a) return { id: p.id, ret: -1 };
+        const sel = a.selected;
+        if (sel.length === 0) return { id: p.id, ret: 0, selected: [] };
         return {
           id: p.id,
-          ret: a.selected.length,
-          selected: a.selected.map((s) => ({ i: s.i, count: s.count })),
+          ret: sel.length,
+          selected: sel.map((s) => ({ i: s.i, count: s.count })),
         };
       }
       case 'dismiss':

@@ -33,6 +33,14 @@ active mode's optional `tick(nowMs)` returns `true`, the app repaints at
 ≤ 30 fps (`FRAME_MS = 33`, `setTimeout`, never a busy loop); `leave()`
 cancels any pending frame.
 
+When the session emits `exit` (NetHack has returned), the app also drops any
+pending `display`/`--More--` overlay and calls `leave()` immediately — the
+bridge is already gone, so waiting on a keypress would just hang. In-game
+`--More--`s (death messages, DYWYPI) arrive before `exit`, so they still
+pause for a key. `TtyTerm.restore()` removes its stdin/stdout listeners and
+unrefs stdin so the process exits within 500 ms even if a listener is still
+registered elsewhere.
+
 ## Key routing
 
 Keys are routed in `App.handleKey`, in priority order:
@@ -127,11 +135,11 @@ is unchanged, so editor/menu state survives repaints.
 
 | pending kind | overlay | behaviour |
 |---|---|---|
-| `menu` | `MenuOverlay` | paging with `>`/`<`, accelerators (`a-zA-Z` assigned to empty ones), PICK_NONE any-key dismiss, PICK_ONE accelerator answers, PICK_ANY toggles then Enter, ESC cancels (empty selection) |
+| `menu` | `MenuOverlay` | paging with `>`/`<`, accelerators (`a-zA-Z` assigned to empty ones), PICK_NONE any-key dismiss, PICK_ONE accelerator answers, PICK_ANY toggles then Enter, ESC cancels (`{cancelled:true}` → `ret -1`; Enter with nothing picked stays `ret 0`) |
 | `display` (menu/text) | `TextOverlay` | paged lines, any key pages, ESC dismisses |
 | `display` (message) | `MoreOverlay` | `--More--`, any key → `dismiss` |
 | `file` | `TextOverlay` | paged file text, ESC dismisses |
-| `yn` | `YnOverlay` | shows choices + default; only offered choices accepted; ESC → `q`/`n`/default rule from `wintty.c` |
+| `yn` | `YnOverlay` | shows `query [choices] (def)` (default in parens only when it is a printable ASCII char, 0x21–0x7e); only offered choices accepted; ESC → `q`/`n`/default rule from `wintty.c` |
 | `getlin` | `GetlinOverlay` | line editor (Backspace, Enter commits, ESC → `""`) |
 | `extcmd` | `ExtCmdOverlay` | `#` line with prefix completion over `hello.extra.extcmds`, Enter → index, ESC → −1 |
 | `message-menu` | `MessageMenuOverlay` | shows the message, any key answers its code |

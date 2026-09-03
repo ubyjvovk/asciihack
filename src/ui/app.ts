@@ -89,7 +89,24 @@ export class App {
       this.repaint();
     });
     this.session.on('message', (m: string) => this.pendingMsgs.push(m));
+    this.session.on('exit', () => this.onExit());
     this.term.onKey((e) => this.handleKey(e));
+  }
+
+  /**
+   * Handle a session `exit`: NetHack's `Saving…` display leaves a `--More--`
+   * pending on the message window, but the bridge has already gone — waiting
+   * for a keypress would just hang the terminal. Drop that overlay and leave
+   * the alternate screen. In-game display overlays (death message, DYWYPI)
+   * still wait for a key because they arrive before `exit`.
+   */
+  private onExit(): void {
+    const p = this.session.pending;
+    if (p !== null && p.kind === 'display') {
+      this.overlay = null;
+      this.overlayReq = null;
+    }
+    this.leave();
   }
 
   /** The last composed grid (what the screen painted last), for tests. */

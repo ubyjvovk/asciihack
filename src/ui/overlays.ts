@@ -185,7 +185,10 @@ export class MenuOverlay implements Overlay {
   }
 
   private cancel(): void {
-    this.session.answer({ kind: 'menu', selected: [] });
+    // ESC → `ret -1` (cancelled). Enter-with-nothing goes through `confirm`
+    // and sends `ret 0` — NetHack distinguishes the two on some prompts
+    // (docs/engine.md, T-0015).
+    this.session.answer({ kind: 'menu', cancelled: true });
   }
 }
 
@@ -261,8 +264,14 @@ export class YnOverlay implements Overlay {
   }
 
   paint(grid: ScreenGrid): void {
-    const choices = this.req.choices ?? '(any key)';
-    const def = this.req.def ? ` [${String.fromCharCode(this.req.def)}]` : '';
+    // Format like `wintty.c`: `query [choices] (def)`. Only bracket real
+    // choices ("(any key)" is a placeholder, not a choice list), and only
+    // show the default when it is printable ASCII — NetHack sometimes hands
+    // in a control character when there is no meaningful default (T-0015).
+    const choices =
+      this.req.choices !== null ? `[${this.req.choices}]` : '(any key)';
+    const d = this.req.def;
+    const def = d >= 0x21 && d <= 0x7e ? ` (${String.fromCharCode(d)})` : '';
     const text = `${this.req.query} ${choices}${def}`;
     const boxW = Math.min(text.length + 4, grid.width - 2);
     const inner = paintBox(grid, Math.floor(grid.width / 2), Math.floor(grid.height / 2), boxW, 5, 'Question');

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { App } from '../src/ui/app.js';
 import { NethackSession } from '../src/engine/session.js';
 import type { HelloMsg, RetMsg } from '../src/engine/protocol.js';
@@ -139,20 +139,29 @@ describe('MenuOverlay', () => {
     });
   });
 
-  it('ESC cancels the menu with an empty selection', () => {
-    const { session, app, replies, hello } = makeReady();
-    session.handle({ t: 'call', name: 'create_nhwindow', args: [hello.nhw.NHW_MENU], id: 4 });
-    const win = replies.at(-1)!.ret as number;
-    session.handle({ t: 'call', name: 'start_menu', args: [win, 0] });
-    session.handle({ t: 'call', name: 'add_menu', args: [win, null, 0, 'a', '', 0, 0, 'Apple', 0] });
-    session.handle({ t: 'call', name: 'end_menu', args: [win, null] });
-    session.handle({ t: 'call', name: 'select_menu', args: [win, 1], id: 12 });
+  it('ESC cancels the menu with ret -1 (cancelled) while Enter with nothing selected sends ret 0 (T-0015)', () => {
+    const cancel = makeReady();
+    cancel.session.handle({ t: 'call', name: 'create_nhwindow', args: [cancel.hello.nhw.NHW_MENU], id: 4 });
+    const cancelWin = cancel.replies.at(-1)!.ret as number;
+    cancel.session.handle({ t: 'call', name: 'start_menu', args: [cancelWin, 0] });
+    cancel.session.handle({ t: 'call', name: 'add_menu', args: [cancelWin, null, 0, 'a', '', 0, 0, 'Apple', 0] });
+    cancel.session.handle({ t: 'call', name: 'end_menu', args: [cancelWin, null] });
+    // PICK_ANY so Enter is a distinct "confirm" path from ESC.
+    cancel.session.handle({ t: 'call', name: 'select_menu', args: [cancelWin, 2], id: 12 });
+    cancel.app.handleKey(ev('Escape'));
+    expect(cancel.session.pending).toBeNull();
+    expect(cancel.replies.at(-1)).toEqual({ id: 12, ret: -1 });
 
-    app.handleKey(ev('Escape'));
-    expect(session.pending).toBeNull();
-    // Cancel = no items selected (NetHack's select_menu turns count 0 into a
-    // cancellation; the session model has no −1 path for menus).
-    expect(replies.at(-1)).toEqual({ id: 12, ret: 0, selected: [] });
+    const empty = makeReady();
+    empty.session.handle({ t: 'call', name: 'create_nhwindow', args: [empty.hello.nhw.NHW_MENU], id: 4 });
+    const emptyWin = empty.replies.at(-1)!.ret as number;
+    empty.session.handle({ t: 'call', name: 'start_menu', args: [emptyWin, 0] });
+    empty.session.handle({ t: 'call', name: 'add_menu', args: [emptyWin, null, 0, 'a', '', 0, 0, 'Apple', 0] });
+    empty.session.handle({ t: 'call', name: 'end_menu', args: [emptyWin, null] });
+    empty.session.handle({ t: 'call', name: 'select_menu', args: [emptyWin, 2], id: 13 });
+    empty.app.handleKey(ev('Enter'));
+    expect(empty.session.pending).toBeNull();
+    expect(empty.replies.at(-1)).toEqual({ id: 13, ret: 0, selected: [] });
   });
 });
 
@@ -191,6 +200,28 @@ describe('GetlinOverlay and YnOverlay', () => {
     expect(session.pending?.kind).toBe('yn');
     app.handleKey(ev('Escape'));
     expect(replies.at(-1)).toEqual({ id: 30, ret: 'q'.charCodeAt(0) });
+  });
+
+  it('yn prompt formats as `query [choices] (def)` when def is printable and omits (def) when it is a control char (T-0015)', () => {
+    const printable = makeReady();
+    printable.session.handle({
+      t: 'call',
+      name: 'yn_function',
+      args: ['Really save?', 'yn', 'n'.charCodeAt(0)],
+      id: 32,
+    });
+    expect(gridText(printable.app.lastGrid!)).toContain('Really save? [yn] (n)');
+
+    const ctrl = makeReady();
+    ctrl.session.handle({
+      t: 'call',
+      name: 'yn_function',
+      args: ['Really save?', 'yn', 0x00], // NUL — the pre-T-0015 bug printed `[]`
+      id: 33,
+    });
+    const rendered = gridText(ctrl.app.lastGrid!);
+    expect(rendered).toContain('Really save? [yn]');
+    expect(rendered).not.toContain('()');
   });
 
   it('yn accepts a valid offered choice and ignores an invalid one', () => {
@@ -257,5 +288,22 @@ describe('ExtCmdOverlay', () => {
     session.handle({ t: 'call', name: 'get_ext_cmd', args: [], id: 51 });
     app.handleKey(ev('Escape'));
     expect(replies.at(-1)).toEqual({ id: 51, ret: -1 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Exit while a --More-- is pending (T-0015)
+
+describe('App — session exit', () => {
+  it('a session `exit` while a --More-- overlay is pending calls leave() without a keypress', () => {
+    const { session, app } = makeReady();
+    session.handle({ t: 'call', name: 'putstr', args: [1, 0, 'Saving...'] });
+    session.handle({ t: 'call', name: 'display_nhwindow', args: [1, true], id: 60 });
+    expect(session.pending?.kind).toBe('display');
+    expect(gridText(app.lastGrid!)).toContain('--More--');
+
+    const leaveSpy = vi.spyOn(app, 'leave');
+    session.handle({ t: 'exit', code: 0 });
+    expect(leaveSpy).toHaveBeenCalledTimes(1);
   });
 });

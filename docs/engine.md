@@ -107,7 +107,7 @@ Request kinds and the answer payloads they accept:
 | `pos`             | `nh_poskey`             | `{kind:'pos', key}` or `{kind:'pos', x,y,mod}` |
 | `yn`              | `yn_function`           | `{kind:'yn', ch: number}`                   |
 | `getlin`          | `getlin`                | `{kind:'getlin', text: string}`             |
-| `menu`            | `select_menu`           | `{kind:'menu', selected: [{i,count}]}`      |
+| `menu`            | `select_menu`           | `{kind:'menu', selected: [{i,count}]}` or `{kind:'menu', cancelled: true}` |
 | `display`         | `display_nhwindow(_,true)` | `{kind:'dismiss'}` or `{kind:'display'}` |
 | `file`            | `display_file`          | `{kind:'file'}` (or `{kind:'file', ret}`)   |
 | `extcmd`          | `get_ext_cmd`           | `{kind:'extcmd', index: number}`            |
@@ -139,6 +139,14 @@ emits the `menu` request with a snapshot of the items and the prompt; the
 UI assigns accelerators to selectable items whose `accel` is empty (see
 docs/architecture.md §4.4). Answer with the identifier indices the user
 picked and their counts (`-1` = "all").
+
+Cancelled vs empty menu: NetHack's `select_menu` returns `-1` for a
+cancelled prompt and `0` for "nothing selected" (docs/architecture.md
+§3.3), and it behaves differently for the two on some questions. The
+session mirrors that split — answer ESC-cancel with
+`{kind:'menu', cancelled: true}` (→ `{id, ret: -1}`, no `selected`) and
+Enter-with-nothing-picked with `{kind:'menu', selected: []}` (→ `{id,
+ret: 0, selected: []}`).
 
 ## Fixtures and record-bridge
 

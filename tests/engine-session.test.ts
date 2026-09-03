@@ -278,6 +278,23 @@ describe('NethackSession — menus and requests', () => {
     expect(replies.at(-1)).toEqual({ id: 2, ret: 0, selected: [] });
   });
 
+  it('answer({kind:"menu", cancelled:true}) sends ret -1 with no `selected` field (T-0015)', () => {
+    const replies: RetMsg[] = [];
+    const s = new NethackSession((r) => replies.push(r));
+    s.handle(makeHello());
+    const win = createWindow(s, 4, 1, replies);
+    s.handle(tCall('start_menu', [win, 0]));
+    s.handle(tCall('add_menu', [win, null, 0, 'y', '', 0, 0, 'A', 0]));
+    s.handle(tCall('end_menu', [win, null]));
+    s.handle(tCall('select_menu', [win, 1], 3));
+    s.answer({ kind: 'menu', cancelled: true });
+    expect(s.pending).toBeNull();
+    // NetHack's `select_menu` reads `ret -1` as cancelled and `ret 0` as
+    // "nothing selected"; the two are different on some prompts (docs/engine.md).
+    expect(replies.at(-1)).toEqual({ id: 3, ret: -1 });
+    expect(replies.at(-1)).not.toHaveProperty('selected');
+  });
+
   it('yn / getlin / nhgetch / blocking-display round-trip to the right RetMsg', () => {
     const replies: RetMsg[] = [];
     const s = new NethackSession((r) => replies.push(r));
