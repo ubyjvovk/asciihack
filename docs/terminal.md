@@ -113,7 +113,11 @@ onKey }` so tests use a fake:
   the caller's grid object. This means a grid mutated in place by
   `quantizeInto` (the intended per-frame loop) still diffs correctly on the
   next `paint` — the screen compares against its own snapshot, not against the
-  caller's now-changed grid.
+  caller's now-changed grid. The private copy grows/shrinks with the painted
+  grid: if a grid with a different cell count is painted while the buffer is
+  live (a resize that skips `invalidate()`), the copy is reallocated to the
+  new size, so the steady state (same size frame to frame) stays
+  allocation-free.
 - `invalidate()` — forgets `prev` so the next paint is a full repaint.
 - `enter()` — `CSI ?1049 h` (alternate screen) + `CSI ?25 l` (hide cursor).
 - `leave()` — `CSI ?1049 l` (leave alt screen) + `CSI 0 m` (reset SGR) +

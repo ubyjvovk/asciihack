@@ -133,6 +133,15 @@ export class Screen {
       this.prev = { width: grid.width, height: grid.height, cells };
     }
     const copy = this.prev as { width: number; height: number; cells: CopyCell[] };
+    // The painted grid may grow/shrink between frames (e.g. a resize with no
+    // `invalidate()`); only reallocate the copy when its cell count changes,
+    // so the steady state stays allocation-free.
+    if (copy.cells.length !== grid.width * grid.height) {
+      const n = grid.width * grid.height;
+      const cells: CopyCell[] = new Array(n);
+      for (let i = 0; i < n; i++) cells[i] = { ch: ' ', fg: [0, 0, 0], bg: [0, 0, 0] };
+      copy.cells = cells;
+    }
     copy.width = grid.width;
     copy.height = grid.height;
     for (let i = 0; i < grid.cells.length; i++) {
