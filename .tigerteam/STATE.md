@@ -59,6 +59,10 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   before the first ticket.
 
 ## Board snapshot
+- 2026-09-03 19:40 — T-0010 (bridge hardening) and T-0011 (themes gloom/
+  solarized/amber) accepted; 8 done. T-0003 (engine client) still with
+  opus-1. T-0004 next; then write T-0007 (fps mode) against T-0004's mode
+  interface.
 - 2026-09-03 19:05 — T-0002 (bridge, opus, ~$?) and T-0008 (ortho) accepted;
   6 done. T-0003 claimed by opus-1. Host has `build/nethack/{lib,bridge}`
   built and the smoke passing. architecture.md §3 now carries the as-built
