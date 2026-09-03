@@ -112,6 +112,22 @@ export function renderOrtho(
   const spriteByCell = new Map<string, Sprite>();
   for (const s of sprites) spriteByCell.set(`${s.x},${s.y}`, s);
 
+  // --- cutaway: a wall stands between the camera and a nearby figure ---
+  // A wall is "in front of" a figure when its x+y exceeds the figure's and it
+  // is within 2 cells of it in both axes; walls in front of the hero (or of a
+  // monster within 2 cells of the hero) are painted as translucent ghost
+  // blocks so the hero/monster stays visible through them (docs/render.md).
+  const isCutaway = (x: number, y: number): boolean => {
+    if (x + y > hx + hy && Math.abs(x - hx) <= 2 && Math.abs(y - hy) <= 2) return true;
+    for (const s of sprites) {
+      if (s.x === hx && s.y === hy) continue; // the hero itself
+      if (!MONSTER_CLS.has(s.cls)) continue; // only monsters, not items
+      if (Math.abs(s.x - hx) > 2 || Math.abs(s.y - hy) > 2) continue; // monster not near the hero
+      if (x + y > s.x + s.y && Math.abs(x - s.x) <= 2 && Math.abs(y - s.y) <= 2) return true;
+    }
+    return false;
+  };
+
   const isNearEdge = (X: number, Y: number): boolean => {
     const fx = X - Math.floor(X);
     const fy = Y - Math.floor(Y);
@@ -177,6 +193,27 @@ export function renderOrtho(
     const depthVal = x + y;
     const seed = y * 80 + x;
     const useBrick = kind === 'wall';
+    const cutaway = isCutaway(x, y);
+    const setBlockCell = (c: number, r: number, f: number): void => {
+      const i = r * cols + c;
+      const o = i * 3;
+      const mult = (cutaway ? 0.35 : 1) * f * atten;
+      fb.rgb[o] = base[0] * mult;
+      fb.rgb[o + 1] = base[1] * mult;
+      fb.rgb[o + 2] = base[2] * mult;
+      fb.depth[i] = depthVal;
+      if (cutaway && fb.overlayCh[i] !== 0) {
+        // an already-drawn figure letter: keep it, dimmed (x-ray through the ghost wall)
+        fb.overlayRgb[o] = (fb.overlayRgb[o] ?? 0) * 0.7;
+        fb.overlayRgb[o + 1] = (fb.overlayRgb[o + 1] ?? 0) * 0.7;
+        fb.overlayRgb[o + 2] = (fb.overlayRgb[o + 2] ?? 0) * 0.7;
+      } else {
+        fb.overlayCh[i] = 0;
+        fb.overlayRgb[o] = 0;
+        fb.overlayRgb[o + 1] = 0;
+        fb.overlayRgb[o + 2] = 0;
+      }
+    };
     for (let c = cMin; c <= cMax; c++) {
       if (c < 0 || c >= cols) continue;
       const gap = Math.abs(c - sx);
@@ -188,16 +225,7 @@ export function renderOrtho(
       const sideBot = Math.floor(botBase);
       for (let r = Math.max(0, topTop); r <= Math.min(rows - 1, topBot); r++) {
         // rim: 1-cell lighter line on the upper two edges, 1-cell dark on the lower two
-        const f = r === topTop ? 1.2 : r === topBot ? 0.6 : 1.0;
-        const o = (r * cols + c) * 3;
-        fb.rgb[o] = base[0] * f * atten;
-        fb.rgb[o + 1] = base[1] * f * atten;
-        fb.rgb[o + 2] = base[2] * f * atten;
-        fb.depth[r * cols + c] = depthVal;
-        fb.overlayCh[r * cols + c] = 0;
-        fb.overlayRgb[o] = 0;
-        fb.overlayRgb[o + 1] = 0;
-        fb.overlayRgb[o + 2] = 0;
+        setBlockCell(c, r, r === topTop ? 1.2 : r === topBot ? 0.6 : 1.0);
       }
       for (let r = Math.max(0, topBot + 1); r <= Math.min(rows - 1, sideBot); r++) {
         let f: number;
@@ -213,15 +241,7 @@ export function renderOrtho(
             f = faceFactor;
           }
         }
-        const o = (r * cols + c) * 3;
-        fb.rgb[o] = base[0] * f * atten;
-        fb.rgb[o + 1] = base[1] * f * atten;
-        fb.rgb[o + 2] = base[2] * f * atten;
-        fb.depth[r * cols + c] = depthVal;
-        fb.overlayCh[r * cols + c] = 0;
-        fb.overlayRgb[o] = 0;
-        fb.overlayRgb[o + 1] = 0;
-        fb.overlayRgb[o + 2] = 0;
+        setBlockCell(c, r, f);
       }
     }
   };
@@ -281,5 +301,45 @@ export function renderOrtho(
     if (isSolid(kind) && kind !== 'unexplored') drawBlock(x, y, kind);
     const sprite = spriteByCell.get(`${x},${y}`);
     if (sprite) drawSprite(sprite);
+  }
+
+  // --- hero always on top ---
+  // Re-stamp every cell of the hero figure that a wall overwrote with the hero
+  // letter at 0.6 brightness (an x-ray silhouette), so the hero is never fully
+  // hidden even where the cutaway rule does not apply.
+  const heroSprite = sprites.find((s) => s.x === hx && s.y === hy);
+  if (heroSprite) {
+    const hsx = ox + 2 * k * (hx - hy);
+    const hsy = oy + k * (hx + hy + 1);
+    const heroCh = heroSprite.ch.charCodeAt(0);
+    const restamp = (c: number, r: number): void => {
+      if (c < 0 || c >= cols || r < 0 || r >= rows) return;
+      const i = r * cols + c;
+      if (fb.overlayCh[i] !== heroCh) {
+        const o = i * 3;
+        fb.overlayCh[i] = heroCh;
+        fb.overlayRgb[o] = heroSprite.rgb[0] * 0.6;
+        fb.overlayRgb[o + 1] = heroSprite.rgb[1] * 0.6;
+        fb.overlayRgb[o + 2] = heroSprite.rgb[2] * 0.6;
+      }
+    };
+    if (k === 1) {
+      restamp(hsx, hsy - 1);
+      restamp(hsx, hsy);
+    } else {
+      const halfW = k - 1;
+      const halfH = 1.75 * k;
+      const y0 = Math.ceil(hsy - 2 * halfH + 1);
+      const y1 = hsy;
+      const cy = (y0 + y1) / 2;
+      for (let r = y0; r <= y1; r++) {
+        for (let c = hsx - halfW; c <= hsx + halfW; c++) {
+          const dx = (c - hsx) / halfW;
+          const dy = (r + 0.5 - cy) / halfH;
+          if (dx * dx + dy * dy > 1.35) continue;
+          restamp(c, r);
+        }
+      }
+    }
   }
 }

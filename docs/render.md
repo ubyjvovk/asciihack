@@ -249,6 +249,20 @@ with an ellipse mask, radial brightness `0.55 + 0.45·(1 − r²)`, a rim ring a
 wide and `1.5k` tall centred on the tile. At `k = 1` every figure collapses to
 one or two cells with no rim.
 
+### Cutaway
+
+A wall block drawn in front of the hero (or of a monster within 2 cells of the
+hero) would otherwise paint over the figure and hide it, so such blocks are
+**cut away**. A wall cell is *in front of* a figure when its `x + y` exceeds the
+figure's and it is within 2 cells of it in both axes (`|dx| ≤ 2 && |dy| ≤ 2`).
+Walls in front of the hero, or in front of a monster within 2 cells of the hero,
+are painted as translucent ghost blocks — faces and top at `0.35` of their
+normal brightness — and where they overlap a figure already drawn they keep the
+figure's letter, dimmed to `0.7`, instead of clearing the overlay. After the
+wall pass the hero is re-stamped: any cell of the hero figure that a later wall
+overwrote gets the hero letter back at `0.6` brightness (an x-ray silhouette),
+so the hero is never fully hidden even when the cutaway rule does not apply.
+
 ### Fog & depth
 
 Every drawn colour is multiplied by `exp(−fogK · dist)` with `dist` the

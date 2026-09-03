@@ -133,10 +133,10 @@ describe('ortho/terrain', () => {
   it('a wall block at k = 2 is 3k rows taller than its floor diamond with the top brighter than the right face brighter than the left face', () => {
     // A flat stone block (no brick) so the face ordering is exact.
     const stone: LevelView = {
-      width: 5,
-      height: 5,
+      width: 7,
+      height: 7,
       kindAt(x, y) {
-        if (x === 2 && y === 2) return 'stone';
+        if (x === 4 && y === 4) return 'stone';
         if (x === 1 && y === 1) return 'floor';
         return 'unexplored';
       },
@@ -144,13 +144,14 @@ describe('ortho/terrain', () => {
     };
     const fb = makeFrameBuffer(120, 56); // k = 2
     renderOrtho(stone, { x: 1, y: 1 }, [], fb);
-    // hero (1,1) at 120×56 → origin {60, 24, 2}; block cell (2,2) → sx 60, sy 34
+    // hero (1,1) at 120×56 → origin {60, 24, 2}; block cell (4,4) → sx 60, sy 42.
+    // The block is 3 cells south-east (|dx| = |dy| = 3 > 2), so it is NOT cutaway.
     const sx = 60;
-    const sy = 34;
+    const sy = 42;
     const k = 2;
     const h = 3 * k;
     const base = 0.12; // KIND_COLORS.stone[0]
-    const atten = Math.exp(-0.04 * 1);
+    const atten = Math.exp(-0.04 * 3);
     // top face (flat ×1.0) at (sx, 28), right face (×0.75) at (sx+2, 33), left (×0.55) at (sx−2, 33)
     const top = rgbAt(fb, sx, sy - k - h + 2)[0];
     const right = rgbAt(fb, sx + 2, sy - 1)[0];
@@ -185,10 +186,20 @@ describe('ortho/terrain', () => {
 });
 
 describe('ortho/sprites', () => {
-  it('a wall south-east of a figure covers it', () => {
-    // figure on floor (2,2); walls at (3,2) and (2,3), both south-east (sum 5 > 4)
-    const lvl = levelFromAscii(['      ', ' .    ', ' ..#  ', '  #   ', '      ']);
-    const sprite: Sprite = { x: 2, y: 2, ch: 'M', rgb: [0.9, 0.1, 0.1], cls: 'mon' };
+  it('a wall south-east of a figure far from the hero covers it', () => {
+    // figure on floor (5,5), far from the hero (1,1) so the cutaway does not
+    // apply; walls at (6,5) and (5,6) are south-east of the figure (sum 11 > 10)
+    const lvl = levelFromAscii([
+      '         ',
+      ' .       ',
+      '         ',
+      '         ',
+      '         ',
+      '     .#  ',
+      '     #   ',
+      '         ',
+    ]);
+    const sprite: Sprite = { x: 5, y: 5, ch: 'M', rgb: [0.9, 0.1, 0.1], cls: 'mon' };
     const fb = makeFrameBuffer(80, 24); // k = 1
     renderOrtho(lvl, { x: 1, y: 1 }, [sprite], fb);
     expect(overlayCount(fb, 'M')).toBe(0);
@@ -200,6 +211,46 @@ describe('ortho/sprites', () => {
     const ext = figureExtent(fb, '@');
     expect(ext.height).toBe(14); // 3.5k rows
     expect(ext.width).toBe(7); // 2k−1 columns
+  });
+});
+
+describe('ortho/cutaway', () => {
+  it('a wall south-east of and adjacent to the hero is painted at <= 0.4 of its normal brightness while a wall 4 cells away keeps full brightness', () => {
+    const lvl = levelFromAscii(['          ', ' .#  #    ', '          ']);
+    const fb = makeFrameBuffer(80, 104); // k = 4
+    renderOrtho(lvl, { x: 1, y: 1 }, [], fb, { fogK: 0 });
+    // wall (2,1) is adjacent south-east of the hero (sum 3 > 2, |dx|,|dy| <= 2)
+    // -> cutaway: top face at (48,49); wall (5,1) is 4 cells east (|dx| = 4)
+    // -> not cutaway, full brightness: top face at (72,61)
+    const adj = rgbAt(fb, 48, 49)[0];
+    const far = rgbAt(fb, 72, 61)[0];
+    expect(adj).toBeLessThanOrEqual(0.4 * far);
+    expect(adj).toBeLessThan(far);
+    expect(far).toBeCloseTo(0.55, 2); // KIND_COLORS.wall red, kept full
+  });
+
+  it('the hero figure centre cell still carries the hero letter when a wall block covers it', () => {
+    const lvl = levelFromAscii(['      ', ' .#   ', '      ']);
+    const HERO: Sprite = { x: 1, y: 1, ch: '@', rgb: [0.9, 0.9, 0.9], cls: 'mon' };
+    const fb = makeFrameBuffer(80, 104); // k = 4
+    renderOrtho(lvl, { x: 1, y: 1 }, [HERO], fb, { fogK: 0 });
+    // the adjacent wall (2,1) covers the hero's centre cell (40,50); the cutaway
+    // keeps the hero letter there, dimmed to 0.7 of its colour
+    const i = 50 * fb.width + 40;
+    const o = i * 3;
+    expect(fb.overlayCh[i]).toBe('@'.charCodeAt(0));
+    expect(fb.overlayRgb[o]).toBeCloseTo(0.9 * 0.7, 2);
+  });
+
+  it('a monster 1 cell from the hero behind a wall corner keeps its letter', () => {
+    const lvl = levelFromAscii(['      ', ' ..#  ', '      ']);
+    const HERO: Sprite = { x: 1, y: 1, ch: '@', rgb: [0.9, 0.9, 0.9], cls: 'mon' };
+    const J: Sprite = { x: 2, y: 1, ch: 'j', rgb: [0.9, 0.1, 0.1], cls: 'mon' };
+    const fb = makeFrameBuffer(80, 104); // k = 4
+    renderOrtho(lvl, { x: 1, y: 1 }, [HERO, J], fb, { fogK: 0 });
+    // the wall (3,1) is south-east of the monster (sum 4 > 3) and within 2 cells
+    // of it, so it is cut away and the jackal keeps its letter
+    expect(overlayCount(fb, 'j')).toBeGreaterThan(0);
   });
 });
 
