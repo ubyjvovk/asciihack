@@ -1,63 +1,84 @@
 /**
  * Ortho / isometric renderer over the level grid (docs/architecture.md §5.3,
- * projection locked by ticket T-0008). Pure and deterministic: fills a
- * `FrameBuffer` with a 2:1 isometric view of the remembered level, centred on
- * the hero, exactly like the raycaster so the same quantizer and screen writer
- * show it.
+ * projection locked by ticket T-0021). Pure and deterministic: fills a
+ * `FrameBuffer` with a zoomable 2:1 isometric view of the remembered level,
+ * centred on the hero, exactly like the raycaster so the same quantizer and
+ * screen writer show it.
  *
- * Projection: map cell (x, y) (x east, y south) has screen anchor
- * `sx = 2·(x − y) + ox`, `sy = (x + y) + oy`. Its floor is a brick of 4
- * columns × 1 row: columns `sx−2 … sx+1` of row `sy`. Bricks on consecutive
- * rows are staggered by 2 columns, so every screen cell belongs to exactly one
- * map cell. See docs/render.md for the inverse and the brick diagram.
+ * Projection: a map point (X, Y) (x east, y south) hits the screen column
+ * `c = ox + 2k·(X − Y)` and row `r = oy + k·(X + Y)`. The image of each unit
+ * square is a 2:1 diamond `4k` columns wide and `2k` rows tall, and because
+ * the diamond tiles the plane, every screen cell belongs to exactly one map
+ * cell (the inverse maps through the cell centre and floors). Walls are blocks
+ * extruded `3k` rows with a lit top and two shaded side faces; monsters and the
+ * hero are shaped figures; items are low shapes; unexplored space shows a
+ * faint diamond lattice so the player never floats in pure black.
  */
 import { isSolid, type CellKind, type FrameBuffer, type LevelView, type Sprite } from '../model/types.js';
 import { KIND_COLORS } from './raycast.js';
+import { brickShade } from './texture.js';
 
-/** Screen-space origin (`ox`, `oy`) of the isometric projection. */
+/** Screen-space origin of the isometric projection (also carries the zoom). */
 export interface Origin {
   /** Horizontal origin in columns. */
   ox: number;
   /** Vertical origin in rows. */
   oy: number;
+  /** Zoom factor: a map cell is a 4k×2k diamond. */
+  k: number;
 }
 
 /** Tuning knobs for `renderOrtho`; every field has a default. */
 export interface OrthoOptions {
-  /** Wall extrusion height in brick rows above the floor row (default 2). */
-  wallRows?: number;
-  /** Fog attenuation coefficient over Chebyshev distance from the hero (default 0.06). */
+  /** Explicit zoom factor `k` (default `clamp(round(rows/28), 1, 6)`). */
+  zoom?: number;
+  /** Fog attenuation coefficient over Chebyshev distance from the hero (default 0.04). */
   fogK?: number;
 }
 
-const DEFAULT_WALL_ROWS = 2;
-const DEFAULT_FOG_K = 0.06;
+const DEFAULT_FOG_K = 0.04;
+
+/** Clamp `v` to [lo, hi]. */
+function clamp(v: number, lo: number, hi: number): number {
+  return v < lo ? lo : v > hi ? hi : v;
+}
 
 /**
- * Project map cell (x, y) to the screen anchor (sx, sy) of its brick (the
- * brick spans columns `sx−2 … sx+1` of row `sy`).
+ * Inverse-map a screen cell `(c, r)` to the continuous map point (X, Y) at the
+ * cell's centre (docs/architecture.md §5.3).
+ */
+function mapPoint(c: number, r: number, origin: Origin): { X: number; Y: number } {
+  const { ox, oy, k } = origin;
+  const u = (c + 0.5 - ox) / (2 * k);
+  const v = (r + 0.5 - oy) / k;
+  return { X: (u + v) / 2, Y: (v - u) / 2 };
+}
+
+/**
+ * Project map cell `(x, y)` to the screen position of its centre `(x + 0.5, y + 0.5)`.
  */
 export function cellToScreen(x: number, y: number, origin: Origin): { sx: number; sy: number } {
-  return { sx: 2 * (x - y) + origin.ox, sy: x + y + origin.oy };
+  const { ox, oy, k } = origin;
+  return { sx: ox + 2 * k * (x - y), sy: oy + k * (x + y + 1) };
 }
 
 /**
- * Invert the projection: the unique map cell whose brick contains screen cell
- * (c, r). Returns integer cell coordinates for any screen cell that lies in a
- * brick (see docs/render.md for the derivation).
+ * Invert the projection: the unique map cell whose diamond contains screen
+ * cell `(c, r)` (its centre inverse-mapped and floored).
  */
 export function screenToCell(c: number, r: number, origin: Origin): { x: number; y: number } {
-  const cp = c - origin.ox;
-  const rp = r - origin.oy;
-  const p = ((rp % 2) + 2) % 2; // non-negative r' mod 2
-  const k = Math.floor((cp + 2 - 2 * p) / 4);
-  const d = 2 * k + p; // this is x − y
-  return { x: (rp + d) / 2, y: (rp - d) / 2 };
+  const { X, Y } = mapPoint(c, r, origin);
+  return { x: Math.floor(X), y: Math.floor(Y) };
 }
+
+/** Classes drawn as tall standing figures (monsters and the hero). */
+const MONSTER_CLS = new Set(['mon', 'pet', 'ridden', 'detected', 'invisible', 'statue']);
+/** Classes drawn as low items lying on the tile. */
+const ITEM_CLS = new Set(['obj', 'body']);
 
 /**
  * Render an ortho/isometric view of `level` centred on `hero` into `fb`,
- * drawing any `sprites` as overlay glyphs on their tiles. Pure and
+ * drawing any `sprites` as figures/items on their tiles. Pure and
  * deterministic; fills every cell of the buffer each frame.
  */
 export function renderOrtho(
@@ -67,19 +88,22 @@ export function renderOrtho(
   fb: FrameBuffer,
   opts: OrthoOptions = {},
 ): void {
-  const wallRows = opts.wallRows ?? DEFAULT_WALL_ROWS;
-  const fogK = opts.fogK ?? DEFAULT_FOG_K;
   const cols = fb.width;
   const rows = fb.height;
+  const k = opts.zoom ?? clamp(Math.round(rows / 28), 1, 6);
+  const fogK = opts.fogK ?? DEFAULT_FOG_K;
+  const h = 3 * k; // wall extrusion height in rows
+  const hx = hero.x;
+  const hy = hero.y;
 
-  // Anchor the hero's brick at the centre of the viewport.
-  const ox = Math.floor(cols / 2) - 2 * (hero.x - hero.y);
-  const oy = Math.floor(rows / 2) - (hero.x + hero.y);
-  const origin: Origin = { ox, oy };
+  // Anchor the hero's cell centre at (floor(cols/2), floor(rows·0.55)) — a
+  // little below centre so the walls above have room.
+  const ox = Math.floor(cols / 2) - 2 * k * (hx - hy);
+  const oy = Math.floor(rows * 0.55) - k * (hx + hy + 1);
+  const origin: Origin = { ox, oy, k };
 
-  // Pre-fill the whole buffer each frame: stale overlay glyphs from a previous
-  // frame and any cell no brick covers (unexplored, out-of-map) stay black at
-  // infinite depth, exactly as the raycaster does.
+  // Pre-fill the whole buffer each frame: stale overlay glyphs and any cell no
+  // pass covers stay black at infinite depth, exactly as the raycaster does.
   fb.overlayCh.fill(0);
   fb.overlayRgb.fill(0);
   fb.rgb.fill(0);
@@ -88,77 +112,174 @@ export function renderOrtho(
   const spriteByCell = new Map<string, Sprite>();
   for (const s of sprites) spriteByCell.set(`${s.x},${s.y}`, s);
 
-  // Painter's order: increasing x + y, ties by increasing x (north-west to
-  // south-east), so later (nearer) draws occlude earlier ones.
-  const cells: Array<{ x: number; y: number; kind: CellKind }> = [];
-  for (let y = 0; y < level.height; y++) {
-    for (let x = 0; x < level.width; x++) {
-      cells.push({ x, y, kind: level.kindAt(x, y) });
+  const isNearEdge = (X: number, Y: number): boolean => {
+    const fx = X - Math.floor(X);
+    const fy = Y - Math.floor(Y);
+    // Cell-centre samples always land at distance ≥ 1/(8k) from a cell edge,
+    // so the seam band must exceed that to stay visible (see docs/render.md).
+    return Math.min(fx, 1 - fx) < 0.2 / k || Math.min(fy, 1 - fy) < 0.2 / k;
+  };
+
+  // --- floor pass: every screen cell, one inverse mapping each ---
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const { X, Y } = mapPoint(c, r, origin);
+      const x = Math.floor(X);
+      const y = Math.floor(Y);
+      const kind = level.kindAt(x, y);
+      const i = r * cols + c;
+      const o = i * 3;
+      const atten = Math.exp(-fogK * Math.max(Math.abs(x - hx), Math.abs(y - hy)));
+      if (kind === 'unexplored') {
+        // the unknown: pure black with faint diamond lattice seams (also covers
+        // outside the 80×21 map, so the whole viewport shows the lattice)
+        if (isNearEdge(X, Y)) {
+          fb.rgb[o] = 0.05 * atten;
+          fb.rgb[o + 1] = 0.05 * atten;
+          fb.rgb[o + 2] = 0.07 * atten;
+        } else {
+          fb.rgb[o] = 0;
+          fb.rgb[o + 1] = 0;
+          fb.rgb[o + 2] = 0;
+        }
+        continue;
+      }
+      if (isSolid(kind)) continue; // painted as a block by the wall pass
+      const base = KIND_COLORS[kind];
+      let shade = 1;
+      if (isNearEdge(X, Y)) shade = 0.6; // tile seam
+      else if (kind !== 'corridor' && (x + y) % 2 === 1) shade = 0.92; // checker
+      fb.rgb[o] = base[0] * shade * atten;
+      fb.rgb[o + 1] = base[1] * shade * atten;
+      fb.rgb[o + 2] = base[2] * shade * atten;
+      fb.depth[i] = x + y;
     }
+  }
+
+  // --- wall pass, painter's order (increasing x + y, then x) ---
+  const cells: Array<{ x: number; y: number }> = [];
+  for (let y = 0; y < level.height; y++) {
+    for (let x = 0; x < level.width; x++) cells.push({ x, y });
   }
   cells.sort((a, b) => a.x + a.y - (b.x + b.y) || a.x - b.x);
 
-  for (const { x, y, kind } of cells) {
-    if (kind === 'unexplored') continue; // stays black at Infinity depth
-    const { sx, sy } = cellToScreen(x, y, origin);
-    const solid = isSolid(kind);
-    const minRow = solid ? sy - wallRows : sy;
-    // Only draw cells whose brick can touch the viewport.
-    if (sy < 0 || minRow >= rows) continue;
-    if (sx + 1 < 0 || sx - 2 >= cols) continue;
-
+  const drawBlock = (x: number, y: number, kind: CellKind): void => {
+    const sx = ox + 2 * k * (x - y);
+    const sy = oy + k * (x + y + 1);
+    const cMin = sx - 2 * k;
+    const cMax = sx + 2 * k;
+    if (cMax < 0 || cMin >= cols) return; // off-screen horizontally
+    const rTop = sy - k - h;
+    const rBot = sy + k;
+    if (rBot < 0 || rTop >= rows) return; // off-screen vertically
     const base = KIND_COLORS[kind];
-    const dist = Math.max(Math.abs(x - hero.x), Math.abs(y - hero.y)); // Chebyshev
-    const atten = Math.exp(-fogK * dist);
+    const atten = Math.exp(-fogK * Math.max(Math.abs(x - hx), Math.abs(y - hy)));
     const depthVal = x + y;
-
-    // Paint one 4-column brick row, optionally per-column shading; also clears
-    // any overlay glyph that occupied those cells (occlusion for later walls).
-    const paint = (row: number, shade: (col: number) => number): void => {
-      if (row < 0 || row >= rows) return;
-      for (let col = sx - 2; col <= sx + 1; col++) {
-        if (col < 0 || col >= cols) continue;
-        const i = row * cols + col;
-        const o = i * 3;
-        const sh = shade(col);
-        fb.rgb[o] = base[0] * sh * atten;
-        fb.rgb[o + 1] = base[1] * sh * atten;
-        fb.rgb[o + 2] = base[2] * sh * atten;
-        fb.depth[i] = depthVal;
-        fb.overlayCh[i] = 0;
+    const seed = y * 80 + x;
+    const useBrick = kind === 'wall';
+    for (let c = cMin; c <= cMax; c++) {
+      if (c < 0 || c >= cols) continue;
+      const gap = Math.abs(c - sx);
+      const topBase = sy - k + gap / 2; // upper boundary of the base diamond at c
+      const botBase = sy + (2 * k - gap) / 2; // lower boundary of the base diamond at c
+      // top face = the base diamond shifted up h; side face = the wall below it.
+      const topTop = Math.ceil(topBase - h);
+      const topBot = Math.floor(botBase - h);
+      const sideBot = Math.floor(botBase);
+      for (let r = Math.max(0, topTop); r <= Math.min(rows - 1, topBot); r++) {
+        // rim: 1-cell lighter line on the upper two edges, 1-cell dark on the lower two
+        const f = r === topTop ? 1.2 : r === topBot ? 0.6 : 1.0;
+        const o = (r * cols + c) * 3;
+        fb.rgb[o] = base[0] * f * atten;
+        fb.rgb[o + 1] = base[1] * f * atten;
+        fb.rgb[o + 2] = base[2] * f * atten;
+        fb.depth[r * cols + c] = depthVal;
+        fb.overlayCh[r * cols + c] = 0;
         fb.overlayRgb[o] = 0;
         fb.overlayRgb[o + 1] = 0;
         fb.overlayRgb[o + 2] = 0;
       }
-    };
-
-    if (solid) {
-      // Vertical (south-east) face in shadow at 60 %, top face lit at 100 %.
-      for (let row = sy - wallRows + 1; row <= sy; row++) paint(row, () => 0.6);
-      paint(sy - wallRows, () => 1.0);
-    } else {
-      // Floor brick: outer two columns at 85 % so tile edges read.
-      paint(sy, (col) => (col === sx - 2 || col === sx + 1 ? 0.85 : 1.0));
-    }
-
-    // Sprites draw with their tile, same painter step; a wall drawn later
-    // (south-east) clears these overlay cells, giving occlusion.
-    const sprite = spriteByCell.get(`${x},${y}`);
-    if (sprite) {
-      const ch = sprite.ch.charCodeAt(0);
-      const sr = sprite.rgb;
-      for (const [cx, cy] of [
-        [sx, sy - 1],
-        [sx - 1, sy - 1],
-      ] as Array<[number, number]>) {
-        if (cx < 0 || cx >= cols || cy < 0 || cy >= rows) continue;
-        const i = cy * cols + cx;
-        const o = i * 3;
-        fb.overlayCh[i] = ch;
-        fb.overlayRgb[o] = sr[0] * atten;
-        fb.overlayRgb[o + 1] = sr[1] * atten;
-        fb.overlayRgb[o + 2] = sr[2] * atten;
+      for (let r = Math.max(0, topBot + 1); r <= Math.min(rows - 1, sideBot); r++) {
+        let f: number;
+        if (c === sx) {
+          f = 1.1; // the vertical corner between the two faces
+        } else {
+          const faceFactor = c < sx ? 0.55 : 0.75;
+          if (useBrick) {
+            const u = c < sx ? (c - (sx - 2 * k)) / (2 * k) : (c - sx) / (2 * k);
+            const v = (r - (botBase - h)) / h;
+            f = faceFactor * brickShade(u, v, seed);
+          } else {
+            f = faceFactor;
+          }
+        }
+        const o = (r * cols + c) * 3;
+        fb.rgb[o] = base[0] * f * atten;
+        fb.rgb[o + 1] = base[1] * f * atten;
+        fb.rgb[o + 2] = base[2] * f * atten;
+        fb.depth[r * cols + c] = depthVal;
+        fb.overlayCh[r * cols + c] = 0;
+        fb.overlayRgb[o] = 0;
+        fb.overlayRgb[o + 1] = 0;
+        fb.overlayRgb[o + 2] = 0;
       }
     }
+  };
+
+  const drawSprite = (s: Sprite): void => {
+    const sx = ox + 2 * k * (s.x - s.y);
+    const sy = oy + k * (s.x + s.y + 1);
+    const isHero = s.x === hx && s.y === hy;
+    const figure = MONSTER_CLS.has(s.cls) || isHero;
+    const atten = Math.exp(-fogK * Math.max(Math.abs(s.x - hx), Math.abs(s.y - hy)));
+    const ch = s.ch.charCodeAt(0);
+    const depthVal = s.x + s.y;
+    if (k === 1) {
+      // far/small zoom: the figure collapses to one or two cells, no rim
+      const spots: Array<[number, number]> = figure ? [[sx, sy - 1], [sx, sy]] : [[sx, sy]];
+      for (const [c, r] of spots) {
+        if (c < 0 || c >= cols || r < 0 || r >= rows) continue;
+        const i = r * cols + c;
+        const o = i * 3;
+        fb.overlayCh[i] = ch;
+        fb.overlayRgb[o] = s.rgb[0] * atten;
+        fb.overlayRgb[o + 1] = s.rgb[1] * atten;
+        fb.overlayRgb[o + 2] = s.rgb[2] * atten;
+        fb.depth[i] = depthVal;
+      }
+      return;
+    }
+    const halfW = k - 1; // full width 2k−1 (odd); hero is 7 wide at k = 4
+    const halfH = figure ? 1.75 * k : 0.75 * k; // figures 3.5k tall, items 1.5k
+    // figures stand 3.5k rows with their feet at the tile centre row sy; items
+    // are low shapes 1.5k tall centred on the tile.
+    const y0 = figure ? Math.ceil(sy - 2 * halfH + 1) : Math.ceil(sy - halfH);
+    const y1 = figure ? sy : Math.floor(sy + halfH);
+    const cy = (y0 + y1) / 2;
+    for (let r = y0; r <= y1; r++) {
+      if (r < 0 || r >= rows) continue;
+      for (let c = sx - halfW; c <= sx + halfW; c++) {
+        if (c < 0 || c >= cols) continue;
+        const dx = (c - sx) / halfW;
+        const dy = (r + 0.5 - cy) / halfH;
+        const r2 = dx * dx + dy * dy;
+        if (r2 > 1.35) continue; // outside the figure and its rim
+        const bright = r2 <= 1 ? 1 - 0.45 * r2 : 0.22; // rim ring at 0.22
+        const i = r * cols + c;
+        const o = i * 3;
+        fb.overlayCh[i] = ch;
+        fb.overlayRgb[o] = s.rgb[0] * bright * atten;
+        fb.overlayRgb[o + 1] = s.rgb[1] * bright * atten;
+        fb.overlayRgb[o + 2] = s.rgb[2] * bright * atten;
+        fb.depth[i] = depthVal;
+      }
+    }
+  };
+
+  for (const { x, y } of cells) {
+    const kind = level.kindAt(x, y);
+    if (isSolid(kind) && kind !== 'unexplored') drawBlock(x, y, kind);
+    const sprite = spriteByCell.get(`${x},${y}`);
+    if (sprite) drawSprite(sprite);
   }
 }
