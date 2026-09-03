@@ -53,9 +53,37 @@ AsciiCity's ramp, sparsest to densest, starting with a space and ending with
 - `quantizeInto(fb, grid, opts?)` — quantize into a caller-owned grid,
   **reusing its cell objects** (no per-frame allocation). `width`/`height`
   are overwritten; existing cells are mutated in place.
-- `QuantizeOptions { ramp?, exposure?, gamma? }` — defaults are the ramp
-  above, `1.7` and `0.45`. The later render styles (gloom/amber/matrix) only
-  vary these.
+- `QuantizeOptions { ramp?, exposure?, gamma?, theme? }` — defaults are the
+  ramp above, `1.7`, `0.45` and `'cyber'`. `theme` picks one of four looks
+  (see the Themes subsection).
+
+### Themes
+
+The `theme` option ports the shader looks from AsciiCity's `ascii.frag` to
+the terminal. The mixers live in `src/render/themes.ts` as pure functions
+(`themeMix`, `amberMix`, `amberDensity`) and are called from `ascii.ts`.
+
+In a shader the glyph coverage `mask` is a per-pixel value; in a terminal
+the glyph is drawn by the terminal, so **`mask = 1` gives the foreground
+colour of a cell and `mask = 0` gives the background colour of the same
+cell**. For `cyber`/`gloom`/`solarized` the glyph choice is unchanged;
+`amber` uses its own density curve (`clamp((v - 0.06) / 0.94)^(gamma·1.5)`)
+for the ramp index too, keeping a black point and a steeper falloff.
+
+- `cyber` (default) — the original look: folded tint over a black bg.
+  Byte-identical to the pre-theme output.
+- `gloom` — a low-contrast wash of the cell's hue on a bright grey ground
+  `[184, 186, 191]` (`0.72/0.73/0.75 × 255`). Hot cells (`v` near 1) burst
+  back toward the raw tint.
+- `solarized` — solarized `base00` ink on solarized `base3` paper
+  `[253, 246, 227]`; hot cells bloom toward solarized yellow
+  `(0.71, 0.54, 0)`.
+- `amber` — warm monochrome phosphor: black background, glyph shades amber
+  `(1.0, 0.62, 0.18)` up to a nearly-white hot bloom `≈[255, 224, 148]`.
+
+Overlay glyphs (monsters/objects) keep their own colour as fg and take the
+theme's `mask = 0` background, so they sit on the paper/ground rather than
+on black.
 
 ## Screen writer (`src/term/screen.ts`)
 
