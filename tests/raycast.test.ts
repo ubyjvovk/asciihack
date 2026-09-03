@@ -11,6 +11,7 @@ import { makeFrameBuffer, type FrameBuffer, type Pose, type Sprite } from '../sr
 import { levelFromAscii, ROOM, L_SHAPED } from './fixtures/levels.js';
 
 const GOLDEN = fileURLToPath(new URL('./raycast-golden.txt', import.meta.url));
+const TEXTURED_GOLDEN = fileURLToPath(new URL('./raycast-textured-golden.txt', import.meta.url));
 
 /** Test-local quantizer: a 10-glyph ramp over max(r,g,b). Do not import ascii.ts. */
 function quantize(fb: FrameBuffer): string {
@@ -330,10 +331,104 @@ describe('raycast/determinism', () => {
   });
 });
 
-describe('raycast/golden', () => {
-  it('matches the committed golden render of ROOM at 80×24 facing east', () => {
+describe('raycast/surface-detail', () => {
+  it('a wall 3 cells away renders with at least 3 distinct brightness levels in one row (the blank-block case)', () => {
+    // 1-wide corridor, hero at (1.5, 4.0) facing north, north wall at distance 3.
+    const level = levelFromAscii(['####', '#..#', '#..#', '#..#', '#..#', '####']);
     const fb = makeFrameBuffer(80, 24);
-    renderFirstPerson(ROOM, pose(7.5, 3.5, Math.PI / 2), [], fb);
+    renderFirstPerson(level, pose(1.5, 4.0, 0), [], fb);
+    // find a row dominated by the grey wall hue and count its distinct brightness levels
+    let saw = false;
+    for (let y = 0; y < fb.height; y++) {
+      const levels = new Set<number>();
+      let wallCols = 0;
+      for (let x = 0; x < fb.width; x++) {
+        const o = (y * fb.width + x) * 3;
+        const r = fb.rgb[o]!;
+        if (r < 0.02) continue;
+        const gr = fb.rgb[o + 1]! / r;
+        const br = fb.rgb[o + 2]! / r;
+        if (Math.abs(gr - 0.964) < 0.03 && Math.abs(br - 0.909) < 0.03) {
+          wallCols++;
+          levels.add(Math.round(r * 1000));
+        }
+      }
+      if (wallCols > 10) {
+        expect(levels.size).toBeGreaterThanOrEqual(3);
+        saw = true;
+        break;
+      }
+    }
+    expect(saw).toBe(true);
+  });
+
+  it('floor cells show grid lines (a row with at least 2 distinct brightness levels)', () => {
+    const level = levelFromAscii([
+      '#############',
+      '#...........#',
+      '#...........#',
+      '#...........#',
+      '#...........#',
+      '#############',
+    ]);
+    const fb = makeFrameBuffer(80, 24);
+    renderFirstPerson(level, pose(7.5, 2.5, Math.PI / 2), [], fb);
+    let saw = false;
+    for (let y = Math.ceil(fb.height / 2); y < fb.height; y++) {
+      const levels = new Set<number>();
+      let lit = 0;
+      for (let x = 0; x < fb.width; x++) {
+        const r = fb.rgb[(y * fb.width + x) * 3]!;
+        if (r < 0.02) continue;
+        lit++;
+        levels.add(Math.round(r * 1000));
+      }
+      if (lit > fb.width / 2) {
+        expect(levels.size).toBeGreaterThanOrEqual(2);
+        saw = true;
+        break;
+      }
+    }
+    expect(saw).toBe(true);
+  });
+
+  it('a doorway column shows frame posts (wall colour) at its edges and floor colour in the middle', () => {
+    // A doorway in an east-west wall two cells ahead; the hero faces it from the south.
+    const level = levelFromAscii([
+      '#############',
+      '#...........#',
+      '#......D....#',
+      '#...........#',
+      '#...........#',
+      '#############',
+    ]);
+    const fb = makeFrameBuffer(80, 24);
+    renderFirstPerson(level, pose(7.5, 4.5, 0), [], fb);
+    const c = Math.floor(fb.width / 2);
+    const doorRows: number[] = [];
+    const wallRows: number[] = [];
+    for (let y = 0; y < fb.height; y++) {
+      const o = (y * fb.width + c) * 3;
+      const r = fb.rgb[o]!;
+      const g = fb.rgb[o + 1]!;
+      const b = fb.rgb[o + 2]!;
+      if (r < 0.02) continue;
+      // strong red dominance = the door-coloured threshold (the opening's middle)
+      if (r / Math.max(b, 1e-6) > 2.2 && r > 0.05) doorRows.push(y);
+      // grey hue = wall, which includes the door's frame posts
+      else if (Math.abs(g / r - 0.964) < 0.03 && Math.abs(b / r - 0.909) < 0.03) wallRows.push(y);
+    }
+    expect(doorRows.length).toBeGreaterThan(0); // the middle is floor-coloured, not a wall
+    expect(wallRows.length).toBeGreaterThan(0); // a wall-coloured frame post is present
+    // the frame sits at the opening's edge: a door row directly touches a wall frame row
+    expect(doorRows.some((d) => wallRows.includes(d - 1) || wallRows.includes(d + 1))).toBe(true);
+  });
+});
+
+describe('raycast/golden', () => {
+  it('matches the committed flat (detail:false) golden render of ROOM at 80×24 facing east', () => {
+    const fb = makeFrameBuffer(80, 24);
+    renderFirstPerson(ROOM, pose(7.5, 3.5, Math.PI / 2), [], fb, { detail: false });
     const out = quantize(fb);
     if (process.env.UPDATE_GOLDEN === '1') {
       writeFileSync(GOLDEN, out);
@@ -342,10 +437,22 @@ describe('raycast/golden', () => {
     const expected = readFileSync(GOLDEN, 'utf8');
     expect(out).toBe(expected);
   });
+
+  it('matches the committed default-detail (textured) golden render of ROOM at 80×24 facing east', () => {
+    const fb = makeFrameBuffer(80, 24);
+    renderFirstPerson(ROOM, pose(7.5, 3.5, Math.PI / 2), [], fb);
+    const out = quantize(fb);
+    if (process.env.UPDATE_GOLDEN === '1') {
+      writeFileSync(TEXTURED_GOLDEN, out);
+      return;
+    }
+    const expected = readFileSync(TEXTURED_GOLDEN, 'utf8');
+    expect(out).toBe(expected);
+  });
 });
 
 describe('raycast/performance', () => {
-  it('renders 200×60 in under 8 ms on average over 20 runs (assert < 40 ms)', () => {
+  it('renders 200×60 in under 8 ms on average over 20 runs with detail on', () => {
     const fb = makeFrameBuffer(200, 60);
     const sprite: Sprite = { x: 6, y: 5, ch: 'k', rgb: [0.9, 0.9, 0.9], cls: 'mon' };
     const times: number[] = [];
@@ -357,6 +464,6 @@ describe('raycast/performance', () => {
     const avg = times.reduce((a, b) => a + b, 0) / times.length;
     // eslint-disable-next-line no-console
     console.log(`raycast 200×60 average: ${avg.toFixed(3)} ms over 20 runs`);
-    expect(avg).toBeLessThan(40);
+    expect(avg).toBeLessThan(8);
   });
 });

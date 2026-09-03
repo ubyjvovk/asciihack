@@ -4,6 +4,7 @@
  * fills the buffer and returns nothing. No I/O, no globals.
  */
 import { isSolid, type CellKind, type FrameBuffer, type LevelView, type Pose, type Sprite } from '../model/types.js';
+import { barsShade, brickShade, gridShade, plankShade } from './texture.js';
 
 /** Per-kind linear RGB (0..1, before exposure and fog). Anything not listed is floor-coloured. */
 export const KIND_COLORS: Record<CellKind, readonly [number, number, number]> = {
@@ -49,12 +50,15 @@ export interface RaycastOptions {
   cellAspect?: number;
   /** Fog attenuation coefficient (default 0.18). */
   fogK?: number;
+  /** Apply procedural surface detail (bricks, floor grid, frames, edges); default true. */
+  detail?: boolean;
 }
 
 const DEFAULT_FOV_DEG = 70;
 const DEFAULT_MAX_DEPTH = 24;
 const DEFAULT_CELL_ASPECT = 2;
 const DEFAULT_FOG_K = 0.18;
+const DEFAULT_DETAIL = true;
 
 /** Scale an RGB triple by a factor (returns a new array). */
 function scale(c: readonly [number, number, number], f: number): [number, number, number] {
@@ -76,6 +80,7 @@ export function renderFirstPerson(
   const maxDepth = opts.maxDepth ?? DEFAULT_MAX_DEPTH;
   const cellAspect = opts.cellAspect ?? DEFAULT_CELL_ASPECT;
   const fogK = opts.fogK ?? DEFAULT_FOG_K;
+  const detail = opts.detail ?? DEFAULT_DETAIL;
 
   const cols = fb.width;
   const rows = fb.height;
@@ -109,6 +114,11 @@ export function renderFirstPerson(
   // the ceiling/floor passes so a wall cell is never overwritten by them).
   const wallTop = new Float32Array(cols);
   const wallBot = new Float32Array(cols);
+  // Previous column's hit cell and side, for vertical corner-line detection.
+  let prevX = -1;
+  let prevY = -1;
+  let prevSide = -1;
+  let prevHadWall = false;
 
   // --- wall pass: one DDA ray per column ---
   for (let c = 0; c < cols; c++) {
@@ -157,10 +167,23 @@ export function renderFirstPerson(
         hitKind = k;
         break;
       }
+      if (detail && (k === 'doorway' || k === 'door_open')) {
+        // A doorway stays passable, but the outer 0.12 of the cell (its posts)
+        // is solid wall-coloured frame so the opening reads against the wall.
+        const perp = side === 0 ? sideDistX - deltaX : sideDistY - deltaY;
+        const wallX = side === 0 ? posY + perp * rdy : posX + perp * rdx;
+        const fracU = wallX - Math.floor(wallX);
+        if (fracU < 0.12 || fracU > 0.88) {
+          hitKind = 'wall';
+          break;
+        }
+      }
       const perp = side === 0 ? sideDistX - deltaX : sideDistY - deltaY;
       if (perp > maxDepth) break;
     }
 
+    const hitX = mapX;
+    const hitY = mapY;
     if (hitKind !== null) {
       const perpDist = side === 0 ? sideDistX - deltaX : sideDistY - deltaY;
       const d = Math.min(perpDist, maxDepth);
@@ -168,25 +191,67 @@ export function renderFirstPerson(
       const bot = horizon + (fV * 0.5) / d;
       wallTop[c] = top;
       wallBot[c] = bot;
-      let base = KIND_COLORS[hitKind];
-      if (side === 0) base = scale(base, 0.7); // E/W face at 70 %, N/S at 100 %
+      const faceFactor = side === 0 ? 0.7 : 1.0; // E/W face at 70 %, N/S at 100 %
+      const corner = detail && c > 0 && (!prevHadWall || hitX !== prevX || hitY !== prevY || side !== prevSide) ? 1.15 : 1.0;
       const atten = Math.exp(-fogK * d);
-      const r = base[0] * atten;
-      const g = base[1] * atten;
-      const b = base[2] * atten;
+      // face-fraction u across the hit face (0 at one edge, 1 at the other)
+      const u = detail ? (side === 0 ? posY + d * rdy : posX + d * rdx) : 0;
+      const uFrac = u - Math.floor(u);
+      const seed = hitY * 80 + hitX;
       const y0 = Math.max(0, Math.floor(top));
       const y1 = Math.min(rows - 1, Math.ceil(bot));
-      for (let y = y0; y <= y1; y++) {
-        const i = (y * cols + c) * 3;
-        fb.rgb[i] = r;
-        fb.rgb[i + 1] = g;
-        fb.rgb[i + 2] = b;
-        fb.depth[y * cols + c] = d;
+      if (!detail) {
+        // flat shading: the pre-detail path, byte-identical golden
+        let base = KIND_COLORS[hitKind];
+        if (side === 0) base = scale(base, 0.7);
+        const r = base[0] * atten;
+        const g = base[1] * atten;
+        const b = base[2] * atten;
+        for (let y = y0; y <= y1; y++) {
+          const i = (y * cols + c) * 3;
+          fb.rgb[i] = r;
+          fb.rgb[i + 1] = g;
+          fb.rgb[i + 2] = b;
+          fb.depth[y * cols + c] = d;
+        }
+      } else {
+        for (let y = y0; y <= y1; y++) {
+          const v = y1 > y0 ? (y - top) / (bot - top) : 1; // 0 at wall top, 1 at bottom
+          let texFactor = 1;
+          let baseColor = KIND_COLORS[hitKind];
+          if (hitKind === 'wall') {
+            texFactor = brickShade(uFrac, v, seed);
+          } else if (hitKind === 'door_closed') {
+            if (uFrac < 0.12 || uFrac > 0.88) {
+              baseColor = scale(KIND_COLORS.wall, 1.1); // wall-coloured frame posts
+            } else {
+              texFactor = plankShade(uFrac);
+            }
+          } else if (hitKind === 'bars') {
+            texFactor = barsShade(uFrac);
+          }
+          if (hitKind === 'wall') {
+            // light top edge, contact shadow at the bottom, brighter corner columns
+            if (y === y0) texFactor *= 1.25;
+            else if (y === y1) texFactor *= 0.8;
+            texFactor *= corner;
+          }
+          const factor = faceFactor * texFactor;
+          const i = (y * cols + c) * 3;
+          fb.rgb[i] = baseColor[0] * factor * atten;
+          fb.rgb[i + 1] = baseColor[1] * factor * atten;
+          fb.rgb[i + 2] = baseColor[2] * factor * atten;
+          fb.depth[y * cols + c] = d;
+        }
       }
     } else {
       wallTop[c] = horizon;
       wallBot[c] = horizon;
     }
+    prevX = hitX;
+    prevY = hitY;
+    prevSide = side;
+    prevHadWall = hitKind !== null;
   }
 
   // --- ceiling pass: black gradient above each column's wall top ---
@@ -243,11 +308,32 @@ export function renderFirstPerson(
     for (let x = 0; x < cols; x++) {
       if (y >= wallBot[x]!) {
         const kind = level.kindAt(Math.floor(fX), Math.floor(fY));
-        const base = isSolid(kind) ? KIND_COLORS.stone : KIND_COLORS[kind];
+        let base = isSolid(kind) ? KIND_COLORS.stone : KIND_COLORS[kind];
+        let gridFactor = 1;
+        if (detail && (kind === 'doorway' || kind === 'door_open')) {
+          // the doorway threshold reads as a wall-framed opening, not a gap in
+          // the floor colour: outer 0.12 of the cell is wall-coloured frame,
+          // the middle stays the passable door colour
+          const fx = fX - Math.floor(fX);
+          const fy = fY - Math.floor(fY);
+          if (fx < 0.12 || fx > 0.88 || fy < 0.12 || fy > 0.88) base = KIND_COLORS.wall;
+        } else if (
+          detail &&
+          (kind === 'floor' ||
+            kind === 'ice' ||
+            kind === 'stairs_up' ||
+            kind === 'stairs_down' ||
+            kind === 'altar' ||
+            kind === 'throne')
+        ) {
+          // perspective grid on floor-like surfaces (not corridors, water, lava)
+          const edge = kind === 'stairs_up' || kind === 'stairs_down' ? 0.5 : 0.7;
+          gridFactor = gridShade(fX, fY, edge);
+        }
         const i = (y * cols + x) * 3;
-        fb.rgb[i] = base[0] * atten;
-        fb.rgb[i + 1] = base[1] * atten;
-        fb.rgb[i + 2] = base[2] * atten;
+        fb.rgb[i] = base[0] * gridFactor * atten;
+        fb.rgb[i + 1] = base[1] * gridFactor * atten;
+        fb.rgb[i + 2] = base[2] * gridFactor * atten;
         fb.depth[y * cols + x] = rowDist;
       }
       fX += stepX;
