@@ -63,6 +63,13 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   before the first ticket.
 
 ## Board snapshot
+- 2026-09-03 23:50 — T-0018 (compass/minimap arrow/rose) accepted; T-0020
+  (resize repaint) cancelled by the user after landing (record in drafts/,
+  branch deleted). README rewritten with docs/screenshot-fps.png
+  (scripts/term-shot.py renders tmux colour captures); pushed to GitHub.
+  In progress: T-0017 (darkness + shaped sprites, ds-1). Queued: T-0019
+  (opaque panels, muse). Draft T-0021 (ortho v2: zoom, 3/4 walls, lattice)
+  to promote after updating architecture §5.3.
 - 2026-09-03 23:20 — **T-0016 accepted; board drained, 16/16 done.** Master:
   166 tests, tsc clean. Deliverable state: `npm start` = first-person
   NetHack with textured walls, F3 ortho, F1 classic, F4 minimap, F5 themes;

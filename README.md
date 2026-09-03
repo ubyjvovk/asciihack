@@ -1,82 +1,120 @@
-# asciihack
+# AsciiHack
 
-Play real NetHack 5.0 in a terminal, rendered as coloured-ASCII: a
-first-person view (raycaster) or an ortho/isometric view by default, with
-the classic top-down map as a mode and a minimap.
+Play real **NetHack 5.0** in your terminal, rendered as coloured ASCII: a
+first-person view in the style of [AsciiCity](https://github.com/ubyjvovk/asciicity),
+an isometric view, and the classic map. Works locally and over ssh.
+
+![First-person view of the starting room: brick walls in perspective, the
+stairs, the kitten, the compass ribbon and the minimap](docs/screenshot-fps.png)
+
+*The starting room, facing west. Top: message line and compass ribbon.
+Top-right: minimap with the hero as a facing arrow. Bottom: NetHack's
+status lines.*
+
+## What it is
+
+- **Unmodified NetHack.** The game is the `nethack/` git submodule, built
+  natively as `libnethack.a` with NetHack's own "shim" window port. Every
+  rule, item, monster and message is the real thing; saves are real NetHack
+  save files.
+- **A small C bridge** (`bridge/nh-bridge.c`) turns the window-port
+  callbacks into JSON lines on stdin/stdout.
+- **A TypeScript client** (Node 22+, no runtime dependencies) keeps the map
+  model and renders it: a CPU raycaster with procedural brick textures,
+  floor grids and door frames for the first-person view; an isometric
+  "brick" projection for the ortho view; the classic 80×21 map as a mode
+  and as a minimap. Four looks ported from AsciiCity's shaders: cyber,
+  gloom, solarized, amber.
+
+Status (September 2026): playable end to end in all three modes. In
+progress: shaped monster sprites and "unknown space as darkness" in the
+first-person view, opaque menu panels, and a zoomable 3/4 ortho view. The
+browser build that reuses AsciiCity's three.js styles is not started.
 
 ## Build
 
-The client is TypeScript on Node 22+ (zero runtime dependencies). NetHack is a
-git submodule built out-of-tree into `build/`.
-
-```
-# once: populate the submodule (also done by the build script if needed)
-bash scripts/nethack-src.sh
-
-# build the NetHack library, then the JSON bridge binary
-bash scripts/nethack-build.sh lib
-bash scripts/nethack-build.sh bridge
+```sh
+bash scripts/nethack-src.sh          # populate the submodule (once)
+bash scripts/nethack-build.sh lib    # NetHack as a library (needs network once, for Lua)
+bash scripts/nethack-build.sh bridge # the JSON bridge binary
+npm install
 ```
 
-Each build is idempotent and safe to re-run; `lib` needs network once to fetch
-Lua.
+Builds are out-of-tree under `build/` and idempotent. The plain console
+game is also there if you want vanilla NetHack:
+`bash scripts/nethack-build.sh tty && bash scripts/nethack-play.sh`.
 
 ## Play
 
-```
-npm start -- --name=tester
+```sh
+npm start -- --name=mia            # first-person view (default)
+npm start -- --mode=ortho          # isometric
+npm start -- --mode=classic        # the classic map
 ```
 
-The first run copies the bridge's playground to `~/.asciihack/playground` so
-your saves persist and the build directory stays clean.
-
-## Flags
+The first run copies NetHack's playground to `~/.asciihack/playground`, so
+saves persist across builds. Terminal: at least 80×24, 24-bit colour.
 
 | flag | default | meaning |
 |---|---|---|
-| `--mode=` | `fps` | `classic`, `fps` or `ortho` |
-| `--theme=` | `cyber` | render theme for fps/ortho: `cyber`, `gloom`, `solarized`, `amber` |
-| `--no-minimap` | – | hide the minimap overlay in fps/ortho |
+| `--mode=` | `fps` | `fps`, `ortho` or `classic` |
+| `--theme=` | `cyber` | `cyber`, `gloom`, `solarized`, `amber` |
+| `--no-minimap` | – | hide the minimap in fps/ortho |
 | `--name=` | `asciihack` | character name |
-| `--bridge=` | `build/nethack/bridge/nh-bridge` | path to the bridge binary |
-| `--playground=` | `~/.asciihack/playground` | per-player playground dir (used as `NETHACKDIR`); copied from the build on first use |
-| `--options=` | – | extra `NETHACKOPTIONS` (comma-separated) |
+| `--playground=` | `~/.asciihack/playground` | per-player NetHack directory |
+| `--options=` | – | extra `NETHACKOPTIONS`, comma-separated |
+| `--bridge=` | `build/nethack/bridge/nh-bridge` | bridge binary |
 
-## Key bindings
+### Keys
 
-- **Classic mode**: every key goes straight to NetHack (`hjkl` to move, `i`
-  inventory, `S` save, `#` extended commands, …).
-- **Fps mode**: `Left`/`Right` turn 45°, `Up`/`Down` walk forward/back, `Shift`+arrows
-  strafe; typing a vi-key (`hjklyubn`) moves that way and turns to face it.
-- **Ortho mode**: arrows are plain moves (`h`/`l`/`k`/`j`); vi-keys work too.
-- `F1` classic · `F2` fps · `F3` ortho · `F4` toggle minimap · `F5` cycle theme
-  (cyber → gloom → solarized → amber).
-- `Ctrl+L` redraw.
-- `Ctrl+P` show the last 20 messages.
-- `--More--`: any key continues.
+- **First-person**: `Left`/`Right` turn 45°, `Up`/`Down` walk forward and
+  back, `Shift`+`Left`/`Right` strafe. A vi-key (`hjklyubn`) moves that way
+  and turns to face it. Everything else goes straight to NetHack.
+- **Ortho**: arrows are plain moves; north is up-right on screen (see the
+  rose in the corner).
+- **Classic**: every key goes to NetHack.
+- `F1` classic · `F2` first-person · `F3` ortho · `F4` minimap · `F5` theme ·
+  `Ctrl+P` message history · `Ctrl+L` redraw.
 
-Menus, text windows, `yn`/`getlin` prompts and extended-command lines appear as
-boxed overlays centred on the viewport.
+Menus, text windows, prompts and `--More--` pauses are NetHack's own,
+drawn as overlays.
 
 ## Play over ssh
 
-`ssh play@host` drops straight into AsciiHack (first-person view), with one
-NetHack playground per player name — e.g. `ssh -t play@host mia` plays as `mia`.
-Everything a host operator needs is `bin/asciihack-login` plus
-`scripts/ssh-serve.sh`; see **`docs/ssh.md`** for the full walk-through
-(build, setup, test, names → playgrounds, saves, security, terminal needs).
+`ssh play@host mia` drops straight into the game as `mia`, with her own
+playground; without a name it asks. `bin/asciihack-login` is the login
+shell, `scripts/ssh-serve.sh --check` prints the `sshd_config` block, and
+[`docs/ssh.md`](docs/ssh.md) is the operator walk-through.
 
-## Layout
+## How it works
 
-- `src/engine/` — bridge process + `NethackSession` model.
-- `src/ui/` — the app shell, classic/fps/ortho modes, minimap, overlays,
-  status rows (see `docs/ui.md`).
-- `src/term/` — screen writer, key parser, real tty adapter.
-- `docs/` — architecture and per-module notes (`docs/architecture.md` first).
-
-## Test
+`docs/architecture.md` is the design contract: the bridge protocol
+(§3), the map model (§4), the renderers (§5), the terminal layer (§6).
+Per-module notes: `docs/bridge.md`, `docs/engine.md`, `docs/render.md`,
+`docs/terminal.md`, `docs/ui.md`, `docs/nethack-build.md`.
 
 ```
-bash scripts/test.sh            # unit tests (vitest)
-bash scripts/check.sh           # full gate: typecheck + unit + build + bridge smoke
+nethack/      NetHack 5.0 submodule (never modified, built out-of-tree)
+bridge/       nh-bridge.c — shim window port → JSON lines
+src/engine/   bridge process, NethackSession model, glyph classification
+src/render/   raycaster, ortho renderer, textures, ASCII quantizer, themes
+src/term/     screen writer (diff-painting ANSI), key parser, tty adapter
+src/ui/       app shell, modes, overlays, minimap, compass
+bin/          ssh login wrapper
 ```
+
+Tests: `bash scripts/test.sh` (vitest, no C build needed);
+`bash scripts/check.sh` runs typecheck, unit tests, build, the NetHack
+library and bridge builds and a bridge smoke. Screenshots for this README
+come from `scripts/term-shot.py` over a `tmux capture-pane -e` dump.
+
+## Credits
+
+NetHack is © the NetHack DevTeam, distributed under the NetHack General
+Public License (see `nethack/dat/license`). The render look and the
+ASCII quantizer formulas come from [AsciiCity](https://github.com/ubyjvovk/asciicity).
+The project is built with a [tiger team](.tigerteam/) of cheap-model
+workers directed by a PM; the ticket history is in `.tigerteam/board/done/`.
+
+© 2026 [@ubyjvovk](https://github.com/ubyjvovk). License for this
+project's own code: to be decided.
