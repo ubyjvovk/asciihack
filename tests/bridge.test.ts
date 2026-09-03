@@ -42,6 +42,9 @@ describe.skipIf(!bridgeReady)('nh-bridge', () => {
     let heroXY: { x: number; y: number } | null = null;
     let glyphCount = 0;
     let nextWinId = 1;
+    let msgWinId: number | null = null;
+    let helloNhw: Record<string, number> = {};
+    let sawWelcomePutstr = false;
     let done = false;
 
     const write = (o: Record<string, unknown>): void => {
@@ -63,6 +66,7 @@ describe.skipIf(!bridgeReady)('nh-bridge', () => {
         expect(Array.isArray(extra?.extcmds)).toBe(true);
         expect(extra?.extcmds?.some((e) => isRecord(e) && e.name === 'quit')).toBe(true);
         expect(isRecord(msg.mg)).toBe(true);
+        helloNhw = (msg.nhw as Record<string, number> | undefined) ?? {};
         helloOk = true;
         continue;
       }
@@ -87,7 +91,19 @@ describe.skipIf(!bridgeReady)('nh-bridge', () => {
           heroXY = { x, y };
           break;
         }
-        case 'create_nhwindow':          if (needsReply) write({ id, ret: nextWinId++ }); break;
+        case 'create_nhwindow': {
+          const [type] = call.args as [number];
+          const wid = nextWinId++;
+          if (type === helloNhw.NHW_MESSAGE) msgWinId = wid;
+          if (needsReply) write({ id, ret: wid });
+          break;
+        }
+        case 'putstr': {
+          const [, , s] = call.args as [number, number, string | null];
+          if (typeof s === 'string' && s.includes('welcome to NetHack'))
+            sawWelcomePutstr = true;
+          break;
+        }
         case 'player_selection_or_tty':  if (needsReply) write({ id, ret: false }); break;
         case 'askname':                  if (needsReply) write({ id, ret: 'smoke' }); break;
         case 'yn_function': {
@@ -107,6 +123,8 @@ describe.skipIf(!bridgeReady)('nh-bridge', () => {
           expect(glyphCount).toBeGreaterThanOrEqual(30);
           expect(heroSeen).toBe(true);
           expect(heroXY).not.toBeNull();
+          expect(msgWinId).not.toBeNull();
+          expect(sawWelcomePutstr).toBe(true);
           if (needsReply) write({ id, ret: 27 });
           done = true;
           break;
