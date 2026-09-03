@@ -9,6 +9,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { renderOrtho, cellToScreen, screenToCell, type Origin } from '../src/render/ortho.js';
 import { KIND_COLORS } from '../src/render/raycast.js';
+import { loadTiles, monsterTile, objectTile } from '../src/render/tiles.js';
 import { makeFrameBuffer, type FrameBuffer, type LevelView, type Sprite } from '../src/model/types.js';
 import { levelFromAscii, ROOM } from './fixtures/levels.js';
 
@@ -213,6 +214,31 @@ describe('ortho/sprites', () => {
     expect(ext.height).toBe(14); // 3.5k rows
     expect(ext.width).toBe(7); // 2k−1 columns
   });
+
+  it('ortho draws a tiled jackal on its tile with a transparent top row', () => {
+    // All-floor level, hero far from the jackal so nothing occludes it. k = 2.
+    const lvl: LevelView = { width: 8, height: 6, kindAt: () => 'floor', cellAt: () => null };
+    const jackalTile = monsterTile(loadTiles(), 'jackal')!;
+    const sprite: Sprite = { x: 6, y: 4, ch: 'd', rgb: [0.9, 0.1, 0.1], cls: 'mon', height: 0.5, tile: jackalTile };
+    const fb = makeFrameBuffer(120, 56); // k = 2
+    renderOrtho(lvl, { x: 1, y: 1 }, [sprite], fb, { zoom: 2 });
+    // hero (1,1) at 120×56 → origin {60, 24, 2}; jackal (6,4) → sy 46. Height 0.5
+    // → rows = round(0.5·3.5·2/0.9) = 4, topmost drawn row = ceil(sy − 4) = 42.
+    const topRow = 46 - 4;
+    let top = 0;
+    for (let c = 0; c < fb.width; c++) {
+      if (fb.overlayCh[topRow * fb.width + c] === 'd'.charCodeAt(0)) top++;
+    }
+    expect(top).toBe(0); // the jackal tile's top rows are transparent
+    // body rows below carry the letter
+    let body = 0;
+    for (let r = topRow + 1; r <= 45; r++) {
+      for (let c = 0; c < fb.width; c++) {
+        if (fb.overlayCh[r * fb.width + c] === 'd'.charCodeAt(0)) body++;
+      }
+    }
+    expect(body).toBeGreaterThan(0);
+  });
 });
 
 describe('ortho/cutaway', () => {
@@ -268,12 +294,15 @@ describe('ortho/golden', () => {
     expect(out).toBe(expected);
   });
 
-  it('matches the committed zoom golden render of ROOM at 120×56 (k = 2)', () => {
-    const fb = makeFrameBuffer(120, 56);
+  it('matches the committed zoom golden render of ROOM at 160×104 (k = 4)', () => {
+    const fb = makeFrameBuffer(160, 104);
+    const tiles = loadTiles();
+    // a tiled jackal and a potion alongside the (untiled) hero; k = 4 so the
+    // potion's thin bottle is wider than one screen column and actually shows
     const sprites: Sprite[] = [
       { x: 7, y: 3, ch: '@', rgb: [0.95, 0.95, 0.95], cls: 'mon' },
-      { x: 5, y: 3, ch: 'k', rgb: [0.9, 0.1, 0.1], cls: 'mon' },
-      { x: 9, y: 3, ch: '*', rgb: [0.9, 0.9, 0.2], cls: 'obj' },
+      { x: 5, y: 3, ch: 'd', rgb: [0.9, 0.1, 0.1], cls: 'mon', height: 0.5, tile: monsterTile(tiles, 'jackal')! },
+      { x: 9, y: 3, ch: '!', rgb: [0.9, 0.9, 0.2], cls: 'obj', height: 0.35, tile: objectTile(tiles, undefined, 'potion')! },
     ];
     renderOrtho(ROOM, { x: 7, y: 3 }, sprites, fb);
     const out = quantize(fb);
@@ -289,9 +318,12 @@ describe('ortho/golden', () => {
 describe('ortho/performance', () => {
   it('renders 200×60 (k = 2) in under 8 ms on average over 20 runs', () => {
     const fb = makeFrameBuffer(200, 60);
+    const tiles = loadTiles();
+    // three tiled sprites in view
     const sprites: Sprite[] = [
-      { x: 6, y: 5, ch: 'k', rgb: [0.9, 0.9, 0.9], cls: 'mon' },
-      { x: 5, y: 4, ch: '*', rgb: [0.9, 0.9, 0.2], cls: 'obj' },
+      { x: 6, y: 5, ch: 'd', rgb: [0.9, 0.9, 0.9], cls: 'mon', height: 0.5, tile: monsterTile(tiles, 'jackal')! },
+      { x: 5, y: 4, ch: '!', rgb: [0.9, 0.9, 0.2], cls: 'obj', height: 0.35, tile: objectTile(tiles, undefined, 'potion')! },
+      { x: 7, y: 5, ch: 'k', rgb: [0.9, 0.9, 0.9], cls: 'mon', height: 0.5, tile: monsterTile(tiles, 'kitten')! },
     ];
     const times: number[] = [];
     for (let i = 0; i < 20; i++) {

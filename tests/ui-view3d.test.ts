@@ -2,25 +2,21 @@ import { describe, expect, it } from 'vitest';
 import { FACINGS, opposite, poseFor, spritesFromMap, strafe, turn, blitGrid, Viewport3D } from '../src/ui/view3d.js';
 import { blankGrid } from '../src/ui/grid.js';
 import { makeFrameBuffer, type GlyphInfo } from '../src/model/types.js';
+import { NethackSession } from '../src/engine/session.js';
+import type { BridgeMsg, TablesMsg } from '../src/engine/protocol.js';
 
 function glyph(ch: string, cls: GlyphInfo['cls'] = 'mon'): GlyphInfo {
   return { glyph: 1, ch, color: 7, cls, idx: 0, flags: 0 };
 }
 
-/** Small 4×4 session-like map with a hero, a monster and bare terrain. */
-function mapStub(hero: { x: number; y: number } | null) {
-  return {
-    width: 4,
-    height: 4,
-    kindAt: () => 'floor' as const,
-    cellAt: (x: number, y: number) => {
-      if (x < 0 || y < 0 || x >= 4 || y >= 4) return null;
-      if (hero && x === hero.x && y === hero.y) return { x, y, kind: 'floor' as const, terrain: null, top: glyph('@', 'mon') };
-      if (x === 1 && y === 1) return { x, y, kind: 'floor' as const, terrain: null, top: glyph('d', 'pet') };
-      if (x === 2 && y === 2) return { x, y, kind: 'floor' as const, terrain: glyph('.', 'cmap'), top: glyph('.', 'cmap') };
-      return { x, y, kind: 'unexplored' as const, terrain: null, top: null };
-    },
-  };
+/** A session whose cells carry the given `top` glyphs (fed via print_glyph). */
+function sessionWith(top: Record<string, GlyphInfo>): NethackSession {
+  const s = new NethackSession(() => {});
+  for (const [key, gi] of Object.entries(top)) {
+    const [x, y] = key.split(',').map(Number);
+    s.handle({ t: 'call', name: 'print_glyph', args: [3, x, y, gi] } as BridgeMsg);
+  }
+  return s;
 }
 
 describe('view3d facings', () => {
@@ -46,20 +42,42 @@ describe('view3d facings', () => {
 
 describe('view3d sprites and pose', () => {
   it('spritesFromMap skips cmap/unexplored/nothing and the fps hero', () => {
-    const map = mapStub({ x: 0, y: 0 });
-    const fps = spritesFromMap(map, { x: 0, y: 0 }, false);
+    const s = sessionWith({
+      '0,0': glyph('@', 'mon'), // hero
+      '1,1': glyph('d', 'pet'),
+      '2,2': glyph('.', 'cmap'),
+    });
+    const fps = spritesFromMap(s, { x: 0, y: 0 }, false);
     expect(fps).toHaveLength(1);
     expect(fps[0]!.ch).toBe('d');
     expect(fps[0]!.cls).toBe('pet');
   });
 
   it('spritesFromMap includes the hero as @ for ortho and normalises colour', () => {
-    const map = mapStub({ x: 0, y: 0 });
-    const ortho = spritesFromMap(map, { x: 0, y: 0 }, true);
+    const s = sessionWith({
+      '0,0': glyph('@', 'mon'),
+      '1,1': glyph('d', 'pet'),
+    });
+    const ortho = spritesFromMap(s, { x: 0, y: 0 }, true);
     expect(ortho).toHaveLength(2);
-    const hero = ortho.find((s) => s.x === 0 && s.y === 0)!;
+    const hero = ortho.find((sp) => sp.x === 0 && sp.y === 0)!;
     expect(hero.ch).toBe('@');
-    for (const s of ortho) for (const c of s.rgb) expect(c).toBeGreaterThanOrEqual(0);
+    for (const sp of ortho) for (const c of sp.rgb) expect(c).toBeGreaterThanOrEqual(0);
+  });
+
+  it('spritesFromMap attaches height 0.5 + jackal tile to a d whose idx maps to jackal, and height 0.35 + potion tile to a !', () => {
+    const s = new NethackSession(() => {});
+    s.handle({ t: 'tables', monsters: [{ name: 'jackal', male: null, female: null, letter: 'd', size: 1, color: 3 }], objects: [{ name: null, descr: 'potion', cls: '!' }] } as TablesMsg);
+    s.handle({ t: 'call', name: 'print_glyph', args: [3, 1, 1, { glyph: 0, ch: 'd', color: 3, cls: 'mon', idx: 0, flags: 0 }] } as BridgeMsg);
+    s.handle({ t: 'call', name: 'print_glyph', args: [3, 2, 2, { glyph: 0, ch: '!', color: 2, cls: 'obj', idx: 0, flags: 0 }] } as BridgeMsg);
+    const sprites = spritesFromMap(s, { x: 0, y: 0 }, false);
+    const jackal = sprites.find((sp) => sp.ch === 'd')!;
+    expect(jackal.height).toBe(0.5); // small (size 1)
+    expect(jackal.tile?.w).toBe(16);
+    expect(jackal.tile?.h).toBe(16);
+    const potion = sprites.find((sp) => sp.ch === '!')!;
+    expect(potion.height).toBe(0.35); // object
+    expect(potion.tile?.w).toBe(16);
   });
 
   it('poseFor puts the camera at the hero cell centre', () => {

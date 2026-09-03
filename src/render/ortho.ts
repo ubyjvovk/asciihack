@@ -254,6 +254,41 @@ export function renderOrtho(
     const atten = Math.exp(-fogK * Math.max(Math.abs(s.x - hx), Math.abs(s.y - hy)));
     const ch = s.ch.charCodeAt(0);
     const depthVal = s.x + s.y;
+    if (s.tile && !isHero) {
+      // Tile art as a square billboard: `brows` rows (height scaled the way the
+      // 0.9-tall figure maps to 3.5k) and `2·brows` columns so it stays square
+      // on screen (a cell is twice as tall as wide); the tile's bottom edge
+      // (feet) sits on the tile centre row `sy`. Transparent pixels leave the
+      // floor visible; no rim needed.
+      const brows = Math.max(1, Math.round(((s.height ?? 0.7) * 3.5 * k) / 0.9));
+      const bw = 2 * brows;
+      const yTop = sy - brows;
+      const y0 = Math.max(0, Math.ceil(yTop));
+      const y1 = Math.min(rows - 1, sy);
+      const x0 = sx - brows;
+      const x1 = sx + brows;
+      const tile = s.tile;
+      for (let r = y0; r <= y1; r++) {
+        const v = (r + 0.5 - yTop) / brows;
+        const vi = Math.min(15, Math.max(0, Math.floor(v * 16)));
+        for (let c = x0; c <= x1; c++) {
+          if (c < 0 || c >= cols) continue;
+          const u = (c + 0.5 - (sx - brows)) / bw;
+          const ui = Math.min(15, Math.max(0, Math.floor(u * 16)));
+          const pal = tile.pixels[vi * 16 + ui]!;
+          if (pal === 0) continue; // transparent: floor shows through
+          const pc = tile.palette[pal]!;
+          const i = r * cols + c;
+          const o = i * 3;
+          fb.overlayCh[i] = ch;
+          fb.overlayRgb[o] = (pc[0] / 255) * atten;
+          fb.overlayRgb[o + 1] = (pc[1] / 255) * atten;
+          fb.overlayRgb[o + 2] = (pc[2] / 255) * atten;
+          fb.depth[i] = depthVal;
+        }
+      }
+      return;
+    }
     if (k === 1) {
       // far/small zoom: the figure collapses to one or two cells, no rim
       const spots: Array<[number, number]> = figure ? [[sx, sy - 1], [sx, sy]] : [[sx, sy]];
