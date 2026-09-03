@@ -15,16 +15,24 @@ renderFirstPerson(level, pose, sprites, fb, opts?)
   0 = north, +π/2 = east; §7).
 - `sprites: Sprite[]` — billboards to overlay (monsters/objects).
 - `fb: FrameBuffer` — the buffer to fill (rgb, depth, overlay planes).
-- `opts?: RaycastOptions` — `fovDeg` (70), `maxDepth` (24), `cellAspect` (2),
-  `fogK` (0.18), `detail` (true, see “Surface detail”).
+- `opts?: RaycastOptions` — `vFovDeg` (60), `horizonFrac` (0.42), `fovDeg`
+  (optional, back-compat: fixes the horizontal FOV), `maxDepth` (24),
+  `cellAspect` (2), `fogK` (0.28), `detail` (true, see “Surface detail”).
 
 ## Algorithm
 
-1. **Camera.** Horizontal FOV 70°. Because a terminal cell is twice as tall as
-   wide, the vertical FOV is aspect-corrected: `vFov = hFov × (rows·2) / cols`.
-   The camera sits at height 0.5 (eye in the middle of a 1-cell-tall wall) and
-   its forward vector is `(sin yaw, −cos yaw)`, perpendicular camera plane of
-   length `tan(hFov/2)`.
+1. **Camera.** By default the vertical FOV is fixed (`vFovDeg`, 60°) and the
+   horizontal one is derived from the aspect:
+   `hFov = 2·atan(tan(vFov/2) · cols / (rows · cellAspect))`, so a landscape
+   terminal sees more sideways. If the caller passes `fovDeg` explicitly it is
+   kept as the horizontal FOV and the vertical one is derived as before
+   (`vFov = hFov × rows·cellAspect / cols`, back-compat for tests). The horizon
+   row is `rows · horizonFrac` (default 0.42) — the camera pitches down a
+   little so the near floor is on screen at any aspect (the bottom row looks
+   `(1−0.42)·60° ≈ 35°` down, so the nearest visible floor is `0.5/tan 35° ≈
+   0.7` cells). The camera sits at height 0.5 (eye in the middle of a
+   1-cell-tall wall) and its forward vector is `(sin yaw, −cos yaw)`,
+   perpendicular camera plane of length `tan(hFov/2)`.
 2. **Walls.** One grid-DDA ray per column (Wolfenstein-style). A ray stops at
    the first `isSolid` cell; `unexplored` counts as solid so the world ends
    where knowledge ends. Doorways and open doors are passable — the
@@ -35,8 +43,8 @@ renderFirstPerson(level, pose, sprites, fb, opts?)
    `horizon ± (fV · 0.5 / d)` with `fV = rows / (2·tan(vFov/2))`.
 3. **Face shade.** Walls hit on a y boundary (N/S face) render at 100 %, walls
    hit on an x boundary (E/W face) at 70 %.
-4. **Ceiling.** Black `[0.03,0.03,0.04]` above each wall, fading linearly to
-   black at the top row.
+4. **Ceiling.** Pure black (`[0,0,0]`), no gradient — poorly lit, nothing to see
+   up there.
 5. **Floor.** Classic floor-casting: each row's distance is fixed by its
    elevation (`rowDist = posZ / (y − horizon)`), and the horizontal step picks
    the floor cell under each column. The floor cell is coloured by its kind
@@ -59,39 +67,56 @@ renderFirstPerson(level, pose, sprites, fb, opts?)
 `RaycastOptions.detail` (default **true**) turns on procedural surface detail
 so depth and structure read in ASCII instead of one flat glyph per surface.
 The pure pattern functions live in `src/render/texture.ts` (`brickShade`,
-`plankShade`, `barsShade`, `gridShade`) and are unit-tested there; `raycast.ts`
-only calls them. With `detail: false` the renderer is byte-identical to the
-pre-detail flat renderer (this is what the original `raycast-golden.txt`
-commits); the default is covered by `raycast-textured-golden.txt`.
+`plankShade`, `barsShade`, `gridShade`, `floorShade`) and are unit-tested
+there; `raycast.ts` only calls them. With `detail: false` the renderer is
+byte-identical to the pre-detail flat renderer (this is what the original
+`raycast-golden.txt` commits); the default is covered by
+`raycast-textured-golden.txt`.
 
 - **Wall texture.** For a wall hit, `u` is the fraction along the hit face
   (`posY + perp·rdy` for a vertical/E-W face, `posX + perp·rdx` for a
   horizontal/N-S one, fractional part), and per row `v = (y − top)/(bot − top)`
   (0 at the wall top, 1 at the bottom). `brickShade(u, v, seed)`: rows 0.25
   tall, bricks 0.5 wide, every other row offset by 0.25, 0.05-wide mortar at
-  brightness 0.65, and a brick body of 1.0 ± 0.08 hashed by (row, column,
-  `seed`) where `seed = hitY·80 + hitX` keeps bricks stable frame to frame.
-  It multiplies the wall colour after the N/S vs E/W face factor and before
-  fog. `wall` gets the brick; `bars` gets `barsShade(u)` (0.2 bars at 1.0,
-  0.3 gaps at 0.25).
+  the `MORTAR` sentinel (the renderer paints seams at the absolute brightness
+  `0.05`, fogged), and a brick body of 1.0 ± 0.03 hashed by (row, column,
+  `seed`) where `seed = hitY·80 + hitX` keeps bricks stable frame to frame. It
+  multiplies the wall colour after the N/S vs E/W face factor and before fog.
+  `wall` gets the brick; `bars` gets `barsShade(u)` (0.2 bars at 1.0, 0.3 gaps
+  at 0.25). The face base colours are dark (`wall` `[0.14,0.14,0.15]`) so a
+  wall reads as a sparse dark field — only the mortar seams and the bright
+  edge lines are dense.
+- **Edge lines (absolute).** The wall's top edge row, bottom contact row,
+  corner columns and door posts are painted at absolute brightness (not
+  multiples of the base and **not fogged**, so silhouettes read at distance):
+  wall top edge `0.75`, bottom contact `0.30`, corner columns `0.55`,
+  door/doorway frame posts `0.70`. In a column the precedence is top edge >
+  corner > bottom contact > body. `stone` (known rock) gets only the flat grey
+  body plus the top edge line, no mortar or corners.
 - **Doors.** `door_closed`: `plankShade(u)` = vertical planks 0.2 wide
-  alternating 1.0 / 0.82 with a 0.05 dark seam; the outer 0.12 of the face
-  (`u < 0.12 || u > 0.88`) is a wall-coloured frame at wall × 1.1.
-  `doorway` / `door_open` stay passable, but the ray treats the outer 0.12 of
-  the cell's width (its posts) as solid wall-coloured frame, and in the floor
-  pass the doorway threshold is drawn with a wall-coloured frame (outer 0.12
-  of the cell) around the passable door colour — so a doorway reads as an
-  opening in a wall rather than a gap in the floor colour.
-- **Floor grid.** In the floor pass, `gridShade(fX, fY, edge)` returns `edge`
-  (0.7, or 0.5 for stairs so they pop) when the sample is within 0.05 of a
-  cell edge in either axis, else 1.0. Applied to `floor`, `ice`, `stairs_*`,
-  `altar`, `throne` only (not corridors, water, lava).
-- **Edge lines.** In the wall pass, the topmost painted wall row of a column
-  is at 1.25× (light edge) and the bottom row at 0.8× (contact shadow). A
-  column whose hit cell or hit side differs from its left neighbour's (a
-  corner or a different wall block) gets its whole wall span at 1.15× —
-  vertical corner lines. Edge and corner lines apply to `wall` cells; `stone`
-  gets only the top edge line (flat known rock, no mortar or corners).
+  alternating 1.0 / 0.82 with a 0.05 dark seam at the `MORTAR` sentinel; the
+  outer 0.12 of the face (`u < 0.12 || u > 0.88`) is an absolute `0.70` frame
+  post. `doorway` / `door_open` stay passable, but the ray treats the outer
+  0.12 of the cell's width (its posts) as solid frame, and in the floor pass
+  the doorway threshold is drawn with an absolute `0.70` frame around the
+  passable door colour `[0.28,0.22,0.14]` — so a doorway reads as an opening
+  in a wall rather than a gap in the floor colour.
+
+### Floor
+
+The floor pass is described in the algorithm; this is the detail (readable)
+look. `floor` is a poorly-lit dark-grey flagstone floor: base
+`[0.10,0.10,0.11]` with `floorShade(fX, fY)` giving each 0.5-cell stone a
+brightness 0.85–1.15 (hashed by its `(floor(2fX), floor(2fY))` index, stable
+per stone) and thin seams (within 0.04 of a stone edge) at 0.6. On top, the
+perspective grid lines at cell edges are painted at the absolute brightness
+`0.30` (not fogged) so they read as the converging depth lines. `corridor` is
+rough rock: base `[0.07,0.065,0.06]` with `floorShade(fX, fY, 1.0, false)`
+(side-1.0 stones, no seams) and no grid. `ice`, `stairs_*`, `altar`, `throne`
+keep the multiplier `gridShade` grid (edge 0.7, or 0.5 for stairs). Fog is
+`fogK` default `0.28`, so a wall 8 cells away is already faint and a long
+corridor fades to nothing — that fade is the depth cue. Sprites, water, lava
+and the unknown veil are unchanged.
 
 ### The unknown
 
@@ -141,15 +166,15 @@ renderer can reuse it. `CEILING_COLOR` is the ceiling base colour.
 
 | kind | colour |
 |---|---|
-| wall | `[0.55,0.53,0.50]` |
-| door_closed | `[0.55,0.35,0.15]` |
-| door_open / doorway | `[0.45,0.30,0.12]` |
-| tree | `[0.15,0.45,0.15]` |
-| bars | `[0.30,0.60,0.65]` |
+| wall | `[0.14,0.14,0.15]` |
+| door_closed | `[0.16,0.11,0.06]` |
+| door_open / doorway | `[0.28,0.22,0.14]` |
+| tree | `[0.05,0.14,0.05]` |
+| bars | `[0.10,0.16,0.17]` |
 | stone | `[0.12,0.12,0.13]` |
 | unexplored | `[0.03,0.03,0.05]` |
-| floor | `[0.40,0.37,0.33]` |
-| corridor | `[0.28,0.22,0.16]` |
+| floor | `[0.10,0.10,0.11]` |
+| corridor | `[0.07,0.065,0.06]` |
 | water | `[0.10,0.25,0.60]` |
 | lava | `[0.85,0.35,0.05]` |
 | ice | `[0.55,0.75,0.85]` |
@@ -157,7 +182,7 @@ renderer can reuse it. `CEILING_COLOR` is the ceiling base colour.
 | altar | `[0.70,0.70,0.75]` |
 | fountain | `[0.30,0.50,0.90]` |
 | trap | `[0.60,0.20,0.60]` |
-| anything else | floor colour |
+| anything else | floor colour `[0.10,0.10,0.11]` |
 
 ## Ortho renderer (`src/render/ortho.ts`)
 
@@ -280,9 +305,11 @@ quantizes each with the test-local 10-glyph ramp, and compares against
 ## Aspect correction
 
 A terminal cell is twice as tall as wide, so a square wall face projects to a
-column twice as tall as it is wide. The vertical FOV is set to
-`70° × (rows·2) / cols`, which makes `fV` and `fH` consistent with the cell
-aspect and keeps square world features square on screen.
+column twice as tall as it is wide. By default the vertical FOV is fixed at
+60° and the horizontal FOV is derived from the aspect (see “Camera”), which
+keeps `fH` and `fV` consistent with the cell aspect (fH = 2·fV) and square
+world features square on screen. If `fovDeg` is passed explicitly the vertical
+FOV is instead derived as `vFov = hFov × rows·cellAspect / cols`.
 
 ## Golden workflow
 
