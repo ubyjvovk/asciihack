@@ -70,6 +70,16 @@ describe.skipIf(!bridgeReady)('nh-bridge', () => {
         helloOk = true;
         continue;
       }
+      if (msg.t === 'tables') {
+        const mons = msg.monsters as Array<Record<string, unknown>>;
+        const jackal = mons.find((m) => m.name === 'jackal');
+        expect(jackal).toBeDefined();
+        expect(jackal?.letter).toBe('d');
+        expect(jackal?.size).toBe(1);
+        const objs = msg.objects as Array<Record<string, unknown>>;
+        expect(objs.some((o) => o.name === 'dagger')).toBe(true);
+        continue;
+      }
       if (msg.t === 'log') continue;
       if (msg.t === 'exit') {
         throw new Error(`bridge exited early: code ${String(msg.code)} reason ${String(msg.reason)}`);

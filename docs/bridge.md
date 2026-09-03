@@ -13,6 +13,26 @@ than a whole machine word, so a 1- or 2-byte return slot is never overrun.
 
 ## Messages
 
+### `hello` and `tables`
+
+`hello` (first line, before NetHack starts) carries the proto/version plus
+the `S`/`cmap`/`nhw`/`bl`/`pick`/`atr`/`mg`/`clr`/`blmask` tables and
+`extra.extcmds`. Immediately after forwarding `init_nhwindows` the bridge
+prints one `{"t":"tables","monsters":[…],"objects":[…]}` line: `NUMMONS`
+monster entries `{name, male, female, letter, size, color}` (from
+`mons[i].pmnames[NEUTRAL] ?? [MALE]` / `[MALE]` / `[FEMALE]`, gender indices
+from `include/monflag.h`; `letter` is `def_monsyms[mons[i].mlet].sym` as a
+1-char string; `size` is `msize`, `color` is `mcolor`) and `NUM_OBJECTS`
+object entries `{name, descr, cls}` (from `obj_descr[i].oc_name` /
+`.oc_descr`; `cls` is `def_oc_syms[objects[i].oc_class].sym`). Names use the
+bridge's `json_str` escaping. Two timing facts force this shape: `hello` is
+printed before `nhmain`, when `mons[]`/`objects[]` are still zeroed (they
+are `memcpy`'d from `mons_init`/`obj_init` by `early_init()` inside
+`nhmain`), so the tables ride on `init_nhwindows` instead; and object names
+are read from `obj_descr[i]` directly because `objects[i].oc_name_idx` stays
+0 until `init_objects()` runs later in `newgame()`. `src/engine/*` ignores
+the `tables` line for now (T-0026 consumes it).
+
 NetHack's `pline()` (`nethack/src/pline.c`) sends every message through
 `raw_print()` while `iflags.window_inited` is false — that is the case until a
 window port's `init_nhwindows` completes. Every real port sets the flag to

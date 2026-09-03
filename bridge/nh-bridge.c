@@ -403,6 +403,8 @@ emit_cmap_table(void)
     fputc(']', stdout);
 }
 
+static int g_tables_emitted = 0;
+
 static void
 emit_extcmds(void)
 {
@@ -444,6 +446,59 @@ print_hello(void)
 /* ------------------------------------------------------------------------ */
 /* Per-call dispatch. `name` is the raw shim_* name; we emit it without the
  * prefix per the spec (§3.3). */
+
+/* Emit the monster/object tables once, as their own log line right after
+ * the init_nhwindows call (init runs after early_init() populated
+ * mons[]/objects[]). Hello is printed before nhmain, when those globals
+ * are still zeroed, so the tables cannot live in hello. */
+static void
+emit_tables_once(void)
+{
+    if (g_tables_emitted) return;
+    g_tables_emitted = 1;
+    fputs("{\"t\":\"tables\",\"monsters\":[", stdout);
+    for (int i = 0; i < NUMMONS; i++) {
+        if (i) fputc(',', stdout);
+        const struct permonst *m = &mons[i];
+        const char *neutral = m->pmnames[NEUTRAL];
+        const char *name = neutral ? neutral : m->pmnames[MALE];
+        char letter = '?';
+        if (m->mlet >= 0 && m->mlet < MAXMCLASSES)
+            letter = def_monsyms[(int) m->mlet].sym;
+        char lbuf[2] = { letter, '\0' };
+        fputs("{\"name\":", stdout);
+        json_str_or_null(name);
+        fputs(",\"male\":", stdout);
+        json_str_or_null(m->pmnames[MALE]);
+        fputs(",\"female\":", stdout);
+        json_str_or_null(m->pmnames[FEMALE]);
+        fputs(",\"letter\":", stdout);
+        json_str(lbuf);
+        fprintf(stdout, ",\"size\":%u,\"color\":%u}",
+                (unsigned) m->msize, (unsigned) m->mcolor);
+    }
+    fputs("],\"objects\":[", stdout);
+    for (int i = 0; i < NUM_OBJECTS; i++) {
+        if (i) fputc(',', stdout);
+        /* NB: at tables time (init_nhwindows) objects[i].oc_name_idx is
+         * still 0 — init_objects() only runs later in newgame(). Index
+         * obj_descr[] directly: entry i is this object's own name/descr. */
+        const struct objclass *o = &objects[i];
+        char cls = '?';
+        if (o->oc_class >= 0 && o->oc_class < MAXOCLASSES)
+            cls = def_oc_syms[(int) o->oc_class].sym;
+        char cbuf[2] = { cls, '\0' };
+        fputs("{\"name\":", stdout);
+        json_str_or_null(obj_descr[i].oc_name);
+        fputs(",\"descr\":", stdout);
+        json_str_or_null(obj_descr[i].oc_descr);
+        fputs(",\"cls\":", stdout);
+        json_str(cbuf);
+        fputc('}', stdout);
+    }
+    fputs("]}\n", stdout);
+    fflush(stdout);
+}
 
 static void
 emit_call_head(const char *name)
@@ -559,6 +614,7 @@ handle_callback(const char *name, void *ret_ptr, const char *fmt, va_list ap)
         }
         fputc(']', stdout);
         emit_call_end_noreply();
+        emit_tables_once();
         /* Every real window port sets this at the end of its
          * init_nhwindows (win/tty/wintty.c ~1885). Until it is TRUE,
          * pline() routes every message through raw_print() instead of the
@@ -1082,7 +1138,10 @@ main(int argc, char *argv[])
         die_reason(buf);
     }
 
-    print_hello();
+    print_hello(); /* before nhmain: only S/cmap/constant tables are valid here;
+                          mons[]/objects[] are memcpy'd from mons_init/obj_init
+                          by early_init() inside nhmain, so monster/object tables
+                          are emitted lazily on first use (see emit_tables_once). */
 
     if (atexit(atexit_emit) != 0) {
         /* Non-fatal; we just may lose the exit line on abnormal exit. */
