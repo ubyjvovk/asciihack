@@ -146,6 +146,35 @@ describe('term/screen Screen', () => {
     expect(t.writes[1]).toContain('\x1b[2J');
   });
 
+  it('handles a larger then a smaller grid without invalidate', () => {
+    const t = new FakeTermIO();
+    const s = new Screen(t);
+    const small = grid(4, 2, (i) => cell(String.fromCharCode(97 + (i % 26)), RED));
+    const big = grid(6, 3, (i) => (i >= 12 ? cell('R', GREEN) : cell(String.fromCharCode(97 + (i % 26)), RED)));
+    const tiny = grid(3, 1, (i) => cell(String.fromCharCode(97 + (i % 26)), RED));
+
+    s.paint(small);
+    expect(t.writes[0]).toContain('\x1b[2J');
+    t.writes = [];
+
+    // Growing 4x2 -> 6x3 without invalidate must not throw and must repaint,
+    // reaching a cell in row 3.
+    expect(() => s.paint(big)).not.toThrow();
+    // Full repaint covering every one of the 6x3 cells, row 3 included.
+    expect(t.writes[0]).toContain('\x1b[2J');
+    expect(stripAnsi(t.writes[0])).toBe('abcdefghijklRRRRRR');
+    t.writes = [];
+    s.paint(big);
+    expect(t.writes).toEqual([]);
+
+    // Shrinking 6x3 -> 3x1 without invalidate must also repaint.
+    expect(() => s.paint(tiny)).not.toThrow();
+    expect(t.writes[0]).toContain('\x1b[2J');
+    t.writes = [];
+    s.paint(tiny);
+    expect(t.writes).toEqual([]);
+  });
+
   it('repaints a cell mutated in place in the same grid object', () => {
     const t = new FakeTermIO();
     const s = new Screen(t);
