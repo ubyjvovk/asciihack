@@ -43,6 +43,16 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   2026-09-01). Worktrees get it via `scripts/nethack-src.sh` (T-0001).
 
 ## Decision log (append-only)
+- 2026-09-04 — User went to bed with "fix the renderer, then monster/object
+  polish, then browser, then idk" and left the browser architecture to the
+  PM. Decision: **browser wave = WebSocket thin client first** (browser
+  runs the same TS session + a three.js scene rendered through AsciiCity's
+  vendored style shaders; a Node `ws` server spawns nh-bridge per
+  connection), **static WASM later** as a second transport. Rationale: no
+  emscripten risk on the critical path, the bridge protocol is reused
+  byte-for-byte, and the rendering work (the bulk) is identical for both.
+  AsciiCity's `src/render/*` vendored verbatim to `web/src/asciicity/render/`
+  (PM commit); `three`, `ws`, `vite` added to package.json (PM-owned).
 - 2026-09-03 — Engine integration = native `libnethack.a` (NetHack's own
   `SHIM_GRAPHICS` window port, `make WANT_LIBNH=1`) + a small C bridge
   speaking JSON lines, not the emscripten/WASM build — the user asked "why
@@ -146,6 +156,13 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   yet.
 
 ## Next actions
+- Night plan (2026-09-04): (1) land T-0028/T-0029/T-0024/T-0026/T-0027 —
+  renderer look, tone curve, sprites, FOV keys; (2) sprite polish
+  follow-ups from the playtest; (3) browser wave T-0030 (web scaffold +
+  WS server + classic mode in a <pre> grid) → T-0031 (three.js dungeon scene
+  + AsciiCity styles as the fps viewport) → T-0032 (ortho camera) →
+  later T-0033 (WASM transport for static hosting). Push + refresh README
+  screenshots after each visible step.
 - Wave 4 needs a user decision before planning: browser build as static
   WASM (emscripten build of libnethack + three.js/AsciiCity styles, no
   server) vs thin client (browser talks WebSocket to the native bridge on
