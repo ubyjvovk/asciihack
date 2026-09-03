@@ -1,0 +1,32 @@
+/* AsciiHack browser client — bare-minimum monospace terminal styling. */
+html, body {
+  margin: 0;
+  padding: 0;
+  background: #000;
+  color: #ddd;
+  height: 100%;
+  overflow: hidden;
+  font-family: "Fira Code", "DejaVu Sans Mono", Consolas, monospace;
+}
+
+#term {
+  margin: 0;
+  padding: 0;
+  width: 100vw;
+  height: 100vh;
+  font-size: 14px;
+  line-height: 18px;
+  white-space: pre;
+  outline: none;
+  overflow: hidden;
+}
+
+#term .row {
+  display: block;
+  white-space: pre;
+  min-height: 18px;
+}
+
+#term span {
+  display: inline;
+}

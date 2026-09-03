@@ -1,0 +1,26 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM"],
+    "types": [],
+    "rootDir": "..",
+    "outDir": "../dist-web-ts"
+  },
+  "include": [
+    "src/main.ts",
+    "src/dom-term.ts",
+    "src/ws-bridge.ts",
+    "../src/engine/session.ts",
+    "../src/engine/transport.ts",
+    "../src/engine/protocol.ts",
+    "../src/engine/glyphs.ts",
+    "../src/model/**/*.ts",
+    "../src/render/**/*.ts",
+    "../src/term/screen.ts",
+    "../src/term/input.ts",
+    "../src/ui/**/*.ts"
+  ],
+  "exclude": [
+    "src/asciicity/**"
+  ]
+}

@@ -13,7 +13,7 @@ import type { KeyEvent } from '../term/input.js';
 import type { Theme } from '../render/themes.js';
 import { Screen, type TermIO } from '../term/screen.js';
 import { blankGrid, putText, UI_BG, UI_FG } from './grid.js';
-import { clampFov, loadSettings, saveSettings, settingsPath, type Settings } from './settings.js';
+import { clampFov, DEFAULT_SETTINGS, type Settings } from './settings.js';
 import { ClassicMode, type Mode } from './modes/classic.js';
 import { FpsMode } from './modes/fps.js';
 import { OrthoMode } from './modes/ortho.js';
@@ -45,8 +45,14 @@ export interface AppOptions {
   minimap?: boolean;
   /** Vertical FOV in degrees (CLI `--fov` override; beats the saved setting). */
   fov?: number;
-  /** Path to the settings file (default `~/.asciihack/settings.json`). */
-  settingsFile?: string;
+  /** Initial persisted settings (defaults when omitted). CLI/browser load
+   *  these before constructing the App; App itself does no disk I/O so it
+   *  stays browser-clean (docs/web.md). */
+  settings?: Settings;
+  /** Called with the current settings whenever fov/theme/minimap changes.
+   *  CLI wires this to `saveSettings`; the browser can no-op or use
+   *  localStorage. Omitted → nothing is persisted. */
+  onSettingsChange?: (s: Settings) => void;
   /** Clock source for the FOV toast (tests inject a fake clock). */
   now?: () => number;
 }
@@ -66,7 +72,7 @@ export class App {
   private theme: Theme;
   private showMinimap: boolean;
   private fovDeg: number;
-  private readonly settingsFile: string | null;
+  private readonly persistFn: ((s: Settings) => void) | null;
   private toastText: string | null = null;
   private toastUntil = 0;
   private overlay: Overlay | null = null;
@@ -79,19 +85,18 @@ export class App {
   private frameTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly now: () => number;
 
-  /** @param opts - session, injectable `TermIO`, requested mode, theme/minimap/fov and the settings file. */
+  /** @param opts - session, injectable `TermIO`, requested mode, theme/minimap/fov and an optional persistence callback. */
   constructor(opts: AppOptions) {
     this.session = opts.session;
     this.term = opts.term;
     this.screen = new Screen(opts.term);
     this.now = opts.now ?? (() => Date.now());
-    this.settingsFile = opts.settingsFile ?? null;
-    // Precedence: CLI flag > saved setting > built-in default.
-    const loaded: Settings =
-      this.settingsFile !== null ? loadSettings(this.settingsFile) : { fov: 60, theme: 'amber', minimap: true };
-    this.fovDeg = opts.fov !== undefined ? clampFov(opts.fov) : loaded.fov;
-    this.theme = opts.theme ?? loaded.theme;
-    this.showMinimap = opts.minimap ?? loaded.minimap;
+    this.persistFn = opts.onSettingsChange ?? null;
+    // Precedence: CLI flag > initial settings > built-in default.
+    const initial: Settings = opts.settings ?? { ...DEFAULT_SETTINGS };
+    this.fovDeg = opts.fov !== undefined ? clampFov(opts.fov) : initial.fov;
+    this.theme = opts.theme ?? initial.theme;
+    this.showMinimap = opts.minimap ?? initial.minimap;
     this.modes = {
       classic: new ClassicMode(opts.session),
       fps: new FpsMode(opts.session),
@@ -101,8 +106,8 @@ export class App {
     if (!this.modes[this.requestedMode]) this.requestedMode = 'fps';
     this.mode = this.modes[this.requestedMode]!;
     this.syncModeSettings();
-    // Persist any CLI flag override so it sticks for the next run.
-    if (this.settingsFile !== null && (opts.fov !== undefined || opts.theme !== undefined || opts.minimap !== undefined)) {
+    // Persist any CLI-flag override so it sticks for the next run.
+    if (this.persistFn !== null && (opts.fov !== undefined || opts.theme !== undefined || opts.minimap !== undefined)) {
       this.persistSettings();
     }
 
@@ -236,10 +241,10 @@ export class App {
     }
   }
 
-  /** Write the current settings to the settings file (never crashes). */
+  /** Hand the current settings to the persistence callback (if any). */
   private persistSettings(): void {
-    if (this.settingsFile === null) return;
-    saveSettings(this.settingsFile, { fov: this.fovDeg, theme: this.theme, minimap: this.showMinimap });
+    if (this.persistFn === null) return;
+    this.persistFn({ fov: this.fovDeg, theme: this.theme, minimap: this.showMinimap });
   }
 
   /** Show a one-line toast on the message line for `TOAST_MS` without touching NetHack's messages. */

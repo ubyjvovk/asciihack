@@ -12,7 +12,7 @@ import { spawnBridge } from './engine/bridge.js';
 import { NethackSession, runSession } from './engine/session.js';
 import { TtyTerm } from './term/tty.js';
 import { App } from './ui/app.js';
-import { settingsPath } from './ui/settings.js';
+import { loadSettings, saveSettings, settingsPath } from './settings-io.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** Default location of the built bridge binary. */
@@ -153,6 +153,7 @@ async function main(): Promise<void> {
     options: flags.options.length > 0 ? flags.options : undefined,
   });
   const session = new NethackSession((r) => bridge.reply(r), { playerName: flags.name });
+  const sFile = settingsPath();
   const app = new App({
     session,
     term,
@@ -160,7 +161,8 @@ async function main(): Promise<void> {
     theme: (flags.theme ?? undefined) as 'cyber' | 'gloom' | 'solarized' | 'amber' | undefined,
     minimap: flags.minimap ?? undefined,
     fov: flags.fov ?? undefined,
-    settingsFile: settingsPath(),
+    settings: loadSettings(sFile),
+    onSettingsChange: (s) => saveSettings(sFile, s),
   });
   app.enter();
   try {

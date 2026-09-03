@@ -9,7 +9,8 @@ import {
   splitObjectName,
   encodePixels,
 } from '../scripts/gen-tiles.js';
-import { loadTiles, monsterTile, objectTile, otherTile } from '../src/render/tiles.js';
+import { monsterTile, objectTile, otherTile } from '../src/render/tiles.js';
+import { loadTiles } from '../src/tiles-load.js';
 
 const SNIPPET = `A = (0, 0, 0)
 B = (255, 0, 0)
