@@ -120,6 +120,14 @@ npm run web:dev       # Vite dev server on http://127.0.0.1:5173/
 
 Loopback-only by default (no auth). Full walk-through: [`docs/web.md`](docs/web.md).
 
+![The browser client: the same dungeon as a three.js scene rendered by
+AsciiCity's amber shader, with the text HUD on top](docs/screenshot-web.png)
+
+*The browser build: NetHack runs on the host behind a WebSocket, the page
+renders the dungeon with three.js through AsciiCity's shader styles (`F5`
+cycles them), and the message line, minimap, compass and menus stay in the
+text grid.*
+
 ## How it works
 
 `docs/architecture.md` is the design contract: the bridge protocol
