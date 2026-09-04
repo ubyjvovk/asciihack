@@ -244,8 +244,8 @@ describe('ortho/terrain', () => {
 
   it('unexplored cells carry the lattice (seam cells brighter than interior cells, seams clear the black point)', () => {
     const allUnexplored = levelFromAscii(['     ', '     ', '     ']);
-    const fb = makeFrameBuffer(80, 104); // k = 4 so the diamond seams are sampled
-    renderOrtho(allUnexplored, { x: 1, y: 1 }, [], fb);
+    const fb = makeFrameBuffer(360, 240); // k = 4 so the diamond seams are sampled and distance 20 is in view
+    renderOrtho(allUnexplored, { x: 1, y: 1 }, [], fb, { zoom: 4 });
     let lit = 0;
     let dark = 0;
     let maxV = 0;
@@ -262,6 +262,27 @@ describe('ortho/terrain', () => {
     // room floating in pure black; interiors still quantize to space (0·1.7).
     expect(maxV * 1.7).toBeGreaterThan(0.1);
     expect(maxV * 1.7).toBeLessThan(0.3); // still a faint line, not a bright grid
+    // The lattice fades with the gentle 0.015 coefficient, not the floor's
+    // 0.06 fog: a seam 20 cells from the hero (0.09·e^−0.3 ≈ 0.067) must stay
+    // above the black point after the exposure curve (0.067·1.7 ≈ 0.113 > 0.10).
+    // Scan every lit lattice seam and keep the brightest one whose map cell is
+    // exactly 20 Chebyshev cells from the hero (origin: hero (1,1), 360×240, k=4).
+    const origin = { ox: 180, oy: 120, k: 4 };
+    let seam20 = 0;
+    let found20 = false;
+    for (let r = 0; r < fb.height; r++) {
+      for (let c = 0; c < fb.width; c++) {
+        const i = r * fb.width + c;
+        const v = Math.max(fb.rgb[i * 3]!, fb.rgb[i * 3 + 1]!, fb.rgb[i * 3 + 2]!);
+        if (v === 0) continue; // interior, not a seam
+        const { x, y } = screenToCell(c, r, origin);
+        if (Math.max(Math.abs(x - 1), Math.abs(y - 1)) !== 20) continue;
+        found20 = true;
+        if (v > seam20) seam20 = v;
+      }
+    }
+    expect(found20).toBe(true); // a seam 20 cells out is actually in view
+    expect(seam20 * 1.7).toBeGreaterThan(0.1);
   });
 });
 

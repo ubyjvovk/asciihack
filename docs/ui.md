@@ -242,7 +242,10 @@ minimap in fps/ortho), `--fov=DEG` (first-person vertical FOV, default 60,
 clamped 40–100), `--name=`, `--bridge=` (default
 `build/nethack/bridge/nh-bridge`), `--playground=` and `--options=` (extra
 `NETHACKOPTIONS`). Theme/minimap/fov flags override the saved settings
-(`~/.asciihack/settings.json`) for the run and are saved back. `preparePlayground` copies the build's playground to `~/.asciihack/playground` on first run so saves persist and the
+(`~/.asciihack/settings.json`) for the run and are saved back. `preparePlayground` copies the build's
+`build/nethack/bridge/playground` to the per-player target directory on first
+use (default `~/.asciihack/playground`, honouring `ASCIIHACK_HOME`;
+`--playground=` overrides it) so saves persist and the
 build dir stays clean. `main` errors helpfully if the bridge binary is missing,
 spawns the bridge, wires the session to it, enters the alternate screen, and
 runs `runSession` until the bridge closes stdout (restoring the terminal in a
