@@ -106,10 +106,11 @@ shell, `scripts/ssh-serve.sh --check` prints the `sshd_config` block, and
 
 The same TypeScript client also runs in a browser through a WebSocket
 transport (thin client): a Node WS server spawns one `nh-bridge` per
-connection and relays its JSON lines to the page, which renders the game
-into a `<pre>` grid using the DOM terminal. The three.js viewport that
-reuses AsciiCity's shader styles is coming next (T-0031); today the
-browser shows classic and the CPU raycaster (fps).
+connection and relays its JSON lines to the page. The dungeon is a
+three.js scene (instanced brick walls, flagstone floors, doors, sprites
+textured with NetHack's tiles, a lantern on the camera) rendered through
+AsciiCity's vendored shader styles; the HUD, menus and the classic map
+live in a `<pre>` grid on top.
 
 ```sh
 npm ci
