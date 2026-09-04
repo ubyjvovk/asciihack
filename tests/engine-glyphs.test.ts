@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cellKindOf, classifyCmap, isTerrainGlyph } from '../src/engine/glyphs.js';
+import { cellKindOf, classifyCmap, isTerrainGlyph, litOf } from '../src/engine/glyphs.js';
 import type { CellKind, GlyphInfo } from '../src/model/types.js';
 
 // One synthesised S table that assigns each S_* name a unique index. Real
@@ -82,6 +82,17 @@ describe('engine/glyphs — classifyCmap', () => {
 
   it('returns "other" when the index is not present in the S table at all', () => {
     expect(classifyCmap(999, { S_stone: 0 })).toBe('other');
+  });
+});
+
+describe('engine/glyphs — litOf', () => {
+  it('lit for S_room / S_litcorr, dark for S_darkroom / S_corr, undefined for anything else', () => {
+    const S = makeS(['S_room', 'S_litcorr', 'S_darkroom', 'S_corr', 'S_stone']);
+    expect(litOf(S.S_room!, S)).toBe(true);
+    expect(litOf(S.S_litcorr!, S)).toBe(true);
+    expect(litOf(S.S_darkroom!, S)).toBe(false);
+    expect(litOf(S.S_corr!, S)).toBe(false);
+    expect(litOf(S.S_stone!, S)).toBeUndefined();
   });
 });
 

@@ -382,8 +382,16 @@ export function renderFirstPerson(
     const edgeAtten = Math.exp(-0.5 * fogK * rowDist); // half-strength fog for absolute lines
     for (let x = 0; x < cols; x++) {
       if (y >= wallBot[x]!) {
-        const kind = level.kindAt(Math.floor(fX), Math.floor(fY));
+        const mx = Math.floor(fX);
+        const my = Math.floor(fY);
+        const kind = level.kindAt(mx, my);
         const base = isSolid(kind) ? KIND_COLORS.stone : KIND_COLORS[kind];
+        // Lit rooms use the base floor colour; a remembered-dark room floor
+        // (MapCell.lit === false) dims the stone body ×0.45, and a lit
+        // corridor (lit === true) brightens it ×1.4 — grid lines and edge
+        // frames keep their absolute brightness so perspective still reads
+        // (docs/render.md "Floor" and "Lighting").
+        const lit = level.cellAt(mx, my)?.lit;
         let r: number;
         let g: number;
         let b: number;
@@ -404,22 +412,25 @@ export function renderFirstPerson(
         } else if (detail && kind === 'floor') {
           // flagstone floor: dark stone with a converging perspective grid.
           // The grid lines at cell edges are absolute brightness (half-fog) so
-          // they read as the converging lines and still fade with distance.
+          // they read as the converging lines and still fade with distance —
+          // they ignore the lit dim so dark rooms still show perspective.
           const fx = fX - Math.floor(fX);
           const fy = fY - Math.floor(fY);
           if (Math.min(fx, 1 - fx) < 0.05 || Math.min(fy, 1 - fy) < 0.05) {
             r = g = b = EDGE_GRID * edgeAtten;
           } else {
             const tex = floorShade(fX, fY);
-            r = base[0] * tex * atten;
-            g = base[1] * tex * atten;
-            b = base[2] * tex * atten;
+            const dim = lit === false ? 0.45 : 1;
+            r = base[0] * tex * atten * dim;
+            g = base[1] * tex * atten * dim;
+            b = base[2] * tex * atten * dim;
           }
         } else if (detail && kind === 'corridor') {
           const tex = floorShade(fX, fY, 1.0, false); // rough rock, no seams
-          r = base[0] * tex * atten;
-          g = base[1] * tex * atten;
-          b = base[2] * tex * atten;
+          const boost = lit === true ? 1.4 : 1;
+          r = base[0] * tex * atten * boost;
+          g = base[1] * tex * atten * boost;
+          b = base[2] * tex * atten * boost;
         } else if (
           detail &&
           (kind === 'ice' ||

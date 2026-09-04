@@ -88,3 +88,16 @@ export function cellKindOf(info: GlyphInfo, S: Readonly<Record<string, number>>)
 export function isTerrainGlyph(info: GlyphInfo): boolean {
   return info.cls === 'cmap' || info.cls === 'trap';
 }
+
+/**
+ * Lighting of the remembered terrain for a `cmap` symbol index: `true` for
+ * lit surfaces (`S_room`, `S_litcorr`), `false` for remembered dark ones
+ * (`S_darkroom`, `S_corr`), `undefined` for any other symbol (walls, doors,
+ * stairs, water, …) — the session leaves the cell's `lit` alone in that
+ * case. Missing names in `S` never match a real index.
+ */
+export function litOf(symIdx: number, S: Readonly<Record<string, number>>): boolean | undefined {
+  if (symIdx === S['S_room'] || symIdx === S['S_litcorr']) return true;
+  if (symIdx === S['S_darkroom'] || symIdx === S['S_corr']) return false;
+  return undefined;
+}

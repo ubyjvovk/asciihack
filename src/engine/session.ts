@@ -17,7 +17,7 @@ import type {
 } from './protocol.js';
 import type { CellKind, GlyphInfo, LevelView, MapCell } from '../model/types.js';
 import { COLNO, ROWNO } from '../model/types.js';
-import { cellKindOf, isTerrainGlyph } from './glyphs.js';
+import { cellKindOf, isTerrainGlyph, litOf } from './glyphs.js';
 
 // ---------------------------------------------------------------------------
 // Tiny typed event emitter (browser-clean; the subset the session uses:
@@ -661,6 +661,10 @@ export class NethackSession extends TinyEmitter {
       cell.terrain = gi;
       cell.kind = kind;
       cell.top = gi;
+      if (gi.cls === 'cmap') {
+        const lit = litOf(gi.idx, this.S);
+        if (lit !== undefined) cell.lit = lit;
+      }
     } else {
       // Non-terrain: mark the top-of-cell glyph. If we still don't know what
       // this cell contains, mark it walkable so renderers do not treat the
@@ -711,6 +715,7 @@ export class NethackSession extends TinyEmitter {
       c.kind = 'unexplored';
       c.terrain = null;
       c.top = null;
+      c.lit = undefined;
     }
     this._hero = null;
   }
