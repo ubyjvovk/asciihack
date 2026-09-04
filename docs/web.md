@@ -299,7 +299,23 @@ sizes the frustum so `viewHeight = 7 · HERO_SPRITE_HEIGHT` world units
 `cols / (rows · cellAspect)`. The DOM terminal's cells are twice as
 tall as wide, so `cellAspect = 2`; the arithmetic returns plain numbers
 (`orthoPlacement`) so the tests assert positions and frustum sides
-without WebGL.
+without WebGL. The frustum is `near = 0.1`, `far = 200` (a modest far
+plane keeps depth-based styles from going black across the ortho box).
+
+**Per-view fog.** The exponential scene fog must be weaker in ortho than
+in fps: the fps camera sits at the hero cell (depths 1–10, so density
+`0.10` just fades the far corridor), but the ortho camera is ~40 cells
+away, where density `0.10` gives a fog factor of ≈ 1 and blackens the
+whole frame. `setView` therefore switches `scene.fog.density` between
+`FPS_FOG_DENSITY = 0.10` and `ORTHO_FOG_DENSITY = 0.01`, so the 3/4 view
+keeps only a faint depth cue instead of vanishing.
+
+**Debug handle.** When the GL viewport is mounted, `main.ts` exposes
+`window.__asciihack = { gl }`; calling `gl.debugInfo()` returns a
+plain-number snapshot (`view`, the active `camera`'s `type`/`position`/
+`target`/`near`/`far`/frustum sides, `meshes.walls/floors/sprites`,
+`styleId`) for diagnosing camera or frustum issues from the page
+console.
 
 The hero is invisible in fps (the camera sits at the hero cell) and
 visible in ortho: `renderFrame` includes it in the sprite list and pins

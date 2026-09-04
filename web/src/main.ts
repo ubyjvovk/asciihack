@@ -91,6 +91,9 @@ function boot(): void {
   });
   if (gl !== null) {
     gl.setView(opts.mode === 'ortho' ? 'ortho' : 'fps');
+    // Debug handle so the PM can diagnose the viewport from the page console:
+    // `window.__asciihack.gl.debugInfo()` (plain numbers, see gl-viewport.ts).
+    (window as unknown as { __asciihack: { gl: GlViewport } }).__asciihack = { gl };
     const loop = createRenderLoop(gl, session, app);
     // Capture F5 (style cycle) and F2/F3 (view switch) at the document level
     // so the WebGL viewport reacts before the App consumes them, and mark the

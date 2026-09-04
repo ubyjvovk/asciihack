@@ -17,6 +17,13 @@ export const HERO_SPRITE_HEIGHT = 0.7;
 /** Frustum height in world units so the hero fills ≈ 1/7 of the viewport. */
 export const ORTHO_VIEW_HEIGHT_CELLS = 7 * HERO_SPRITE_HEIGHT;
 
+/** Near plane for the ortho camera — nothing sits closer than the floor box. */
+export const ORTHO_NEAR = 0.1;
+/** Far plane for the ortho camera. Kept modest (not the 2000 default) so any
+ *  depth-based style that reads `cameraFar` for `linearDepth` does not go black
+ *  across the whole ortho frustum. */
+export const ORTHO_FAR = 200;
+
 /** Camera azimuth in radians (northwest of the hero, per the ticket). */
 export const ORTHO_AZIMUTH_RAD = (225 * Math.PI) / 180;
 
@@ -76,8 +83,8 @@ export function orthoPlacement(
     right: width / 2,
     top: height / 2,
     bottom: -height / 2,
-    near: 0.1,
-    far: ORTHO_DISTANCE_CELLS * 2 + 20,
+    near: ORTHO_NEAR,
+    far: ORTHO_FAR,
   };
 }
 

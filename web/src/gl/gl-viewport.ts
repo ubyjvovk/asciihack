@@ -42,6 +42,14 @@ export const LANTERN_INTENSITY = 12;
 export const EYE_HEIGHT = 0.5;
 /** Horizon offset approximated by pitching the camera slightly down (T-0023). */
 export const CAMERA_PITCH = -0.08;
+/** Exponential-fog density for the fps close-up (camera at the hero cell, so
+ *  depths are 1–10 cells; tuned in T-0031 rework 2). */
+export const FPS_FOG_DENSITY = 0.10;
+/** Exponential-fog density for the ortho 3/4 view. The ortho camera sits
+ *  ~40 cells from the scene, so the fps density (0.10) would bury every
+ *  surface in black (fogFactor ≈ 1 at depth 40) — the T-0032 black-canvas
+ *  bug. A small density keeps a faint depth cue without occluding the room. */
+export const ORTHO_FOG_DENSITY = 0.01;
 
 /** Options accepted by `GlViewport`. */
 export interface GlViewportOptions {
@@ -73,6 +81,7 @@ export class GlViewport {
   private wallCellOrder: Array<{ x: number; y: number }> = [];
   private cutawayMesh: THREE.InstancedMesh | null = null;
   private lastCutawayKey = '';
+  private lastHeroCell = { x: 0, y: 0 };
   private view: 'fps' | 'ortho' = 'fps';
   private cols = 80;
   private rows = 24;
@@ -92,7 +101,7 @@ export class GlViewport {
     // Override AsciiCity's outdoor scene with a dungeon look bright enough
     // for the style shaders to thin out (T-0031 r2 numbers).
     this.scene.background = new THREE.Color(0x000000);
-    this.scene.fog = new THREE.FogExp2(0x000000, 0.10);
+    this.scene.fog = new THREE.FogExp2(0x000000, FPS_FOG_DENSITY);
     // Drop the outdoor directional/hemisphere lights; keep a bright ambient
     // so nothing is pitch-black outside the lantern's cone.
     for (const child of [...this.scene.children]) {
@@ -175,6 +184,11 @@ export class GlViewport {
   setView(view: 'fps' | 'ortho'): void {
     if (this.view === view) return;
     this.view = view;
+    // The ortho camera is far from the scene, so its fog density must be much
+    // lower than the fps close-up or the whole view is fogged to black.
+    if (this.scene.fog instanceof THREE.FogExp2) {
+      this.scene.fog.density = view === 'ortho' ? ORTHO_FOG_DENSITY : FPS_FOG_DENSITY;
+    }
     // Force `applyCutaway` to re-evaluate on the next frame in either
     // direction (entering ortho enables ghosts; leaving restores the walls).
     this.lastCutawayKey = '';
@@ -198,6 +212,39 @@ export class GlViewport {
   /** The currently active style id. */
   get activeStyle(): string {
     return this.style.style.id;
+  }
+
+  /**
+   * Plain-number snapshot of the viewport for on-page debugging
+   * (`window.__asciihack.gl.debugInfo()`). No three.js objects — the PM pastes
+   * this into a console to diagnose camera/frustum issues without digging into
+   * the scene graph. `left/right/top/bottom` are 0 for the fps perspective
+   * camera (its frustum is FOV-derived, not a box).
+   */
+  debugInfo(): DebugInfo {
+    const cam = this.view === 'ortho' ? this.orthoCamera : this.camera;
+    const isOrtho = cam instanceof THREE.OrthographicCamera;
+    const h = this.lastHeroCell;
+    return {
+      view: this.view,
+      camera: {
+        type: this.view,
+        position: { x: cam.position.x, y: cam.position.y, z: cam.position.z },
+        target: { x: h.x + 0.5, y: 0.5, z: h.y + 0.5 },
+        near: cam.near,
+        far: cam.far,
+        left: isOrtho ? (cam as THREE.OrthographicCamera).left : 0,
+        right: isOrtho ? (cam as THREE.OrthographicCamera).right : 0,
+        top: isOrtho ? (cam as THREE.OrthographicCamera).top : 0,
+        bottom: isOrtho ? (cam as THREE.OrthographicCamera).bottom : 0,
+      },
+      meshes: {
+        walls: this.builder.counts.walls,
+        floors: this.builder.counts.floors,
+        sprites: this.builder.spriteGroup.children.length,
+      },
+      styleId: this.style.style.id,
+    };
   }
 
   /**
@@ -226,6 +273,7 @@ export class GlViewport {
       this.camera.updateProjectionMatrix();
     }
     const heroCell = { x: Math.floor(pose.x), y: Math.floor(pose.y) };
+    this.lastHeroCell = heroCell;
     if (this.view === 'ortho') {
       this.applyCutaway(heroCell);
       placeOrthoCamera(this.orthoCamera, heroCell, this.cols, this.rows, 2);
@@ -378,6 +426,24 @@ export class GlViewport {
 
 /** An empty string set, reused as the "no cutaway" sentinel in `applyCutaway`. */
 const EMPTY_STRING_SET: ReadonlySet<string> = new Set();
+
+/** Plain-number snapshot returned by `GlViewport.debugInfo()` (T-0032 rework). */
+export interface DebugInfo {
+  view: 'fps' | 'ortho';
+  camera: {
+    type: 'fps' | 'ortho';
+    position: { x: number; y: number; z: number };
+    target: { x: number; y: number; z: number };
+    near: number;
+    far: number;
+    left: number;
+    right: number;
+    top: number;
+    bottom: number;
+  };
+  meshes: { walls: number; floors: number; sprites: number };
+  styleId: string;
+}
 
 /** Collect wall cells in the same row-major order `SceneBuilder` uses so we
  *  can address individual instances of its wall `InstancedMesh` (non-door
