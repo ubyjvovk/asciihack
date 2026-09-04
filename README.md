@@ -13,8 +13,8 @@ NetHack's own 16×16 tile art projected onto its letter. Top: message line
 and compass ribbon. Top-right: minimap with the hero as a facing arrow.
 Bottom: NetHack's status lines.*
 
-![Isometric view of the same room: raised brick walls with lit tops and
-shaded faces, the hero and the kitten as figures, a faint lattice over
+![Isometric view of the same room in the amber look: dark block faces with
+bright rims, the hero and the dog as tile figures, a faint lattice over
 unexplored space](docs/screenshot-ortho.png)
 
 *The same room in the ortho view (`F3`). Tiles scale with the terminal so

@@ -73,6 +73,12 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   before the first ticket.
 
 ## Board snapshot
+- 2026-09-04 04:30 — T-0029 (raycaster tidy) and T-0027 (ortho look; PM
+  resolved the golden conflict by regenerating on master) accepted; 30
+  done. README screenshots refreshed in the amber look. Running: T-0031
+  (WebGL viewport, opus-2). Queued: T-0032 (browser ortho). Polish notes
+  for a later ortho pass: the unexplored lattice fades with the fog
+  (visible only ~8 cells around the hero); consider a weaker fog for it.
 - 2026-09-04 03:45 — T-0024, T-0028, T-0026 (PM fixed a `!` in its test),
   T-0030 (browser scaffold; verified with Playwright from ~/asciicity's
   chromium) accepted; 28 done. PM hotfix after the T-0030 merge: `loadTiles`
