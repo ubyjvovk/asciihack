@@ -218,7 +218,7 @@ screenToCell(c, r, origin) -> { x, y }
 - `hero: {x, y}` — the cell the view is centred on (the caller passes the
   hero's `@` as a sprite, exactly like any monster).
 - `opts?: OrthoOptions` — `zoom` (explicit `k`; default `clamp(round(rows/28),
-  1, 6)`), `fogK` (0.04).
+  1, 6)`), `fogK` (0.06).
 
 ### Zoom
 
@@ -250,12 +250,17 @@ pre-filled each frame (`rgb` 0, `depth` Infinity, overlay 0) the way
 ### Floor pass
 
 One inverse mapping per screen cell, so the floor and the surrounding unknown
-cover the whole viewport. Each cell's map kind colours from `KIND_COLORS` with
-fog `exp(−0.04·dist)` (Chebyshev distance from the hero). Tile seams — cells
-whose inverse-mapped `X` or `Y` lands within `0.2/k` of a cell edge — are
-darkened ×0.6, and a checker ×0.92 shades `(x + y)` odd tiles (not corridors).
-`doorway`/`door_open` are floor in the door colour. Solid cells are left for the
-wall pass.
+cover the whole viewport. `floor` is flagstone: each 0.5-cell stone varies
+±20 % via `floorShade(X, Y)` (same texture as the raycaster, hashed per stone
+so it is stable frame to frame) over the `KIND_COLORS.floor` base, and the
+diamond tile seams — cells whose inverse-mapped `X` or `Y` lands within `0.2/k`
+of a cell edge — paint at the absolute `0.30` level. The old checker is gone
+(the stones carry the variation). `doorway`/`door_open` are floor in the door
+colour with the two flanking wall (post) cells at the absolute `0.70` level;
+`corridor` keeps `KIND_COLORS.corridor` with no seams. All other passable kinds
+keep their `KIND_COLORS` base flat. Solid cells are left for the wall pass.
+Faces and floor fade with fog `exp(−0.06·dist)` (Chebyshev distance from the
+hero).
 
 **The unknown:** `unexplored` cells are black `[0, 0, 0]` with the seam lines at
 `[0.05, 0.05, 0.07]` — the faint diamond lattice — and the same applies outside
@@ -268,15 +273,39 @@ floats in pure black. (The seam band is `0.2/k`, slightly wider than the spec's
 
 For every `isSolid(kind)` cell except `unexplored` (`stone` is a block in its
 flat grey, `door_closed` in the door colour), the tile's diamond D — rows
-`sy−k … sy+k`, columns `sx−2k … sx+2k` — is extruded `h = 3k` rows. Per column
-`c` of D, the rows from `bottom(c)−h` to `bottom(c)` (`bottom(c)` is D's lower
-boundary row at that column) are the side faces: columns left of `sx` the
-south-west face at ×0.55, right of `sx` the south-east face at ×0.75, both
-`brickShade(u, v, seed)`-textured (u across the face, v down it) for walls, flat
-for stone/door_closed. Then the top face = D shifted up by `h` at ×1.0, with a
-1-cell lighter rim (×1.2) on its upper two edges and a 1-cell dark line (×0.6)
-on its lower two edges; the vertical corner column at `sx` between the two faces
-is ×1.1. Every painted cell writes depth and clears `overlayCh`.
+`sy−k … sy+k`, columns `sx−2k … sx+2k` — is extruded `h = 3k` rows. The lid
+keeps the diamond's own depth rows: its upper edge row paints at the absolute
+`0.75`, its lower edge row at `0.45`, the rows between at the flat dark lid
+`0.16`. Per column `c` of D, the rows below the lid down to `bottom(c)`
+(`bottom(c)` is D's lower boundary row at that column) are the side faces:
+columns left of `sx` the south-west face at ×0.55, right of `sx` the
+south-east face at ×0.75, both `brickShade(u, v, seed)`-textured (u across the
+face, v down it, mortar seams at the absolute `0.05`) for walls, flat for
+stone/door_closed. The vertical corner column at `sx` between the two faces
+paints at the absolute `0.55`, and the block's bottom contact row at the
+absolute `0.25` (precedence: top rim > corner > contact > body, like the
+raycaster). The wall cells flanking a doorway / open door (post cells) paint
+entirely at the absolute `0.70` level. Every painted cell writes depth and
+clears `overlayCh`.
+
+### Look
+
+The ortho view shares the first-person readable grammar (dark surfaces that
+quantize to sparse glyphs, bright edges at absolute brightness). Linear
+levels, before exposure; the quantizer is unchanged. Wall block faces: base
+from `KIND_COLORS` (wall 0.14 …) × 0.75 (SE) / 0.55 (SW) with the brick
+texture body ±0.03 and mortar at `0.05` absolute; the top face `0.16` flat (a
+dark lid). Rims and lines at absolute brightness: the top face's upper edge
+`0.75`, its lower edge `0.45`, the vertical corner between the faces `0.55`,
+the block's bottom contact line `0.25`. Floor tiles: base from
+`KIND_COLORS.floor` with the flagstone texture (`floorShade` from
+`texture.ts`, stones ±20 %), diamond seams `0.30` absolute; no checker (the
+stones carry the variation); corridors `KIND_COLORS.corridor`, no seams.
+Doorway / open door tiles: floor in the door colour with the two post cells at
+`0.70`. Unexplored lattice unchanged (`0.05`); fog `exp(−0.06·dist)` applied
+to faces and floor but not to rims within 3 cells of the hero (near edges
+stay crisp), then normally beyond. Cutaway ghost blocks keep their 0.35 factor
+applied to these levels.
 
 ### Sprites & occlusion
 

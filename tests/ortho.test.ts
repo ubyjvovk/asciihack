@@ -8,7 +8,6 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { renderOrtho, cellToScreen, screenToCell, type Origin } from '../src/render/ortho.js';
-import { KIND_COLORS } from '../src/render/raycast.js';
 import { loadTiles, monsterTile, objectTile } from '../src/render/tiles.js';
 import { makeFrameBuffer, type FrameBuffer, type LevelView, type Sprite } from '../src/model/types.js';
 import { levelFromAscii, ROOM } from './fixtures/levels.js';
@@ -131,9 +130,95 @@ describe('ortho/zoom', () => {
   });
 });
 
+describe('ortho/look', () => {
+  it('a wall block keeps a dark face median while its top rim and corner read bright', () => {
+    // Two wall cells on the ROOM-like strip: the far one (dist 4, full
+    // brightness) owns depth-6 cells with the 0.75 lid rim, the 0.55 corner
+    // column and the dark faces; the face median stays below 0.16.
+    const lvl = levelFromAscii(['          ', ' .#  #    ', '          ']);
+    const fb = makeFrameBuffer(80, 104); // k = 4
+    renderOrtho(lvl, { x: 1, y: 1 }, [], fb, { fogK: 0 });
+    // far wall (5,1) → depth 6, not cutaway (|dx| = 4 > 2)
+    let rimMax = 0;
+    let cornerMax = 0;
+    const faceVals: number[] = [];
+    for (let r = 0; r < fb.height; r++) {
+      for (let c = 70; c <= 74; c++) {
+        if (fb.depth[r * fb.width + c] !== 6) continue;
+        const cell = rgbAt(fb, c, r);
+        const v = Math.max(cell[0], cell[1], cell[2]);
+        if (c === 72) cornerMax = Math.max(cornerMax, v);
+        else {
+          rimMax = Math.max(rimMax, v);
+          if (v > 0.01 && v < 0.2) faceVals.push(v);
+        }
+      }
+    }
+    faceVals.sort((a, b) => a - b);
+    const median = faceVals.length % 2 === 1
+      ? faceVals[(faceVals.length - 1) / 2]!
+      : (faceVals[faceVals.length / 2 - 1]! + faceVals[faceVals.length / 2]!) / 2;
+    expect(faceVals.length).toBeGreaterThan(0);
+    expect(median).toBeLessThan(0.16);
+    expect(rimMax).toBeGreaterThan(0.6);
+    expect(cornerMax).toBeGreaterThan(0.4);
+  });
+
+  it('floor tiles vary per stone while the 0.30 seams read brighter', () => {
+    // All-floor level with the hero at distance 0 (fog = 1): stones come from
+    // `floorShade` (±20 %), seams paint at the absolute 0.30 level.
+    const lvl: LevelView = { width: 9, height: 9, kindAt: () => 'floor', cellAt: () => null };
+    const fb = makeFrameBuffer(160, 104); // k = 4
+    renderOrtho(lvl, { x: 4, y: 4 }, [], fb, { fogK: 0 });
+    const stones = new Set<number>();
+    let seamMax = 0;
+    let stoneMax = 0;
+    for (let r = 0; r < fb.height; r++) {
+      for (let c = 0; c < fb.width; c++) {
+        // only the hero's own tile (depth 8): unfogged, no walls, no sprites
+        if (fb.depth[r * fb.width + c] !== 8) continue;
+        const v = rgbAt(fb, c, r)[0];
+        if (Math.abs(v - 0.3) < 1e-6) seamMax = Math.max(seamMax, v);
+        else {
+          stones.add(Math.round(v * 1e4));
+          stoneMax = Math.max(stoneMax, v);
+        }
+      }
+    }
+    expect(stones.size).toBeGreaterThanOrEqual(3);
+    expect(seamMax).toBeGreaterThan(stoneMax);
+  });
+
+  it('a rim 6 cells from the hero is dimmer than one 1 cell away', () => {
+    // The adjacent wall (2,1, dist 1, cutaway ghost at 0.35, rim crisp) versus
+    // a wall 6 east (dist 6, full brightness, rim fogged): same 0.75 absolute
+    // line, one crisp and ghosted (≈0.26), one fogged (0.75·e^−0.36 ≈ 0.52).
+    // The ticket's comparison is fog-vs-crisp at full brightness: unfog the
+    // ghost (÷0.35) and the far rim still reads dimmer.
+    const lvl = levelFromAscii(['             ', ' .#    #     ', '             ']);
+    const fb = makeFrameBuffer(160, 104); // k = 4
+    renderOrtho(lvl, { x: 1, y: 1 }, [], fb);
+    // lid-rim maxima per block: adjacent (2,1) → depth 3, far (7,1) → depth 8
+    const rimOf = (depthVal: number): number => {
+      let m = 0;
+      for (let i = 0; i < fb.depth.length; i++) {
+        if (fb.depth[i] !== depthVal) continue;
+        m = Math.max(m, fb.rgb[i * 3]!);
+      }
+      return m;
+    };
+    const near = rimOf(3); // 0.75 crisp, ghosted ×0.35 → ≈0.26
+    const far = rimOf(8); // 0.75 fogged at dist 6 → ≈0.52
+    expect(near).toBeCloseTo(0.75 * 0.35, 2);
+    expect(far).toBeCloseTo(0.75 * Math.exp(-0.06 * 6), 2);
+    expect(far / 1).toBeLessThan(near / 0.35); // fog dims the far rim below crisp
+  });
+});
+
 describe('ortho/terrain', () => {
-  it('a wall block at k = 2 is 3k rows taller than its floor diamond with the top brighter than the right face brighter than the left face', () => {
-    // A flat stone block (no brick) so the face ordering is exact.
+  it('a wall block at k = 2 is 3k rows taller than its floor diamond', () => {
+    // Geometry only (levels move to ortho/look): a flat stone block's lid
+    // sits 3k rows above its floor diamond.
     const stone: LevelView = {
       width: 7,
       height: 7,
@@ -145,24 +230,13 @@ describe('ortho/terrain', () => {
       cellAt: () => null,
     };
     const fb = makeFrameBuffer(120, 56); // k = 2
-    renderOrtho(stone, { x: 1, y: 1 }, [], fb);
-    // hero (1,1) at 120×56 → origin {60, 24, 2}; block cell (4,4) → sx 60, sy 42.
+    renderOrtho(stone, { x: 1, y: 1 }, [], fb, { fogK: 0.06 });
+    // hero (1,1) at 120×56 → block cell (4,4) → sx 60, sy 42.
     // The block is 3 cells south-east (|dx| = |dy| = 3 > 2), so it is NOT cutaway.
     const sx = 60;
     const sy = 42;
     const k = 2;
     const h = 3 * k;
-    const base = 0.12; // KIND_COLORS.stone[0]
-    const atten = Math.exp(-0.04 * 3);
-    // top face (flat ×1.0) at (sx, 28), right face (×0.75) at (sx+2, 33), left (×0.55) at (sx−2, 33)
-    const top = rgbAt(fb, sx, sy - k - h + 2)[0];
-    const right = rgbAt(fb, sx + 2, sy - 1)[0];
-    const left = rgbAt(fb, sx - 2, sy - 1)[0];
-    expect(top).toBeCloseTo(base * atten, 4);
-    expect(right).toBeCloseTo(base * 0.75 * atten, 4);
-    expect(left).toBeCloseTo(base * 0.55 * atten, 4);
-    expect(top).toBeGreaterThan(right);
-    expect(right).toBeGreaterThan(left);
     // the block is 3k rows taller than its floor diamond: nothing above it
     expect(fb.depth[sx + (sy - k - h - 1) * fb.width]).toBe(Number.POSITIVE_INFINITY);
     expect(fb.depth[sx + (sy - k - h) * fb.width]).not.toBe(Number.POSITIVE_INFINITY);
@@ -247,13 +321,22 @@ describe('ortho/cutaway', () => {
     const fb = makeFrameBuffer(80, 104); // k = 4
     renderOrtho(lvl, { x: 1, y: 1 }, [], fb, { fogK: 0 });
     // wall (2,1) is adjacent south-east of the hero (sum 3 > 2, |dx|,|dy| <= 2)
-    // -> cutaway: top face at (48,49); wall (5,1) is 4 cells east (|dx| = 4)
-    // -> not cutaway, full brightness: top face at (72,61)
-    const adj = rgbAt(fb, 48, 49)[0];
-    const far = rgbAt(fb, 72, 61)[0];
+    // -> cutaway ghost at 0.35; wall (5,1) is 4 cells east (|dx| = 4) -> full.
+    // Compare the brightest lid-rim cell per block (the 0.75 line): the
+    // ghost peaks at 0.75·0.35, the full block at 0.75.
+    const rimOf = (depthVal: number): number => {
+      let m = 0;
+      for (let i = 0; i < fb.depth.length; i++) {
+        if (fb.depth[i] !== depthVal) continue;
+        m = Math.max(m, fb.rgb[i * 3]!);
+      }
+      return m;
+    };
+    const adj = rimOf(3);
+    const far = rimOf(6);
     expect(adj).toBeLessThanOrEqual(0.4 * far);
     expect(adj).toBeLessThan(far);
-    expect(far).toBeCloseTo(KIND_COLORS.wall[0]!, 2); // wall red, kept full
+    expect(far).toBeCloseTo(0.75, 2); // the bright lid rim, kept full
   });
 
   it('the hero figure centre cell still carries the hero letter when a wall block covers it', () => {
