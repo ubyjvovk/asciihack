@@ -369,6 +369,45 @@ describe('3D structural render checks', () => {
   );
 });
 
+describe('externalViewport skips the CPU dungeon render', () => {
+  it.skipIf(!existsSync(resolve(HERE, 'fixtures', 'bridge', 'start.jsonl')))(
+    'fps viewport is blank outside the HUD when externalViewport is set',
+    () => {
+      const replies: RetMsg[] = [];
+      const session = freshSessionWithHero(replies);
+      const path = resolve(HERE, 'fixtures', 'bridge', 'start.jsonl');
+      const lines = readFileSync(path, 'utf8')
+        .split('\n')
+        .filter((l) => l.length > 0)
+        .map((l) => JSON.parse(l) as Record<string, unknown>);
+      for (const line of lines) {
+        if ('reply' in line) continue;
+        session.handleBatch([line as unknown as BridgeMsg]);
+        const p = session.pending;
+        if (p !== null && (p.kind === 'key' || p.kind === 'pos')) break;
+        if (p !== null && p.kind === 'display') session.answer({ kind: 'dismiss' });
+      }
+      const app = new App({ session, term: new FakeTerm(), mode: 'fps', externalViewport: true });
+      session.handleBatch([]);
+      const grid = app.lastGrid!;
+      // The bottom-left quadrant of the viewport is never touched by the
+      // compass ribbon (top row) or the minimap (top-right 40×11): those
+      // cells must all be plain spaces on black — that is what lets the
+      // WebGL canvas underneath show through.
+      let nonBlank = 0;
+      for (let y = grid.height - 12; y < grid.height - 2; y++) {
+        for (let x = 0; x < 30; x++) {
+          const cell = grid.cells[y * grid.width + x]!;
+          if (cell.ch !== ' ' || cell.bg[0] !== 0 || cell.bg[1] !== 0 || cell.bg[2] !== 0) nonBlank++;
+        }
+      }
+      expect(nonBlank).toBe(0);
+      // The minimap still paints the facing arrow on top.
+      expect(viewportZone(grid).hasArrow).toBe(true);
+    },
+  );
+});
+
 describe('heading cues', () => {
   it('the minimap prints ↓ on the hero cell when facing south and @ without a facing', () => {
     if (!existsSync(resolve(HERE, 'fixtures', 'bridge', 'start.jsonl'))) return;

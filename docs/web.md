@@ -7,9 +7,10 @@ connection and relays its JSON lines. Rendering happens in the page: the
 `Screen` writer paints a `ScreenGrid` into a `<pre>` of coloured spans
 via a browser-side `TermIO`.
 
-The three.js viewport that mirrors AsciiCity's shader styles is a
-follow-up (T-0031); today the browser can play the classic map and the
-CPU raycaster in a DOM terminal.
+In the `fps` and `ortho` modes the same page also hosts a **WebGL
+viewport** (see "WebGL viewport" below) — a three.js scene rendered
+through AsciiCity's shader styles, mounted under the `<pre>` grid so
+the message line, status bar, minimap and compass keep painting on top.
 
 ## Run
 
@@ -21,8 +22,9 @@ npm run web:server      # ws://127.0.0.1:8790/play?name=<name>
 npm run web:dev         # http://127.0.0.1:5173/
 ```
 
-Open `http://127.0.0.1:5173/?name=mia`. `?theme=amber|gloom|solarized|cyber`
-and `?mode=fps|ortho|classic` are also honoured.
+Open `http://127.0.0.1:5173/?name=mia`. `?theme=amber|gloom|solarized|cyber`,
+`?mode=fps|ortho|classic` and `?render=<style-id>` (see the WebGL
+viewport section) are also honoured.
 
 `npm run web:build` produces the static bundle under `dist-web/`. The
 site still needs a running WS server; the browser bundle contains no
@@ -159,11 +161,146 @@ plus `onSettingsChange?(s)`. The CLI wires these to
 `load/saveSettings`; the browser today passes just an initial `Settings`
 and no persistence (a future ticket may wire it to `localStorage`).
 
+## WebGL viewport
+
+Only mounted in `fps` and `ortho` modes. `web/src/gl/gl-viewport.ts`
+owns a `<canvas>` positioned absolutely under the DOM terminal's
+viewport rectangle (the region between the message line at row 0 and
+the two status rows at the bottom); the canvas has
+`pointer-events: none` so keyboard focus stays on `<pre id="term">`.
+
+```
+┌──────────────────────────────────────────────┐  message line   (<pre>)
+├──────────────────────────────────────────────┤
+│                                              │
+│         three.js scene + style shader        │  (<canvas>)
+│                                              │  <pre> viewport cells
+│                                              │  paint on top: minimap,
+│                                              │  compass, prompts, HUD
+├──────────────────────────────────────────────┤
+├──────────────────────────────────────────────┤  two status rows (<pre>)
+└──────────────────────────────────────────────┘
+```
+
+The vendored render-style pipeline is in `web/src/asciicity/render/`
+(see the file's `README.md`; do not edit those files here — improve
+them in AsciiCity and re-copy).
+
+**Transparency rule.** When the GL viewport is mounted, `App` runs with
+`externalViewport: true` and the fps/ortho modes skip their CPU dungeon
+render, leaving the viewport cells as spaces on black `(0,0,0)`.
+`DomTerm.paintGrid` treats a cell whose `bg` is exactly `[0,0,0]` as
+transparent (it never emits a `background-color`), so the page's black
+body colour shows the WebGL canvas underneath through those cells. The
+HUD (minimap arrow/dots, compass ribbon, ortho rose, message line,
+status, menus, prompts) keeps painting with non-black backgrounds and
+stays opaque above the shader.
+
+### Scene mapping
+
+`web/src/gl/scene-builder.ts` builds one `THREE.InstancedMesh` per
+material from a `LevelView`; the geometry rebuilds only when the set of
+known cells' `CellKind` actually changes (a per-cell hash gates the
+work). Coordinates follow architecture.md §7 / AsciiCity: map `x` grows
+east, map `y` grows south, three's `x` = east, `z` = south, `y` = up.
+Cell (cx, cy) covers the box `(cx…cx+1, 0…1, cy…cy+1)`; centre at
+`(cx + 0.5, 0.5, cy + 0.5)`.
+
+| Cell kind                       | Geometry                                              |
+|---------------------------------|-------------------------------------------------------|
+| solid, not `door_closed`        | unit `BoxGeometry` (wall cube), centred on the cell   |
+| any passable kind               | unit `PlaneGeometry` (floor quad) at `y = 0`          |
+| `door_closed`                   | thin `1×1×0.2` slab, rotated with the neighbours      |
+| `door_open` / `doorway`         | floor quad + two `0.2×1×0.2` vertical posts           |
+| `stairs_up` / `stairs_down`     | floor quad + a lit stair quad at `y = 0.02`           |
+| `unexplored`                    | nothing — the fog does the darkness                   |
+
+The door axis is inferred from neighbouring walls: north/south walls →
+door swings east-west (posts on the north and south corners); east/west
+walls → the mirror case; otherwise east-west by default.
+
+### Materials
+
+Plain `MeshLambertMaterial` with small procedural `CanvasTexture`s
+generated at start-up: brick 64×64 with mortar and speckles for walls,
+flagstone 64×64 for floors, vertical planks with hinges for doors,
+stairs get an emissive glow. Textures use `NearestFilter` and repeat
+per cell so the style shader gets flat, chunky pixels to quantise.
+
+The tints are picked bright — walls `0x9a9a9e`, floors `0x6a6a70`,
+doors/posts `0x8a6a3a`, stairs `0xd0a040` (with a warm emissive) —
+because AsciiCity's shaders are built for bright surfaces they then
+thin out. Dark stone materials fall below the shader's black point and
+disappear (T-0031 rework 2). Procedural textures are built exactly once
+and cached; they are never resized, so the `THREE.CanvasTexture` is
+committed immutable and no `glTexStorage2D: Texture is immutable`
+warning appears on redraw.
+
+### Sprites
+
+Every `Sprite` from `src/ui/view3d.ts:spritesFromMap` becomes a
+`THREE.Sprite` billboard: position `(x + 0.5, height / 2, y + 0.5)`
+(feet at `y = 0`, centre at the cell centre), scale `(height, height,
+1)` in cells. When the sprite carries `Tile` art the sprite material's
+`map` is a nearest-filtered `CanvasTexture` built from the tile pixels
+(palette index 0 → alpha 0 = transparent); otherwise the material is a
+flat-colour sprite tinted with `Sprite.rgb`. The style shader turns the
+coloured pixels into glyph density — the AsciiCity trick — so letters
+are never drawn here.
+
+### Camera
+
+A `THREE.PerspectiveCamera` (created by
+`web/src/asciicity/render/scene.ts:makeCamera`, then tightened to
+`near = 0.05`, `far = 60`) with vertical FOV taken from the fps mode's
+`vFovDeg` and aspect from the viewport rectangle. It sits at
+`(hero.x + 0.5, EYE_HEIGHT = 0.5, hero.y + 0.5)` and its `yaw` is the
+fps mode's animated `currentYaw`, mapped to three's Y-rotation with a
+sign flip (three's default forward is `−z ≈ north`). The T-0023 horizon
+offset (`horizonFrac 0.42`) is approximated by a small negative pitch
+(`CAMERA_PITCH ≈ −0.08 rad`). A `PointLight` attached to the camera
+plays the lantern (`LANTERN_INTENSITY = 12`, `LANTERN_DISTANCE = 14`
+cells, decay `1`); an `AmbientLight(0xffffff, 0.35)` keeps distant
+surfaces above the shader's black point, and
+`scene.fog = FogExp2(0x000000, 0.10)` fades the far end of the corridor
+without swallowing the near walls (T-0031 rework 2).
+
+### Styles
+
+`StyleRenderer` (from `web/src/asciicity/render/post.ts`) owns the
+low-res target and swaps `RenderStyle`s at runtime. The full registry
+is `web/src/asciicity/render/style.ts:STYLE_ORDER` — `ascii`, `gloom`,
+`solarized`, `amber`, `braille`, `blocks`, `teletext`, `dither`,
+`gameboy`, `pico8`, `edges`, `hatch`, `matrix`. The tty client's four
+themes (`cyber`/`gloom`/`solarized`/`amber`) are a subset.
+
+Default is `amber`; `?render=<id>` picks another; **F5** (Shift-F5 for
+previous) cycles through `STYLE_ORDER`. `F5` is intercepted at capture
+before the App sees it (the App also uses `F5` for its terminal-theme
+cycle — that still happens, since the DOM terminal is what the HUD
+paints into).
+
+### The frame loop
+
+`requestAnimationFrame` drives the render loop, but three.js is only
+invoked when there is something new to draw: the session emits `change`
+or `request` (map, hero, pending prompt), or the fps mode is animating
+a turn (`FpsMode.isTurning`). Idle frames skip WebGL entirely, so a
+paused game costs zero GPU work. Every frame that does render calls
+`SceneBuilder.refresh(level)` (rebuilds only when the kind grid
+changed), `updateSprites(spritesFromMap(session, hero, …))`, positions
+the camera, then hands the scene + camera to `StyleRenderer.render`
+which renders into the low-res target and paints the style quad to the
+canvas.
+
+`resize(cols, rows, cellW, cellH)` runs on start and on every DOM-side
+resize (a `ResizeObserver` on `#term`); it recomputes the canvas size
+and the low-res scene target and updates the camera aspect.
+
 ## Coming next
 
-- **T-0031** — three.js viewport that replaces the fps/ortho DOM
-  renderer with the AsciiCity styles vendored under `web/src/asciicity/`.
-- **T-0032** — ortho camera on top of the three.js scene.
+- **T-0032** — ortho camera on top of the three.js scene (uses the
+  same `SceneBuilder`).
 - **T-0033 (later)** — WASM transport for static hosting: an emscripten
   build of `libnethack.a` replaces the WS server so the page runs
   standalone.

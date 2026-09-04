@@ -104,6 +104,16 @@ export class DomTerm implements TermIO {
     return this._rows;
   }
 
+  /** CSS-pixel width of one terminal cell (from the constructor options). */
+  get cellWidth(): number {
+    return this.cellW;
+  }
+
+  /** CSS-pixel height of one terminal cell (from the constructor options). */
+  get cellHeight(): number {
+    return this.cellH;
+  }
+
   onResize(cb: () => void): void {
     this.resizeCbs.push(cb);
   }
@@ -169,7 +179,9 @@ export function buildRunsInto(
     const text = readText(grid, rowStart + start, j - start);
     const span = doc.createElement('span');
     span.style.color = css(c0.fg);
-    span.style.backgroundColor = css(c0.bg);
+    // bg=[0,0,0] means "transparent" so an external renderer (browser WebGL
+    // viewport, T-0031) shows through wherever the grid is black.
+    if (!isBlack(c0.bg)) span.style.backgroundColor = css(c0.bg);
     span.appendChild(doc.createTextNode(text));
     parent.appendChild(span);
     i = j;
@@ -192,6 +204,10 @@ function readText(grid: ScreenGrid, start: number, len: number): string {
 
 function css(rgb: readonly [number, number, number]): string {
   return `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+}
+
+function isBlack(rgb: readonly [number, number, number]): boolean {
+  return rgb[0] === 0 && rgb[1] === 0 && rgb[2] === 0;
 }
 
 /**

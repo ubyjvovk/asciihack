@@ -30,3 +30,17 @@ html, body {
 #term span {
   display: inline;
 }
+
+/* WebGL viewport (T-0031). Sits under the DOM terminal's viewport rectangle
+   in z-order; pointer events pass through so keyboard focus stays on #term. */
+.gl-viewport {
+  position: absolute;
+  z-index: 0;
+  pointer-events: none;
+}
+
+/* Keep the terminal above the WebGL canvas. */
+#term {
+  position: relative;
+  z-index: 1;
+}
