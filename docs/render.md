@@ -17,7 +17,7 @@ renderFirstPerson(level, pose, sprites, fb, opts?)
 - `fb: FrameBuffer` — the buffer to fill (rgb, depth, overlay planes).
 - `opts?: RaycastOptions` — `vFovDeg` (60), `horizonFrac` (0.42), `fovDeg`
   (optional, back-compat: fixes the horizontal FOV), `maxDepth` (24),
-  `cellAspect` (2), `fogK` (0.28), `detail` (true, see “Surface detail”).
+  `cellAspect` (2), `fogK` (0.14), `detail` (true, see “Surface detail”).
 
 ## Algorithm
 
@@ -83,16 +83,25 @@ byte-identical to the pre-detail flat renderer (this is what the original
   `seed`) where `seed = hitY·80 + hitX` keeps bricks stable frame to frame. It
   multiplies the wall colour after the N/S vs E/W face factor and before fog.
   `wall` gets the brick; `bars` gets `barsShade(u)` (0.2 bars at 1.0, 0.3 gaps
-  at 0.25). The face base colours are dark (`wall` `[0.14,0.14,0.15]`) so a
+  at 0.25). The face base colours are dark (`wall` `[0.18,0.18,0.19]`) so a
   wall reads as a sparse dark field — only the mortar seams and the bright
-  edge lines are dense.
-- **Edge lines (absolute).** The wall's top edge row, bottom contact row,
-  corner columns and door posts are painted at absolute brightness (not
-  multiples of the base and **not fogged**, so silhouettes read at distance):
-  wall top edge `0.75`, bottom contact `0.30`, corner columns `0.55`,
-  door/doorway frame posts `0.70`. In a column the precedence is top edge >
-  corner > bottom contact > body. `stone` (known rock) gets only the flat grey
-  body plus the top edge line, no mortar or corners.
+  edge lines are dense. With `fogK 0.14` the wall body at 3 cells is ≈ 0.12
+  (sparse glyphs above the quantizer's post-T-0028 black point), at 6 ≈ 0.08
+  (faint) and gone by 10 — the wall bodies stay visible where the previous
+  0.28 knocked them below the black point.
+- **Edge lines (absolute, half-fog).** The wall's top edge row, bottom
+  contact row, corner columns and door posts are painted at absolute
+  brightness (not multiples of the base) with **half-strength fog**
+  (`· e^(−0.5·fogK·d)`), so silhouettes read at distance but do not glow at
+  any depth: wall top edge `0.75`, bottom contact `0.30`, corner columns
+  `0.55`, door/doorway frame posts `0.70`, floor grid `0.30`. In a wall
+  column the precedence is top edge > corner > bottom contact > body. The
+  top edge at 10 cells is still ≈ 0.37 (a line, not a blur). A **corner
+  column** fires only where the hit **face** changes (N/S ↔ E/W) or the
+  perpendicular depth jumps by more than 0.5 cells between adjacent columns —
+  so a flat wall's cell seams stay dark mortar and the face no longer reads
+  as a row of pillars. `stone` (known rock) gets only the flat grey body
+  plus the (half-fogged) top edge line, no mortar or corners.
 - **Doors.** `door_closed`: `plankShade(u)` = vertical planks 0.2 wide
   alternating 1.0 / 0.82 with a 0.05 dark seam at the `MORTAR` sentinel; the
   outer 0.12 of the face (`u < 0.12 || u > 0.88`) is an absolute `0.70` frame
@@ -110,31 +119,36 @@ look. `floor` is a poorly-lit dark-grey flagstone floor: base
 brightness 0.85–1.15 (hashed by its `(floor(2fX), floor(2fY))` index, stable
 per stone) and thin seams (within 0.04 of a stone edge) at 0.6. On top, the
 perspective grid lines at cell edges are painted at the absolute brightness
-`0.30` (not fogged) so they read as the converging depth lines. `corridor` is
-rough rock: base `[0.07,0.065,0.06]` with `floorShade(fX, fY, 1.0, false)`
-(side-1.0 stones, no seams) and no grid. `ice`, `stairs_*`, `altar`, `throne`
-keep the multiplier `gridShade` grid (edge 0.7, or 0.5 for stairs). Fog is
-`fogK` default `0.28`, so a wall 8 cells away is already faint and a long
-corridor fades to nothing — that fade is the depth cue. Sprites, water, lava
-and the unknown veil are unchanged.
+`0.30` under half-strength fog (like every absolute edge line) so they read
+as the converging depth lines and still fade with distance. `corridor` is
+neutral rough rock: base `[0.07,0.07,0.07]` with `floorShade(fX, fY, 1.0,
+false)` (side-1.0 stones, no seams) and no grid — its previous warm cast
+read as yellow under the T-0028 quantizer. `ice`, `stairs_*`, `altar`,
+`throne` keep the multiplier `gridShade` grid (edge 0.7, or 0.5 for
+stairs). Fog is `fogK` default `0.14`, so wall bodies stay visible out to
+around 6–8 cells and only truly distant features fade — that fade is the
+depth cue. Sprites, water, lava and the unknown veil are unchanged.
 
 ### The unknown
 
 Never-explored (`unexplored`) cells stay opaque — rays still stop at them —
-but they paint as a dark veil, not masonry. The face is the flat base colour
-`[0.03, 0.03, 0.05]` with **no brick texture, no top/bottom edge lines and no
-corner lines**, plus `veilShade(u, v, seed)` added to the base: `0` for most
-samples and, for ≈ 12 % of them, one of two discrete speckle levels in
-`0.10–0.22` chosen by the hash over an 8×8 sample grid and the cell `seed`.
-The speckle is stable per cell and per sample (no flicker) and sparse enough
-that a face reads as dark static — visibly different from the regular mortar
-and brick of a real wall. Depth is still written for these cells, so sprites
-and fog behave as if the veil were a wall. Known rock (`stone`, an `S_stone`
-glyph NetHack actually displayed) stays a flat dark grey `[0.12, 0.12, 0.13]`
-with the top edge line — solid and known, distinct from both bricks and the
-veil. Corridor sides and dead ends are `unexplored` in NetHack's own model, so
-a corridor reads as a lit path through darkness, exactly the information the
-game gives.
+but they paint as a dark **neutral-grey** veil, not masonry. The face is the
+flat base colour `[0.03, 0.03, 0.03]` with **no brick texture, no top/bottom
+edge lines and no corner lines**, plus `veilShade(u, v, seed)` added to the
+base: `0` for most samples and, for ≈ 8 % of them, one of two discrete
+speckle levels in `0.05–0.10` chosen by the hash over an 8×8 sample grid and
+the cell `seed`. The base was previously `[0.03,0.03,0.05]` (a blue cast that
+read as a blue wall under the T-0028 quantizer) and the speckle was 12 % at
+0.10–0.22 (dense enough to blend into masonry once the quantizer's black
+point moved); the sparser, dimmer, neutral-grey tuning here comes out as
+rare `.` glyphs. The speckle is stable per cell and per sample (no flicker).
+Depth is still written for these cells, so sprites and fog behave as if the
+veil were a wall. Known rock (`stone`, an `S_stone` glyph NetHack actually
+displayed) stays a flat neutral grey `[0.12, 0.12, 0.12]` with the top edge
+line — solid and known, distinct from both bricks and the veil. Corridor
+sides and dead ends are `unexplored` in NetHack's own model, so a corridor
+reads as a lit path through darkness, exactly the information the game
+gives.
 
 ### Sprites
 
@@ -182,15 +196,15 @@ renderer can reuse it. `CEILING_COLOR` is the ceiling base colour.
 
 | kind | colour |
 |---|---|
-| wall | `[0.14,0.14,0.15]` |
-| door_closed | `[0.16,0.11,0.06]` |
-| door_open / doorway | `[0.28,0.22,0.14]` |
-| tree | `[0.05,0.14,0.05]` |
-| bars | `[0.10,0.16,0.17]` |
-| stone | `[0.12,0.12,0.13]` |
-| unexplored | `[0.03,0.03,0.05]` |
+| wall | `[0.18,0.18,0.19]` |
+| door_closed | `[0.20,0.15,0.10]` |
+| door_open / doorway | `[0.32,0.26,0.18]` |
+| tree | `[0.09,0.18,0.09]` |
+| bars | `[0.14,0.20,0.21]` |
+| stone | `[0.12,0.12,0.12]` |
+| unexplored | `[0.03,0.03,0.03]` |
 | floor | `[0.10,0.10,0.11]` |
-| corridor | `[0.07,0.065,0.06]` |
+| corridor | `[0.07,0.07,0.07]` |
 | water | `[0.10,0.25,0.60]` |
 | lava | `[0.85,0.35,0.05]` |
 | ice | `[0.55,0.75,0.85]` |

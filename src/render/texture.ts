@@ -97,15 +97,18 @@ export function floorShade(fX: number, fY: number, side = 0.5, seams = true): nu
 
 /**
  * Speckle brightness for the never-seen (`unexplored`) veil: 0 for most
- * samples (no speckle), else one of a small set of values in 0.10–0.22 chosen
+ * samples (no speckle), else one of a small set of values in 0.05–0.10 chosen
  * by the hash over an 8×8 sample grid and the cell `seed`, so each veil cell
- * is a sparse, stable dark static that never reads as masonry or mortar.
+ * is a sparse, stable dark static that never reads as masonry or mortar. The
+ * rate and values are tuned so, under the quantizer's post-T-0028 black point
+ * (0.10 after exposure), the veil comes out as rare `.` glyphs rather than a
+ * dense mid-grey field.
  */
 export function veilShade(u: number, v: number, seed: number): number {
   const iu = Math.floor(u * 8) & 7;
   const iv = Math.floor(v * 8) & 7;
   const h = hash3(iu, iv, seed);
-  if (h >= 0.12) return 0;
-  // ≈12 % of samples: one of two discrete speckle levels in 0.10–0.22.
-  return Math.floor(h / 0.06) * 0.12 + 0.1;
+  if (h >= 0.08) return 0;
+  // ≈8 % of samples: one of two discrete speckle levels in 0.05–0.10.
+  return Math.floor(h / 0.04) * 0.05 + 0.05;
 }
