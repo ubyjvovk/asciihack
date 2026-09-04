@@ -180,11 +180,14 @@ export function renderOrtho(
       const atten = Math.exp(-fogK * dist);
       if (kind === 'unexplored') {
         // the unknown: pure black with faint diamond lattice seams (also covers
-        // outside the 80×21 map, so the whole viewport shows the lattice)
+        // outside the 80×21 map, so the whole viewport shows the lattice). The
+        // seams sit at 0.09 absolute so they survive the quantizer's black
+        // point (0.09·1.7 ≈ 0.153 > 0.10 after the exposure curve) — at the old
+        // 0.05 they quantized to space and the room floated in pure black again.
         if (isNearEdge(X, Y)) {
-          fb.rgb[o] = 0.05 * atten;
-          fb.rgb[o + 1] = 0.05 * atten;
-          fb.rgb[o + 2] = 0.07 * atten;
+          fb.rgb[o] = 0.09 * atten;
+          fb.rgb[o + 1] = 0.09 * atten;
+          fb.rgb[o + 2] = 0.09 * atten;
         } else {
           fb.rgb[o] = 0;
           fb.rgb[o + 1] = 0;

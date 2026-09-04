@@ -242,7 +242,7 @@ describe('ortho/terrain', () => {
     expect(fb.depth[sx + (sy - k - h) * fb.width]).not.toBe(Number.POSITIVE_INFINITY);
   });
 
-  it('unexplored cells carry the lattice (seam cells brighter than interior cells, both dim)', () => {
+  it('unexplored cells carry the lattice (seam cells brighter than interior cells, seams clear the black point)', () => {
     const allUnexplored = levelFromAscii(['     ', '     ', '     ']);
     const fb = makeFrameBuffer(80, 104); // k = 4 so the diamond seams are sampled
     renderOrtho(allUnexplored, { x: 1, y: 1 }, [], fb);
@@ -257,7 +257,11 @@ describe('ortho/terrain', () => {
     }
     expect(lit).toBeGreaterThan(0); // the diamond lattice seams are lit
     expect(dark).toBeGreaterThan(0); // interiors stay black
-    expect(maxV).toBeLessThan(0.2); // both are dim
+    // the seams sit above the quantizer's black point after the exposure curve
+    // (0.09·1.7 ≈ 0.153 > 0.10), so the lattice stays visible — the fix for the
+    // room floating in pure black; interiors still quantize to space (0·1.7).
+    expect(maxV * 1.7).toBeGreaterThan(0.1);
+    expect(maxV * 1.7).toBeLessThan(0.3); // still a faint line, not a bright grid
   });
 });
 

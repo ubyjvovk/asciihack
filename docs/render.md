@@ -263,9 +263,12 @@ Faces and floor fade with fog `exp(−0.06·dist)` (Chebyshev distance from the
 hero).
 
 **The unknown:** `unexplored` cells are black `[0, 0, 0]` with the seam lines at
-`[0.05, 0.05, 0.07]` — the faint diamond lattice — and the same applies outside
+`[0.09, 0.09, 0.09]` — the faint diamond lattice — and the same applies outside
 the 80×21 map, so the lattice covers the whole viewport and the player never
-floats in pure black. (The seam band is `0.2/k`, slightly wider than the spec's
+floats in pure black. The seams sit at `0.09` absolute (≈ 0.153 after the
+exposure curve, above the quantizer's 0.10 black point) so they stay visible;
+at the old `0.05` they quantized to space and the room floated in pure black
+again. (The seam band is `0.2/k`, slightly wider than the spec's
 `0.12/k`: cell-centre samples always land at least `1/(8k)` from an edge, so
 `0.12/k` would make the lattice invisible.)
 
@@ -302,7 +305,8 @@ the block's bottom contact line `0.25`. Floor tiles: base from
 `texture.ts`, stones ±20 %), diamond seams `0.30` absolute; no checker (the
 stones carry the variation); corridors `KIND_COLORS.corridor`, no seams.
 Doorway / open door tiles: floor in the door colour with the two post cells at
-`0.70`. Unexplored lattice unchanged (`0.05`); fog `exp(−0.06·dist)` applied
+`0.70`. Unexplored lattice `0.09` absolute (see "The unknown", raised from
+`0.05` so it clears the quantizer's black point); fog `exp(−0.06·dist)` applied
 to faces and floor but not to rims within 3 cells of the hero (near edges
 stay crisp), then normally beyond. Cutaway ghost blocks keep their 0.35 factor
 applied to these levels.
