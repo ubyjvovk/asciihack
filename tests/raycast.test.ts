@@ -8,7 +8,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { renderFirstPerson, KIND_COLORS } from '../src/render/raycast.js';
 import { loadTiles, monsterTile, objectTile } from '../src/render/tiles.js';
-import { makeFrameBuffer, type FrameBuffer, type LevelView, type Pose, type Sprite } from '../src/model/types.js';
+import { makeFrameBuffer, type CellKind, type FrameBuffer, type LevelView, type Pose, type Sprite } from '../src/model/types.js';
 import { levelFromAscii, ROOM, L_SHAPED } from './fixtures/levels.js';
 
 const GOLDEN = fileURLToPath(new URL('./raycast-golden.txt', import.meta.url));
@@ -894,6 +894,56 @@ describe('raycast/corners-and-fog', () => {
     expect(m3).toBeGreaterThanOrEqual(0.09);
     expect(m3).toBeLessThanOrEqual(0.15);
     expect(m6).toBeGreaterThan(0.06);
+  });
+});
+
+describe('raycast/lit', () => {
+  it('a dark floor row 2 cells away is darker than the same row in a lit room', () => {
+    // 10-wide walled room; hero at (1.5, 2.5) facing east so the floor tile
+    // 2 cells east is on screen ahead. Two renderings that differ only in
+    // `MapCell.lit` — the dark stone body should read ~0.45× the lit one.
+    const build = (lit: boolean | undefined): LevelView => {
+      const kindAt = (x: number, y: number): CellKind =>
+        x <= 0 || x >= 9 || y <= 0 || y >= 4 ? 'wall' : 'floor';
+      return {
+        width: 10,
+        height: 5,
+        kindAt,
+        cellAt: (x, y) => ({ x, y, kind: kindAt(x, y), terrain: null, top: null, lit }),
+      };
+    };
+    const p = pose(1.5, 2.5, Math.PI / 2);
+    const litFb = makeFrameBuffer(80, 24);
+    renderFirstPerson(build(true), p, [], litFb);
+    const darkFb = makeFrameBuffer(80, 24);
+    renderFirstPerson(build(false), p, [], darkFb);
+    // The floor base is [0.10, 0.10, 0.11] — stone bodies have b/r = 1.1;
+    // wall bodies have b/r = 0.19/0.18 ≈ 1.056, so filtering b/r > 1.08 keeps
+    // floor stones and rejects both grid lines (r == b) and any wall pixel
+    // that lands at the same depth. Compare the brightest stone body at
+    // depth ≈ 2 in each buffer.
+    const stonePeak = (fb: FrameBuffer): number => {
+      let peak = 0;
+      for (let y = 0; y < fb.height; y++) {
+        for (let x = 0; x < fb.width; x++) {
+          const i = y * fb.width + x;
+          const d = fb.depth[i]!;
+          if (!Number.isFinite(d) || Math.abs(d - 2) > 0.4) continue;
+          const o = i * 3;
+          const r = fb.rgb[o]!;
+          const b = fb.rgb[o + 2]!;
+          if (r < 1e-6 || b / r < 1.08) continue; // not a floor stone
+          if (r > peak) peak = r;
+        }
+      }
+      return peak;
+    };
+    const litPeak = stonePeak(litFb);
+    const darkPeak = stonePeak(darkFb);
+    expect(litPeak).toBeGreaterThan(0);
+    expect(darkPeak).toBeGreaterThan(0);
+    expect(darkPeak).toBeLessThan(litPeak);
+    expect(darkPeak / litPeak).toBeCloseTo(0.45, 2);
   });
 });
 

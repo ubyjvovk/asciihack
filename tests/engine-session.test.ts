@@ -17,7 +17,7 @@ function makeHello(overrides: Partial<HelloMsg> = {}): HelloMsg {
     t: 'hello',
     proto: 1,
     version: 'test',
-    S: { S_stone: 0, S_vwall: 1, S_room: 20, S_ndoor: 12, S_lava: 40 },
+    S: { S_stone: 0, S_vwall: 1, S_room: 20, S_darkroom: 21, S_ndoor: 12, S_lava: 40 },
     cmap: [],
     nhw: { NHW_MESSAGE: 1, NHW_STATUS: 2, NHW_MAP: 3, NHW_MENU: 4, NHW_TEXT: 5 },
     bl: {
@@ -131,6 +131,16 @@ describe('NethackSession — map bookkeeping', () => {
     const { session } = fresh();
     session.handle(tCall('curs', [3, 42, 11]));
     expect(session.hero).toEqual({ x: 42, y: 11 });
+  });
+
+  it('print_glyph with S_darkroom sets lit:false and a later monster glyph on that cell keeps it', () => {
+    const { session, hello } = fresh();
+    session.handle(tCall('print_glyph', [3, 5, 5, cmapGlyph(hello.S.S_darkroom!)]));
+    expect(session.map.cellAt(5, 5)?.lit).toBe(false);
+    // A monster stepping onto the dark tile must not touch its lighting.
+    session.handle(tCall('print_glyph', [3, 5, 5, monsterGlyph()]));
+    expect(session.map.cellAt(5, 5)?.lit).toBe(false);
+    expect(session.map.cellAt(5, 5)?.top?.cls).toBe('mon');
   });
 
   it('MG_HERO in a glyph cross-checks the hero position', () => {

@@ -64,7 +64,7 @@ await runSession(bridge, session);
 State the UI reads:
 
 - `session.map: LevelView` — `kindAt(x, y)` for renderers, `cellAt` for
-  the raw `MapCell` (terrain glyph, top glyph, `CellKind`).
+  the raw `MapCell` (terrain glyph, top glyph, `CellKind`, `lit`).
 - `session.hero: {x, y} | null` — from `curs` on the map window; the
   `MG_HERO` flag on `print_glyph` is used as a cross-check.
 - `session.messages: readonly string[]` — every game message, in order:
@@ -162,6 +162,20 @@ session mirrors that split — answer ESC-cancel with
 `{kind:'menu', cancelled: true}` (→ `{id, ret: -1}`, no `selected`) and
 Enter-with-nothing-picked with `{kind:'menu', selected: []}` (→ `{id,
 ret: 0, selected: []}`).
+
+## Cell lighting (`MapCell.lit`)
+
+Every `MapCell` carries an optional `lit: boolean | undefined`. When a `cmap`
+`print_glyph` sets the cell's terrain, the session also calls
+`litOf(symIdx, S)` (in `src/engine/glyphs.ts`) and, if it returns a boolean,
+stores it on the cell: `S_room` and `S_litcorr` → `true`, `S_darkroom` and
+`S_corr` → `false`. Any other cmap symbol (walls, doors, stairs, water, …)
+returns `undefined` and the previous value stays put; trap and non-terrain
+glyphs (monsters, objects) never touch `lit`, so a monster stepping onto a
+dark tile does not "light" it. `clear_nhwindow` on the map window clears
+`lit` back to `undefined` alongside the other per-cell fields. Renderers
+consult `lit` to dim unlit floor and brighten lit corridors (`docs/render.md`
+"Lighting").
 
 ## Fixtures and record-bridge
 

@@ -129,6 +129,17 @@ stairs). Fog is `fogK` default `0.14`, so wall bodies stay visible out to
 around 6–8 cells and only truly distant features fade — that fade is the
 depth cue. Sprites, water, lava and the unknown veil are unchanged.
 
+### Lighting (`MapCell.lit`)
+
+Floor cells with `lit === false` (remembered dark rooms) dim the stone
+body ×0.45; corridor cells with `lit === true` (lit corridors) brighten
+theirs ×1.4. Grid lines and the door-frame posts keep their absolute
+brightness so dark rooms still show perspective — only the stone body
+darkens. Walls are unaffected (the hero's lantern lights them in the
+fiction), and `lit === undefined` means "no info" and leaves the render
+unchanged. The lit information comes from the session's `print_glyph`
+handling (see docs/engine.md "Cell lighting").
+
 ### The unknown
 
 Never-explored (`unexplored`) cells stay opaque — rays still stop at them —
@@ -319,13 +330,15 @@ the block's bottom contact line `0.25`. Floor tiles: base from
 `texture.ts`, stones ±20 %), diamond seams `0.30` absolute; no checker (the
 stones carry the variation); corridors `KIND_COLORS.corridor`, no seams.
 Doorway / open door tiles: floor in the door colour with the two post cells at
-`0.70`. Unexplored lattice `0.09` absolute (see "The unknown", raised from
-`0.05` so it clears the quantizer's black point); the lattice fades with its
-own gentle `exp(−0.015·dist)` (not the floor's 0.06 fog) so a seam at the far
-edge of the viewport still reads; faces and floor fade with `exp(−0.06·dist)`
-applied but not to rims within 3 cells of the hero (near edges
-stay crisp), then normally beyond. Cutaway ghost blocks keep their 0.35 factor
-applied to these levels.
+`0.70`. Floor tiles with `MapCell.lit === false` are dimmed `×0.45` on the
+stone body (seams keep their absolute `0.30`) — the tile shape still reads
+in a remembered dark room. Unexplored lattice `0.09` absolute (see "The
+unknown", raised from `0.05` so it clears the quantizer's black point); the
+lattice fades with its own gentle `exp(−0.015·dist)` (not the floor's 0.06
+fog) so a seam at the far edge of the viewport still reads; faces and floor
+fade with `exp(−0.06·dist)` applied but not to rims within 3 cells of the
+hero (near edges stay crisp), then normally beyond. Cutaway ghost blocks
+keep their 0.35 factor applied to these levels.
 
 ### Sprites & occlusion
 

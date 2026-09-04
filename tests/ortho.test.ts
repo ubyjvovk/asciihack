@@ -389,6 +389,56 @@ describe('ortho/cutaway', () => {
   });
 });
 
+describe('ortho/lit', () => {
+  it('a dark floor tile is dimmed ×0.45 on its stone body while the seams stay bright', () => {
+    // All-floor level, hero at (4,4) → depth 8 on the hero's tile. Two levels
+    // that differ only in `MapCell.lit`: lit vs remembered dark.
+    const build = (lit: boolean | undefined): LevelView => ({
+      width: 9,
+      height: 9,
+      kindAt: () => 'floor',
+      cellAt: (x, y) => ({ x, y, kind: 'floor', terrain: null, top: null, lit }),
+    });
+    const litFb = makeFrameBuffer(160, 104);
+    renderOrtho(build(true), { x: 4, y: 4 }, [], litFb, { fogK: 0 });
+    const darkFb = makeFrameBuffer(160, 104);
+    renderOrtho(build(false), { x: 4, y: 4 }, [], darkFb, { fogK: 0 });
+    // The floor base is [0.10, 0.10, 0.11] — stones keep b > r; seams paint
+    // at the absolute SEAM_ABS = 0.30 (grey, r == b) and must not be dimmed.
+    const stonePeak = (fb: FrameBuffer): number => {
+      let peak = 0;
+      for (let i = 0; i < fb.rgb.length / 3; i++) {
+        if (fb.depth[i] !== 8) continue;
+        const o = i * 3;
+        const r = fb.rgb[o]!;
+        const b = fb.rgb[o + 2]!;
+        if (Math.abs(r - 0.3) < 1e-6) continue; // seam
+        if (b <= r + 1e-6) continue; // non-stone (grey), skip
+        if (r > peak) peak = r;
+      }
+      return peak;
+    };
+    const seamMax = (fb: FrameBuffer): number => {
+      let m = 0;
+      for (let i = 0; i < fb.rgb.length / 3; i++) {
+        if (fb.depth[i] !== 8) continue;
+        const v = fb.rgb[i * 3]!;
+        if (Math.abs(v - 0.3) < 1e-6 && v > m) m = v;
+      }
+      return m;
+    };
+    const litPeak = stonePeak(litFb);
+    const darkPeak = stonePeak(darkFb);
+    expect(litPeak).toBeGreaterThan(0);
+    expect(darkPeak).toBeGreaterThan(0);
+    expect(darkPeak / litPeak).toBeCloseTo(0.45, 2);
+    // Seams are untouched by the lit dim, so they read at the same absolute
+    // 0.30 in both buffers.
+    expect(seamMax(litFb)).toBeCloseTo(0.3, 3);
+    expect(seamMax(darkFb)).toBeCloseTo(0.3, 3);
+  });
+});
+
 describe('ortho/golden', () => {
   it('matches the committed golden render of ROOM at 80×24 (k = 1)', () => {
     const fb = makeFrameBuffer(80, 24);

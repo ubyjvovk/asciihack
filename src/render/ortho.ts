@@ -208,7 +208,10 @@ export function renderOrtho(
       if (isSolid(kind)) continue; // painted as a block by the wall pass
       if (kind === 'floor' || kind === 'doorway' || kind === 'door_open') {
         // flagstone floor: stones ±20 % from `floorShade`, diamond seams at an
-        // absolute 0.30 so they read instead of fading with the dark base.
+        // absolute 0.30 so they read instead of fading with the dark base. A
+        // remembered-dark room floor (MapCell.lit === false) dims the stone
+        // body ×0.45; the seams keep their absolute brightness so the tile
+        // shape still reads (docs/render.md "Look").
         const base = kind === 'floor' ? KIND_COLORS[kind] : KIND_COLORS.door_open;
         if (isNearEdge(X, Y)) {
           fb.rgb[o] = SEAM_ABS * atten;
@@ -216,9 +219,10 @@ export function renderOrtho(
           fb.rgb[o + 2] = SEAM_ABS * atten;
         } else {
           const tex = floorShade(X, Y);
-          fb.rgb[o] = base[0] * tex * atten;
-          fb.rgb[o + 1] = base[1] * tex * atten;
-          fb.rgb[o + 2] = base[2] * tex * atten;
+          const dim = kind === 'floor' && level.cellAt(x, y)?.lit === false ? 0.45 : 1;
+          fb.rgb[o] = base[0] * tex * atten * dim;
+          fb.rgb[o + 1] = base[1] * tex * atten * dim;
+          fb.rgb[o + 2] = base[2] * tex * atten * dim;
         }
       } else {
         const base = KIND_COLORS[kind];
