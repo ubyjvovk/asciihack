@@ -28,7 +28,10 @@ import {
 } from './scene-builder.js';
 
 /** Distance in cells the hero's lantern reaches before falling to black. */
-export const LANTERN_DISTANCE = 8;
+export const LANTERN_DISTANCE = 14;
+/** Lantern intensity — the AsciiCity style shaders need bright surfaces to
+ *  thin out; a dim scene is invisible after the black-point cut (T-0031 r2). */
+export const LANTERN_INTENSITY = 12;
 /** Camera eye height above the floor, in cells. */
 export const EYE_HEIGHT = 0.5;
 /** Horizon offset approximated by pitching the camera slightly down (T-0023). */
@@ -72,15 +75,18 @@ export class GlViewport {
     this.renderer.setClearColor(0x000000, 1);
 
     this.scene = makeScene();
-    // Override AsciiCity's outdoor scene with a dark-dungeon look.
+    // Override AsciiCity's outdoor scene with a dungeon look bright enough
+    // for the style shaders to thin out (T-0031 r2 numbers).
     this.scene.background = new THREE.Color(0x000000);
-    this.scene.fog = new THREE.FogExp2(0x000000, 0.25);
-    // Drop the bright outdoor lights; leave a faint ambient and add a lantern.
+    this.scene.fog = new THREE.FogExp2(0x000000, 0.10);
+    // Drop the outdoor directional/hemisphere lights; keep a bright ambient
+    // so nothing is pitch-black outside the lantern's cone.
     for (const child of [...this.scene.children]) {
       if (child instanceof THREE.DirectionalLight || child instanceof THREE.HemisphereLight) {
         this.scene.remove(child);
       } else if (child instanceof THREE.AmbientLight) {
-        child.intensity = 0.15;
+        child.color = new THREE.Color(0xffffff);
+        child.intensity = 0.35;
       }
     }
     this.materials = buildDungeonMaterials();
@@ -91,7 +97,7 @@ export class GlViewport {
     this.camera.near = 0.05;
     this.camera.far = 60;
     this.camera.updateProjectionMatrix();
-    this.lantern = new THREE.PointLight(0xffe0a8, 2.2, LANTERN_DISTANCE, 2);
+    this.lantern = new THREE.PointLight(0xffe0a8, LANTERN_INTENSITY, LANTERN_DISTANCE, 1);
     this.camera.add(this.lantern);
     this.scene.add(this.camera);
 
@@ -179,14 +185,28 @@ export class GlViewport {
   }
 
   private spriteMaterialFor(s: Sprite): THREE.SpriteMaterial {
-    const key = s.tile ? `t:${tileKey(s.tile)}` : `c:${s.rgb.join(',')}`;
+    const tileHash = s.tile ? tileKey(s.tile) : '';
+    const key = `${tileHash}#${s.rgb.join(',')}`;
     const cached = this.spriteMatCache.get(key);
     if (cached !== undefined) return cached;
+    // Build the tile texture *before* the material so the map is set at
+    // construction — assigning `.map` post-hoc can trip a re-upload path on
+    // some drivers when the placeholder was already committed.
+    let map: THREE.Texture | undefined;
+    if (s.tile) {
+      const cachedTex = this.textureCache.get(tileHash);
+      if (cachedTex !== undefined) {
+        map = cachedTex;
+      } else {
+        map = tileToTexture(s.tile);
+        this.textureCache.set(tileHash, map);
+      }
+    }
     const mat = new THREE.SpriteMaterial({
       color: new THREE.Color(s.rgb[0], s.rgb[1], s.rgb[2]),
       transparent: true,
+      map,
     });
-    if (s.tile) mat.map = tileToTexture(s.tile);
     this.spriteMatCache.set(key, mat);
     return mat;
   }
@@ -231,11 +251,11 @@ function tileToTexture(tile: Tile): THREE.Texture {
 /** Build the textured Lambert materials used by the dungeon meshes. */
 function buildDungeonMaterials(): SceneMaterials {
   return {
-    wall: new THREE.MeshLambertMaterial({ map: brickTexture(), color: 0x646060 }),
-    floor: new THREE.MeshLambertMaterial({ map: flagstoneTexture(), color: 0x3a3a3a }),
-    door: new THREE.MeshLambertMaterial({ map: doorTexture(), color: 0x7a4a1a }),
-    post: new THREE.MeshLambertMaterial({ color: 0x503010 }),
-    stair: new THREE.MeshLambertMaterial({ color: 0xa07a20, emissive: 0x503810 }),
+    wall: new THREE.MeshLambertMaterial({ map: brickTexture(), color: 0x9a9a9e }),
+    floor: new THREE.MeshLambertMaterial({ map: flagstoneTexture(), color: 0x6a6a70 }),
+    door: new THREE.MeshLambertMaterial({ map: doorTexture(), color: 0x8a6a3a }),
+    post: new THREE.MeshLambertMaterial({ color: 0x8a6a3a }),
+    stair: new THREE.MeshLambertMaterial({ color: 0xd0a040, emissive: 0x603818 }),
   };
 }
 

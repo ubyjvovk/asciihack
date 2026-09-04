@@ -186,6 +186,16 @@ The vendored render-style pipeline is in `web/src/asciicity/render/`
 (see the file's `README.md`; do not edit those files here — improve
 them in AsciiCity and re-copy).
 
+**Transparency rule.** When the GL viewport is mounted, `App` runs with
+`externalViewport: true` and the fps/ortho modes skip their CPU dungeon
+render, leaving the viewport cells as spaces on black `(0,0,0)`.
+`DomTerm.paintGrid` treats a cell whose `bg` is exactly `[0,0,0]` as
+transparent (it never emits a `background-color`), so the page's black
+body colour shows the WebGL canvas underneath through those cells. The
+HUD (minimap arrow/dots, compass ribbon, ortho rose, message line,
+status, menus, prompts) keeps painting with non-black backgrounds and
+stays opaque above the shader.
+
 ### Scene mapping
 
 `web/src/gl/scene-builder.ts` builds one `THREE.InstancedMesh` per
@@ -217,6 +227,15 @@ flagstone 64×64 for floors, vertical planks with hinges for doors,
 stairs get an emissive glow. Textures use `NearestFilter` and repeat
 per cell so the style shader gets flat, chunky pixels to quantise.
 
+The tints are picked bright — walls `0x9a9a9e`, floors `0x6a6a70`,
+doors/posts `0x8a6a3a`, stairs `0xd0a040` (with a warm emissive) —
+because AsciiCity's shaders are built for bright surfaces they then
+thin out. Dark stone materials fall below the shader's black point and
+disappear (T-0031 rework 2). Procedural textures are built exactly once
+and cached; they are never resized, so the `THREE.CanvasTexture` is
+committed immutable and no `glTexStorage2D: Texture is immutable`
+warning appears on redraw.
+
 ### Sprites
 
 Every `Sprite` from `src/ui/view3d.ts:spritesFromMap` becomes a
@@ -240,9 +259,11 @@ fps mode's animated `currentYaw`, mapped to three's Y-rotation with a
 sign flip (three's default forward is `−z ≈ north`). The T-0023 horizon
 offset (`horizonFrac 0.42`) is approximated by a small negative pitch
 (`CAMERA_PITCH ≈ −0.08 rad`). A `PointLight` attached to the camera
-plays the lantern (distance `LANTERN_DISTANCE = 8` cells, decay 2);
-`scene.fog = FogExp2(0x000000, 0.25)` swallows anything past a few
-cells so the dungeon feels enclosed.
+plays the lantern (`LANTERN_INTENSITY = 12`, `LANTERN_DISTANCE = 14`
+cells, decay `1`); an `AmbientLight(0xffffff, 0.35)` keeps distant
+surfaces above the shader's black point, and
+`scene.fog = FogExp2(0x000000, 0.10)` fades the far end of the corridor
+without swallowing the near walls (T-0031 rework 2).
 
 ### Styles
 
@@ -275,15 +296,6 @@ canvas.
 `resize(cols, rows, cellW, cellH)` runs on start and on every DOM-side
 resize (a `ResizeObserver` on `#term`); it recomputes the canvas size
 and the low-res scene target and updates the camera aspect.
-
-### What's still missing
-
-Today the fps/ortho modes paint the raycaster ASCII into the same
-viewport rectangle, so the DOM terminal's opaque cells occlude the
-WebGL canvas underneath — a follow-up ticket will teach fps/ortho to
-paint the viewport cells as transparent spaces when the GL viewport is
-mounted, and leave only the HUD (minimap, compass, message line,
-status) as opaque cells on top of the shader.
 
 ## Coming next
 

@@ -55,6 +55,13 @@ export interface AppOptions {
   onSettingsChange?: (s: Settings) => void;
   /** Clock source for the FOV toast (tests inject a fake clock). */
   now?: () => number;
+  /**
+   * When true, the fps/ortho modes skip their CPU dungeon render and leave
+   * the viewport cells as spaces on black so an external renderer (the
+   * browser's WebGL viewport, T-0031) shows through. HUD overlays (minimap,
+   * compass, rose, prompts) still paint on top.
+   */
+  externalViewport?: boolean;
 }
 
 /**
@@ -75,6 +82,7 @@ export class App {
   private readonly persistFn: ((s: Settings) => void) | null;
   private toastText: string | null = null;
   private toastUntil = 0;
+  private readonly externalViewport: boolean;
   private overlay: Overlay | null = null;
   private overlayReq: unknown = null;
   private readonly queue: KeyEvent[] = [];
@@ -97,6 +105,7 @@ export class App {
     this.fovDeg = opts.fov !== undefined ? clampFov(opts.fov) : initial.fov;
     this.theme = opts.theme ?? initial.theme;
     this.showMinimap = opts.minimap ?? initial.minimap;
+    this.externalViewport = opts.externalViewport ?? false;
     this.modes = {
       classic: new ClassicMode(opts.session),
       fps: new FpsMode(opts.session),
@@ -236,6 +245,7 @@ export class App {
       if (m instanceof FpsMode || m instanceof OrthoMode) {
         m.theme = this.theme;
         m.showMinimap = this.showMinimap;
+        m.externalViewport = this.externalViewport;
       }
       if (m instanceof FpsMode) m.vFovDeg = this.fovDeg;
     }

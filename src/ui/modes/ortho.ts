@@ -50,6 +50,12 @@ export class OrthoMode implements Mode {
   theme: Theme = 'cyber';
   /** Whether the minimap overlay is shown (toggled with F4 by the App). */
   showMinimap = true;
+  /**
+   * When true the CPU ortho render is skipped and the viewport cells are left
+   * as spaces on black so an external renderer (browser WebGL, T-0031) shows
+   * through; the minimap and rose still paint on top.
+   */
+  externalViewport = false;
 
   /** @param session - the session whose map and hero this mode renders. */
   constructor(session: NethackSession) {
@@ -63,14 +69,15 @@ export class OrthoMode implements Mode {
   paintViewport(grid: ScreenGrid, rect: Rect): void {
     const hero = this.session.hero;
     if (hero === null) return;
-    const sprites = spritesFromMap(this.session, hero, true);
-    const theme = this.theme;
-    const sub = this.viewport.render(
-      { x: 0, y: 0, width: Math.max(1, rect.width), height: Math.max(1, rect.height) },
-      (fb) => renderOrtho(this.session.map, hero, sprites, fb),
-      theme,
-    );
-    blitGrid(sub, grid, rect);
+    if (!this.externalViewport) {
+      const sprites = spritesFromMap(this.session, hero, true);
+      const sub = this.viewport.render(
+        { x: 0, y: 0, width: Math.max(1, rect.width), height: Math.max(1, rect.height) },
+        (fb) => renderOrtho(this.session.map, hero, sprites, fb),
+        this.theme,
+      );
+      blitGrid(sub, grid, rect);
+    }
     if (this.showMinimap) paintMinimap(grid, rect, this.session);
     paintRose(grid, rect);
   }

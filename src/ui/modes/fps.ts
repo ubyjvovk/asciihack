@@ -99,6 +99,12 @@ export class FpsMode implements Mode {
   showMinimap = true;
   /** Vertical FOV in degrees for the raycaster (adjusted with F6/F7 by the App). */
   vFovDeg = DEFAULT_VFOV_DEG;
+  /**
+   * When true the CPU raycaster is skipped and the viewport cells are left as
+   * spaces on black so an external renderer (browser WebGL, T-0031) shows
+   * through; the minimap and compass still paint on top.
+   */
+  externalViewport = false;
 
   /** @param session - the session whose map and hero this mode renders. */
   constructor(session: NethackSession, now: () => number = () => Date.now()) {
@@ -132,23 +138,23 @@ export class FpsMode implements Mode {
     const hero = this.session.hero;
     if (hero === null) return;
     this.advance(this.now());
-    const sprites = spritesFromMap(this.session, hero, false);
-    const theme = this.theme;
-    const yaw = this.yaw;
     const vFovDeg = Math.min(FOV_MAX, Math.max(FOV_MIN, this.vFovDeg));
-    const sub = this.viewport.render(
-      { x: 0, y: 0, width: Math.max(1, rect.width), height: Math.max(1, rect.height) },
-      (fb) =>
-        renderFirstPerson(
-          this.session.map,
-          poseFor(hero, yaw),
-          sprites,
-          fb,
-          { vFovDeg, cellAspect: 2 },
-        ),
-      theme,
-    );
-    blitGrid(sub, grid, rect);
+    if (!this.externalViewport) {
+      const sprites = spritesFromMap(this.session, hero, false);
+      const sub = this.viewport.render(
+        { x: 0, y: 0, width: Math.max(1, rect.width), height: Math.max(1, rect.height) },
+        (fb) =>
+          renderFirstPerson(
+            this.session.map,
+            poseFor(hero, this.yaw),
+            sprites,
+            fb,
+            { vFovDeg, cellAspect: 2 },
+          ),
+        this.theme,
+      );
+      blitGrid(sub, grid, rect);
+    }
     if (this.showMinimap) paintMinimap(grid, rect, this.session, this.facing);
     const hFov = hFovRad(vFovDeg, Math.max(1, rect.width), Math.max(1, rect.height));
     paintCompass(grid, rect, this.yaw, hFov);

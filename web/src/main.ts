@@ -73,6 +73,12 @@ function boot(): void {
   const settings: Settings = { ...DEFAULT_SETTINGS };
   if (opts.theme !== null) settings.theme = opts.theme;
 
+  // GL viewport — only for the 3D modes; if present the App skips its CPU
+  // dungeon render so the WebGL canvas below shows through (T-0031 rework 2).
+  const gl = opts.mode === 'fps' || opts.mode === 'ortho'
+    ? new GlViewport({ parent: document.body, initialStyle: opts.render ?? undefined })
+    : null;
+
   const session = new NethackSession((r) => bridge.reply(r), { playerName: opts.name });
   const app = new App({
     session,
@@ -80,12 +86,8 @@ function boot(): void {
     mode: opts.mode,
     theme: opts.theme ?? undefined,
     settings,
+    externalViewport: gl !== null,
   });
-
-  // GL viewport — only for the 3D modes.
-  const gl = opts.mode === 'fps' || opts.mode === 'ortho'
-    ? new GlViewport({ parent: document.body, initialStyle: opts.render ?? undefined })
-    : null;
   if (gl !== null) {
     // Capture F5 before it reaches the App's theme cycle so the same key
     // controls the shader style in the browser.

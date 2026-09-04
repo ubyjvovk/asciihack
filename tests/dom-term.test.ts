@@ -108,14 +108,23 @@ describe('DomTerm — run-based painting', () => {
   it('a row of equal-colour cells produces exactly one span with the row text', () => {
     const doc = new FakeDoc();
     const row = doc.createElement('div') as FakeElement;
-    const g = grid(5, 1, () => cell('a', [255, 255, 255]));
+    const g = grid(5, 1, () => cell('a', [255, 255, 255], [10, 20, 30]));
     buildRunsInto(row, doc, g, 0);
     expect(row.children).toHaveLength(1);
     const span = row.children[0] as FakeElement;
     const textNode = span.children[0] as FakeText;
     expect(textNode.textContent).toBe('aaaaa');
     expect(span.style.color).toBe('rgb(255,255,255)');
-    expect(span.style.backgroundColor).toBe('rgb(0,0,0)');
+    expect(span.style.backgroundColor).toBe('rgb(10,20,30)');
+  });
+
+  it('cells with bg=[0,0,0] never emit a background style so the WebGL canvas can show through', () => {
+    const doc = new FakeDoc();
+    const row = doc.createElement('div') as FakeElement;
+    const g = grid(3, 1, () => cell(' ', [200, 200, 200], [0, 0, 0]));
+    buildRunsInto(row, doc, g, 0);
+    const span = row.children[0] as FakeElement;
+    expect(span.style.backgroundColor).toBe('');
   });
 
   it('two adjacent colour runs produce two spans in order', () => {
