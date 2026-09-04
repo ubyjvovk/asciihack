@@ -91,24 +91,31 @@ describe('texture/floorShade', () => {
 });
 
 describe('texture/veilShade', () => {
-  it('is sparse (≈12 % ± 4 % non-zero) and stable, with non-zero values in 0.10–0.22', () => {
+  it('is sparse (≈8 % ± 3 % non-zero) and stable, with non-zero values in 0.05–0.10', () => {
+    // Sample over many cell seeds — a real scene has one seed per veil cell,
+    // so the population average is what the eye reads. Each single seed sees
+    // only 8×8 = 64 (iu, iv) bins, so a per-seed rate can drift far from the
+    // mean; averaging over enough seeds gives a stable ~8 % estimate.
     let nonZero = 0;
-    const samples = 10000;
-    const seed = 7;
-    for (let s = 0; s < samples; s++) {
-      const u = (s % 80) / 80;
-      const v = (s % 60) / 60;
-      const val = veilShade(u, v, seed);
-      if (val !== 0) {
-        nonZero++;
-        expect(val).toBeGreaterThanOrEqual(0.1);
-        expect(val).toBeLessThanOrEqual(0.22);
+    let total = 0;
+    for (let seed = 0; seed < 500; seed++) {
+      for (let iu = 0; iu < 8; iu++) {
+        for (let iv = 0; iv < 8; iv++) {
+          const u = iu / 8 + 1e-4;
+          const v = iv / 8 + 1e-4;
+          const val = veilShade(u, v, seed);
+          if (val !== 0) {
+            nonZero++;
+            expect(val).toBeGreaterThanOrEqual(0.05);
+            expect(val).toBeLessThanOrEqual(0.1);
+          }
+          expect(veilShade(u, v, seed)).toBe(val); // stable per (u, v, seed)
+          total++;
+        }
       }
-      // same inputs must give the same output (stable per cell and per sample)
-      expect(veilShade(u, v, seed)).toBe(val);
     }
-    const frac = nonZero / samples;
-    expect(frac).toBeGreaterThanOrEqual(0.08);
-    expect(frac).toBeLessThanOrEqual(0.16);
+    const frac = nonZero / total;
+    expect(frac).toBeGreaterThanOrEqual(0.05);
+    expect(frac).toBeLessThanOrEqual(0.11);
   });
 });

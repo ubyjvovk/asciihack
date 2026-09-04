@@ -70,6 +70,7 @@ function sameBuffer(a: FrameBuffer, b: FrameBuffer): boolean {
 function wallShades(fb: FrameBuffer, fogK: number): number[] {
   const shades: number[] = [];
   const n = fb.width * fb.height;
+  const wallBR = KIND_COLORS.wall[2] / KIND_COLORS.wall[0]; // b/r hue of the wall body
   for (let i = 0; i < n; i++) {
     const d = fb.depth[i];
     if (!Number.isFinite(d)) continue;
@@ -80,9 +81,10 @@ function wallShades(fb: FrameBuffer, fogK: number): number[] {
     if (r < 0.01) continue;
     const gr = g / r;
     const br = b / r;
-    // wall hue: g/r≈1.0, b/r≈1.0714 (floor is 1.0/1.1 — excluded by this gate);
-    // edges/mortar are grey (b/r=1.0) so they are excluded too.
-    if (Math.abs(gr - 1.0) < 0.02 && Math.abs(br - 1.0714) < 0.02) {
+    // wall body hue: g/r ≈ 1.0, b/r ≈ 0.19/0.18 ≈ 1.056 (floor is 1.0/1.1 —
+    // excluded by this gate); edges/mortar are grey (b/r=1.0) so they are
+    // excluded too.
+    if (Math.abs(gr - 1.0) < 0.02 && Math.abs(br - wallBR) < 0.02) {
       shades.push(r / (KIND_COLORS.wall[0] * Math.exp(-fogK * d!)));
     }
   }
@@ -130,7 +132,7 @@ describe('raycast/walls', () => {
     const level = levelFromAscii(['#######', '#.....#', '#..#..#', '#.....#', '#######']);
     const fb = makeFrameBuffer(80, 24);
     renderFirstPerson(level, pose(1.5, 2.5, Math.PI / 4), [], fb);
-    const shades = wallShades(fb, 0.28);
+    const shades = wallShades(fb, 0.14);
     expect(shades.length).toBeGreaterThan(0);
     expect(shades.some((s) => Math.abs(s - 0.7) < 0.05)).toBe(true);
     expect(shades.some((s) => Math.abs(s - 1.0) < 0.05)).toBe(true);
@@ -140,11 +142,11 @@ describe('raycast/walls', () => {
     const level = levelFromAscii(['####', '#..#', '#..#', '#..#', '####']);
     const fb = makeFrameBuffer(80, 24);
     renderFirstPerson(level, pose(1.5, 3.0, 0), [], fb);
-    const shades = wallShades(fb, 0.28);
+    const shades = wallShades(fb, 0.14);
     expect(shades.some((s) => Math.abs(s - 1.0) < 0.05)).toBe(true);
   });
 
-  it('renders an unexplored face 2 cells away as a dark speckled veil with no mortar/edge structure', () => {
+  it('renders an unexplored face 2 cells away as a dark grey speckled veil with no mortar/edge structure', () => {
     const level = levelFromAscii(['##########', '#...      #', '##########']);
     const fb = makeFrameBuffer(80, 24);
     renderFirstPerson(level, pose(2.0, 1.5, Math.PI / 2), [], fb);
@@ -152,17 +154,23 @@ describe('raycast/walls', () => {
     expect(Number.isFinite(d)).toBe(true);
     expect(d).toBeCloseTo(2, 1); // west face of the first unexplored cell (x=4)
     const c = Math.floor(fb.width / 2);
-    // only the wall-face rows (depth == d) — the veil is dark: nothing brighter than 0.30
+    // only the wall-face rows (depth == d) — samples are grey (r == g == b)
+    // and, at any distance, never exceed the pre-fog max 0.13 (base 0.03 +
+    // speckle 0.10). No mortar/edge structure: fewer than 4 distinct
+    // brightness levels per column.
     const levels = new Set<number>();
     for (let y = 0; y < fb.height; y++) {
       const cell = y * fb.width + c;
       if (Math.abs(fb.depth[cell]! - d) > 0.01) continue;
       const o = cell * 3;
-      const v = Math.max(fb.rgb[o]!, fb.rgb[o + 1]!, fb.rgb[o + 2]!);
-      expect(v).toBeLessThanOrEqual(0.3); // base (max 0.05) + speckle ≤ 0.25
-      levels.add(Math.round(v * 1000));
+      const r = fb.rgb[o]!;
+      const g = fb.rgb[o + 1]!;
+      const b = fb.rgb[o + 2]!;
+      expect(g).toBe(r);
+      expect(b).toBe(r);
+      expect(r).toBeLessThanOrEqual(0.13);
+      levels.add(Math.round(r * 1000));
     }
-    // no mortar/edge structure: fewer than 4 distinct brightness levels per column
     expect(levels.size).toBeLessThan(4);
   });
 
@@ -581,7 +589,7 @@ describe('raycast/surface-detail', () => {
         if (r < 0.02) continue;
         const gr = fb.rgb[o + 1]! / r;
         const br = fb.rgb[o + 2]! / r;
-        if (Math.abs(gr - 1.0) < 0.03 && Math.abs(br - 1.0714) < 0.03) {
+        if (Math.abs(gr - 1.0) < 0.03 && Math.abs(br - KIND_COLORS.wall[2] / KIND_COLORS.wall[0]) < 0.03) {
           wallCols++;
           levels.add(Math.round(r * 1000));
         }
@@ -800,6 +808,92 @@ describe('raycast/camera-readability', () => {
         expect(fb.rgb[o + 2]!).toBe(0);
       }
     }
+  });
+});
+
+describe('raycast/corners-and-fog', () => {
+  it('a flat wall 6 cells wide at distance 3 has bright corner columns only at its two ends', () => {
+    // 6-cell-wide floor room; hero facing north at (3.5, 3.0). The north wall
+    // at y=0 spans x=1..6 (6 cells wide) at perpendicular depth 3. Under the
+    // pre-T-0029 rule every column that hit a different map cell fired a
+    // corner line — the face read as a row of pillars. The new rule requires
+    // the hit side to change or the perpendicular depth to jump > 0.5 cells,
+    // so the interior stays smooth and only the ends carry corner columns.
+    const level = levelFromAscii([
+      '########',
+      '#......#',
+      '#......#',
+      '#......#',
+      '########',
+    ]);
+    const fb = makeFrameBuffer(80, 24);
+    renderFirstPerson(level, pose(3.5, 3.0, 0), [], fb);
+    // Corner absolute (EDGE_CORNER = 0.55) at half-fog e^(-0.21) ≈ 0.446 —
+    // count columns that show that grey brightness in any interior body row
+    // at wall depth ~3.
+    const cornerCols = new Set<number>();
+    for (let x = 0; x < fb.width; x++) {
+      for (let y = 1; y < fb.height - 1; y++) {
+        const d = fb.depth[y * fb.width + x]!;
+        if (!Number.isFinite(d) || Math.abs(d - 3) > 0.5) continue;
+        const o = (y * fb.width + x) * 3;
+        const r = fb.rgb[o]!;
+        const g = fb.rgb[o + 1]!;
+        const bb = fb.rgb[o + 2]!;
+        // grey corner brightness (0.35..0.55); excludes top edge (> 0.55) and
+        // bottom contact (< 0.35) at this depth.
+        if (r > 0.35 && r < 0.55 && g === r && bb === r) cornerCols.add(x);
+      }
+    }
+    // ≤ 4 for the two transitions (each end may spill onto one screen column
+    // of slack from the DDA); the old rule fired on every crossed wall cell,
+    // producing dozens.
+    expect(cornerCols.size).toBeLessThanOrEqual(4);
+  });
+
+  it('a wall body is dark but visible: median 0.09..0.15 at 3 cells and still > 0.06 at 6 cells', () => {
+    // Same 1-wide N/S corridor at two hero distances; the wall body is the
+    // brick pixels of KIND_COLORS.wall attenuated by fog (mortar and edge
+    // lines are excluded — they are pure grey).
+    const wallBR = KIND_COLORS.wall[2] / KIND_COLORS.wall[0];
+    const bodyMedian = (level: LevelView, p: Pose, dExpect: number): number => {
+      const fb = makeFrameBuffer(80, 24);
+      renderFirstPerson(level, p, [], fb);
+      const bodies: number[] = [];
+      for (let y = 0; y < fb.height; y++) {
+        for (let x = 0; x < fb.width; x++) {
+          const d = fb.depth[y * fb.width + x]!;
+          if (!Number.isFinite(d) || Math.abs(d - dExpect) > 0.5) continue;
+          const o = (y * fb.width + x) * 3;
+          const r = fb.rgb[o]!;
+          const g = fb.rgb[o + 1]!;
+          const bb = fb.rgb[o + 2]!;
+          if (r < 0.01) continue;
+          if (Math.abs(g / r - 1.0) < 0.02 && Math.abs(bb / r - wallBR) < 0.02) {
+            bodies.push(Math.max(r, g, bb));
+          }
+        }
+      }
+      bodies.sort((a, b) => a - b);
+      return bodies.length > 0 ? bodies[Math.floor(bodies.length / 2)]! : 0;
+    };
+    const near = levelFromAscii(['####', '#..#', '#..#', '#..#', '#..#', '####']);
+    const far = levelFromAscii([
+      '####',
+      '#..#',
+      '#..#',
+      '#..#',
+      '#..#',
+      '#..#',
+      '#..#',
+      '#..#',
+      '####',
+    ]);
+    const m3 = bodyMedian(near, pose(1.5, 4.0, 0), 3);
+    const m6 = bodyMedian(far, pose(1.5, 7.0, 0), 6);
+    expect(m3).toBeGreaterThanOrEqual(0.09);
+    expect(m3).toBeLessThanOrEqual(0.15);
+    expect(m6).toBeGreaterThan(0.06);
   });
 });
 

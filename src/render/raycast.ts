@@ -8,16 +8,16 @@ import { barsShade, brickShade, floorShade, gridShade, MORTAR, plankShade, veilS
 
 /** Per-kind linear RGB (0..1, before exposure and fog). Anything not listed is floor-coloured. */
 export const KIND_COLORS: Record<CellKind, readonly [number, number, number]> = {
-  wall: [0.14, 0.14, 0.15],
-  door_closed: [0.16, 0.11, 0.06],
-  doorway: [0.28, 0.22, 0.14],
-  door_open: [0.28, 0.22, 0.14],
-  tree: [0.05, 0.14, 0.05],
-  bars: [0.1, 0.16, 0.17],
-  stone: [0.12, 0.12, 0.13],
-  unexplored: [0.03, 0.03, 0.05],
+  wall: [0.18, 0.18, 0.19],
+  door_closed: [0.2, 0.15, 0.1],
+  doorway: [0.32, 0.26, 0.18],
+  door_open: [0.32, 0.26, 0.18],
+  tree: [0.09, 0.18, 0.09],
+  bars: [0.14, 0.2, 0.21],
+  stone: [0.12, 0.12, 0.12],
+  unexplored: [0.03, 0.03, 0.03],
   floor: [0.1, 0.1, 0.11],
-  corridor: [0.07, 0.065, 0.06],
+  corridor: [0.07, 0.07, 0.07],
   water: [0.1, 0.25, 0.6],
   lava: [0.85, 0.35, 0.05],
   ice: [0.55, 0.75, 0.85],
@@ -68,7 +68,10 @@ export interface RaycastOptions {
   maxDepth?: number;
   /** Terminal cell height / width, drives the derived FOV (default 2). */
   cellAspect?: number;
-  /** Fog attenuation coefficient (default 0.28). */
+  /** Fog attenuation coefficient (default 0.14). Absolute edge/grid lines use
+   *  half this value so they fade with distance instead of glowing at any
+   *  depth (wall body ≈ 0.12 at 3 cells, ≈ 0.08 at 6, gone by 10; top edge ≈
+   *  0.37 at 10). */
   fogK?: number;
   /** Apply procedural surface detail (bricks, floor grid, frames, edges); default true. */
   detail?: boolean;
@@ -78,7 +81,7 @@ const DEFAULT_VFOV_DEG = 60;
 const DEFAULT_HORIZON_FRAC = 0.42;
 const DEFAULT_MAX_DEPTH = 24;
 const DEFAULT_CELL_ASPECT = 2;
-const DEFAULT_FOG_K = 0.28;
+const DEFAULT_FOG_K = 0.14;
 const DEFAULT_DETAIL = true;
 
 /** Scale an RGB triple by a factor (returns a new array). */
@@ -149,10 +152,13 @@ export function renderFirstPerson(
   // the ceiling/floor passes so a wall cell is never overwritten by them).
   const wallTop = new Float32Array(cols);
   const wallBot = new Float32Array(cols);
-  // Previous column's hit cell and side, for vertical corner-line detection.
-  let prevX = -1;
-  let prevY = -1;
+  // Previous column's hit side and perpendicular depth, for the corner-line
+  // rule: a real corner is only where the hit **face** changes (N/S ↔ E/W) or
+  // the perpendicular distance jumps by more than 0.5 cells between adjacent
+  // columns. Same-face same-depth transitions across a flat wall's cell seams
+  // must NOT fire (that lit the wall like a row of pillars).
   let prevSide = -1;
+  let prevPerpDist = 0;
   let prevHadWall = false;
 
   // --- wall pass: one DDA ray per column ---
@@ -228,8 +234,9 @@ export function renderFirstPerson(
       wallBot[c] = bot;
       const faceFactor = side === 0 ? 0.7 : 1.0; // E/W face at 70 %, N/S at 100 %
       const isCorner =
-        detail && c > 0 && (!prevHadWall || hitX !== prevX || hitY !== prevY || side !== prevSide);
+        detail && c > 0 && prevHadWall && (side !== prevSide || Math.abs(d - prevPerpDist) > 0.5);
       const atten = Math.exp(-fogK * d);
+      const edgeAtten = Math.exp(-0.5 * fogK * d); // absolute lines fade at half strength
       // face-fraction u across the hit face (0 at one edge, 1 at the other)
       const u = detail ? (side === 0 ? posY + d * rdy : posX + d * rdx) : 0;
       const uFrac = u - Math.floor(u);
@@ -275,15 +282,15 @@ export function renderFirstPerson(
               g = baseColor[1] * factor * atten;
               b = baseColor[2] * factor * atten;
             }
-            // Edge lines are absolute brightness (not fogged) so silhouettes read
-            // at distance; top edge is brightest, then corner columns, then the
-            // bottom contact row.
-            if (y === y0) r = g = b = EDGE_TOP;
-            else if (isCorner) r = g = b = EDGE_CORNER;
-            else if (y === y1) r = g = b = EDGE_BOT;
+            // Edge lines are absolute brightness fogged at half strength so
+            // silhouettes read at distance but don't glow at any depth; top
+            // edge is brightest, then corner columns, then the bottom contact.
+            if (y === y0) r = g = b = EDGE_TOP * edgeAtten;
+            else if (isCorner) r = g = b = EDGE_CORNER * edgeAtten;
+            else if (y === y1) r = g = b = EDGE_BOT * edgeAtten;
           } else if (hitKind === 'door_closed') {
             if (uFrac < 0.12 || uFrac > 0.88) {
-              r = g = b = EDGE_POST; // wall-coloured frame posts, absolute
+              r = g = b = EDGE_POST * edgeAtten; // wall-coloured frame posts, half-fog
             } else {
               const p = plankShade(uFrac);
               if (p === MORTAR) {
@@ -307,7 +314,7 @@ export function renderFirstPerson(
             g = baseColor[1] * factor * atten;
             b = baseColor[2] * factor * atten;
             if (hitKind === 'stone' && y === y0) {
-              r = g = b = EDGE_TOP; // known rock: flat grey with only the top edge line
+              r = g = b = EDGE_TOP * edgeAtten; // known rock: flat grey with only the top edge line
             }
           }
           fb.rgb[i] = r;
@@ -320,9 +327,8 @@ export function renderFirstPerson(
       wallTop[c] = horizon;
       wallBot[c] = horizon;
     }
-    prevX = hitX;
-    prevY = hitY;
     prevSide = side;
+    prevPerpDist = hitKind !== null ? Math.min(side === 0 ? sideDistX - deltaX : sideDistY - deltaY, maxDepth) : 0;
     prevHadWall = hitKind !== null;
   }
 
@@ -373,6 +379,7 @@ export function renderFirstPerson(
     let fX = posX + rowDist * (dirX - planeX);
     let fY = posY + rowDist * (dirY - planeY);
     const atten = Math.exp(-fogK * rowDist);
+    const edgeAtten = Math.exp(-0.5 * fogK * rowDist); // half-strength fog for absolute lines
     for (let x = 0; x < cols; x++) {
       if (y >= wallBot[x]!) {
         const kind = level.kindAt(Math.floor(fX), Math.floor(fY));
@@ -382,25 +389,26 @@ export function renderFirstPerson(
         let b: number;
         if (detail && (kind === 'doorway' || kind === 'door_open')) {
           // the doorway threshold reads as a wall-framed opening, not a gap in
-          // the floor colour: outer 0.12 of the cell is a bright frame post,
-          // the middle stays the passable door colour
+          // the floor colour: outer 0.12 of the cell is a bright frame post
+          // (half-fog so it fades with distance), the middle stays the passable
+          // door colour
           const fx = fX - Math.floor(fX);
           const fy = fY - Math.floor(fY);
           if (fx < 0.12 || fx > 0.88 || fy < 0.12 || fy > 0.88) {
-            r = g = b = EDGE_POST;
+            r = g = b = EDGE_POST * edgeAtten;
           } else {
             r = base[0] * atten;
             g = base[1] * atten;
             b = base[2] * atten;
           }
         } else if (detail && kind === 'floor') {
-          // flagstone floor: dark stone with a converging perspective grid. The
-          // grid lines at cell edges are absolute brightness so they read as
-          // the converging lines, not as a multiplier of the already-dark stone.
+          // flagstone floor: dark stone with a converging perspective grid.
+          // The grid lines at cell edges are absolute brightness (half-fog) so
+          // they read as the converging lines and still fade with distance.
           const fx = fX - Math.floor(fX);
           const fy = fY - Math.floor(fY);
           if (Math.min(fx, 1 - fx) < 0.05 || Math.min(fy, 1 - fy) < 0.05) {
-            r = g = b = EDGE_GRID;
+            r = g = b = EDGE_GRID * edgeAtten;
           } else {
             const tex = floorShade(fX, fY);
             r = base[0] * tex * atten;
