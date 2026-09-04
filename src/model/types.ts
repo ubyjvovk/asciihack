@@ -100,6 +100,11 @@ export interface MapCell {
   terrain: GlyphInfo | null;
   /** What NetHack currently displays here (may be a monster or object), or null if never printed. */
   top: GlyphInfo | null;
+  /**
+   * Whether the remembered terrain was seen lit (`S_room`, `S_litcorr`) or
+   * dark (`S_darkroom`, `S_corr`); undefined when unknown or not applicable.
+   */
+  lit?: boolean;
 }
 
 /** Read-only view of a level for renderers. Out-of-range coordinates report `unexplored` / null. */
