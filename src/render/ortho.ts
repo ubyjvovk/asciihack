@@ -52,6 +52,13 @@ const SEAM_ABS = 0.3; // floor diamond seams
 const DOOR_POST = 0.7; // wall post cells flanking a doorway / open door
 /** Faces fade with this fog; rims within this Chebyshev distance stay crisp. */
 const NEAR_CRISP = 3;
+/**
+ * The unexplored lattice fades with this gentle coefficient (default 0.015),
+ * not the floor's 0.06 fog: a hint of distance across the viewport while a
+ * seam at the far edge still clears the quantizer's black point so the room
+ * never floats (docs/render.md "Look").
+ */
+const LATTICE_FOG_K = 0.015;
 
 /** Clamp `v` to [lo, hi]. */
 function clamp(v: number, lo: number, hi: number): number {
@@ -183,11 +190,14 @@ export function renderOrtho(
         // outside the 80×21 map, so the whole viewport shows the lattice). The
         // seams sit at 0.09 absolute so they survive the quantizer's black
         // point (0.09·1.7 ≈ 0.153 > 0.10 after the exposure curve) — at the old
-        // 0.05 they quantized to space and the room floated in pure black again.
+        // 0.05 they quantized to space and the room floated in pure black
+        // again. They fade with the gentle 0.015 coefficient (not the floor's
+        // 0.06 fog) so a seam at the far edge still clears the black point.
+        const latten = Math.exp(-LATTICE_FOG_K * dist);
         if (isNearEdge(X, Y)) {
-          fb.rgb[o] = 0.09 * atten;
-          fb.rgb[o + 1] = 0.09 * atten;
-          fb.rgb[o + 2] = 0.09 * atten;
+          fb.rgb[o] = 0.09 * latten;
+          fb.rgb[o + 1] = 0.09 * latten;
+          fb.rgb[o + 2] = 0.09 * latten;
         } else {
           fb.rgb[o] = 0;
           fb.rgb[o + 1] = 0;

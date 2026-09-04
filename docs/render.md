@@ -320,8 +320,10 @@ the block's bottom contact line `0.25`. Floor tiles: base from
 stones carry the variation); corridors `KIND_COLORS.corridor`, no seams.
 Doorway / open door tiles: floor in the door colour with the two post cells at
 `0.70`. Unexplored lattice `0.09` absolute (see "The unknown", raised from
-`0.05` so it clears the quantizer's black point); fog `exp(−0.06·dist)` applied
-to faces and floor but not to rims within 3 cells of the hero (near edges
+`0.05` so it clears the quantizer's black point); the lattice fades with its
+own gentle `exp(−0.015·dist)` (not the floor's 0.06 fog) so a seam at the far
+edge of the viewport still reads; faces and floor fade with `exp(−0.06·dist)`
+applied but not to rims within 3 cells of the hero (near edges
 stay crisp), then normally beyond. Cutaway ghost blocks keep their 0.35 factor
 applied to these levels.
 
