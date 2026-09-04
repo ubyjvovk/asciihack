@@ -4,12 +4,14 @@ Play real **NetHack 5.0** in your terminal, rendered as coloured ASCII: a
 first-person view in the style of [AsciiCity](https://github.com/ubyjvovk/asciicity),
 an isometric view, and the classic map. Works locally and over ssh.
 
-![First-person view of the starting room: brick walls in perspective, the
-stairs, the kitten, the compass ribbon and the minimap](docs/screenshot-fps.png)
+![First-person view of the starting room in the amber look: dark stone
+walls with bright edges, a flagstone floor, the pet dog drawn from its
+NetHack tile as a cluster of d's, the compass ribbon and the minimap](docs/screenshot-fps.png)
 
-*The starting room, facing west. Top: message line and compass ribbon.
-Top-right: minimap with the hero as a facing arrow. Bottom: NetHack's
-status lines.*
+*The starting room, facing north-east, default amber look. The dog is
+NetHack's own 16×16 tile art projected onto its letter. Top: message line
+and compass ribbon. Top-right: minimap with the hero as a facing arrow.
+Bottom: NetHack's status lines.*
 
 ![Isometric view of the same room: raised brick walls with lit tops and
 shaded faces, the hero and the kitten as figures, a faint lattice over
