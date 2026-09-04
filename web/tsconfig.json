@@ -3,13 +3,18 @@
   "compilerOptions": {
     "lib": ["ES2022", "DOM"],
     "types": [],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
     "rootDir": "..",
-    "outDir": "../dist-web-ts"
+    "outDir": "../dist-web-ts",
+    "skipLibCheck": true,
+    "noUncheckedIndexedAccess": false
   },
   "include": [
     "src/main.ts",
     "src/dom-term.ts",
     "src/ws-bridge.ts",
+    "src/gl/**/*.ts",
     "../src/engine/session.ts",
     "../src/engine/transport.ts",
     "../src/engine/protocol.ts",

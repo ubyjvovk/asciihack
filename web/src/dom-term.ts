@@ -104,6 +104,16 @@ export class DomTerm implements TermIO {
     return this._rows;
   }
 
+  /** CSS-pixel width of one terminal cell (from the constructor options). */
+  get cellWidth(): number {
+    return this.cellW;
+  }
+
+  /** CSS-pixel height of one terminal cell (from the constructor options). */
+  get cellHeight(): number {
+    return this.cellH;
+  }
+
   onResize(cb: () => void): void {
     this.resizeCbs.push(cb);
   }
