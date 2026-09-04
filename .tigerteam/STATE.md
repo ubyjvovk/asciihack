@@ -73,6 +73,11 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   before the first ticket.
 
 ## Board snapshot
+- 2026-09-04 05:20 — T-0031 accepted after one rework: the browser now
+  renders the three.js dungeon through AsciiCity's amber shader (verified
+  headless with SwiftShader; page + canvas screenshots). 31 done. Queued:
+  T-0032 (browser ortho camera, + F5 repaint nit). Manual `worker run`
+  for the claude engine fails here (see memory); rely on supervisor spawns.
 - 2026-09-04 04:30 — T-0029 (raycaster tidy) and T-0027 (ortho look; PM
   resolved the golden conflict by regenerating on master) accepted; 30
   done. README screenshots refreshed in the amber look. Running: T-0031
