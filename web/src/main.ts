@@ -4,22 +4,23 @@
  * `/play` (proxied by Vite to the WS server), wires a `NethackSession` +
  * `App` to the DOM terminal, and starts the fps mode by default.
  *
- * When `mode=fps` (or `ortho`), the three.js `GlViewport` (T-0031) is
- * mounted under the DOM terminal's viewport rectangle and renders the
- * dungeon through AsciiCity's shader styles; `F5` cycles them. The `<pre>`
- * HUD (message line, status, minimap, compass) still paints on top; a
- * follow-up ticket will make the fps/ortho modes paint transparent cells
- * inside the viewport so the WebGL scene shows through.
+ * When `mode=fps` (or `ortho`), the three.js `GlViewport` (T-0031/T-0032)
+ * is mounted under the DOM terminal's viewport rectangle and renders the
+ * dungeon through AsciiCity's shader styles; `F5` cycles them, `F2`/`F3`
+ * switch between the first-person and 3/4 overhead ortho camera. Both key
+ * bindings mark the viewport dirty immediately so the next rAF paints the
+ * change without waiting for a game event.
  */
 import { NethackSession, runSession } from '../../src/engine/session.js';
 import { App } from '../../src/ui/app.js';
 import { FpsMode } from '../../src/ui/modes/fps.js';
-import { poseFor, spritesFromMap, type Facing } from '../../src/ui/view3d.js';
+import { poseFor, spritesFromMap } from '../../src/ui/view3d.js';
 import type { Theme } from '../../src/render/themes.js';
 import { DEFAULT_SETTINGS, type Settings } from '../../src/ui/settings.js';
 import { DomTerm } from './dom-term.js';
 import { WsBridge } from './ws-bridge.js';
 import { GlViewport } from './gl/gl-viewport.js';
+import { HERO_SPRITE_HEIGHT } from './gl/ortho-camera.js';
 
 /** Character-name rule from `bin/asciihack-lib.sh` — mirrored server-side. */
 const NAME_RE = /^[A-Za-z0-9_-]{1,20}$/;
@@ -89,22 +90,39 @@ function boot(): void {
     externalViewport: gl !== null,
   });
   if (gl !== null) {
-    // Capture F5 before it reaches the App's theme cycle so the same key
-    // controls the shader style in the browser.
+    gl.setView(opts.mode === 'ortho' ? 'ortho' : 'fps');
+    // Debug handle so the PM can diagnose the viewport from the page console:
+    // `window.__asciihack.gl.debugInfo()` (plain numbers, see gl-viewport.ts).
+    (window as unknown as { __asciihack: { gl: GlViewport } }).__asciihack = { gl };
+    const loop = createRenderLoop(gl, session, app);
+    // Capture F5 (style cycle) and F2/F3 (view switch) at the document level
+    // so the WebGL viewport reacts before the App consumes them, and mark the
+    // loop dirty so the next rAF repaints without waiting for a session event
+    // (T-0032 fix for the T-0031 nit).
     document.addEventListener('keydown', (ev) => {
-      if (ev.key !== 'F5') return;
-      const step = ev.shiftKey ? -1 : 1;
-      gl.cycleStyle(step);
-      ev.preventDefault();
-      ev.stopPropagation();
+      if (ev.key === 'F5') {
+        const step = ev.shiftKey ? -1 : 1;
+        gl.cycleStyle(step);
+        loop.mark();
+        ev.preventDefault();
+        ev.stopPropagation();
+        return;
+      }
+      if (ev.key === 'F3') {
+        gl.setView('ortho');
+        loop.mark();
+        return;
+      }
+      if (ev.key === 'F2') {
+        gl.setView('fps');
+        loop.mark();
+        return;
+      }
     }, { capture: true });
     placeGl(gl, term);
     const relayout = (): void => placeGl(gl, term);
     const glResizeObserver = new ResizeObserver(relayout);
     glResizeObserver.observe(host);
-    // Drive a rAF loop that only asks three.js to render when there is
-    // something to show (the session's map, hero or facing changed).
-    startRenderLoop(gl, session, app);
   }
 
   socket.addEventListener('open', () => {
@@ -137,12 +155,19 @@ function placeGl(gl: GlViewport, term: DomTerm): void {
   gl.resize(cols, rows, cw, ch);
 }
 
+/** Handle returned by `createRenderLoop`; `mark()` forces the next rAF to
+ *  render even without a session event (used by F5/F2/F3 in `boot`). */
+interface RenderLoop {
+  mark(): void;
+}
+
 /**
- * Frame loop: renders whenever the session announces a change or the fps
- * mode is animating a turn. `requestAnimationFrame` is throttled to the
- * browser's refresh rate; when nothing changes we skip the GL call entirely.
+ * Frame loop: renders whenever the session announces a change, the fps mode
+ * is animating a turn, or a caller `mark()`s the loop dirty (view/style
+ * switch). `requestAnimationFrame` is throttled to the browser's refresh
+ * rate; when nothing changes we skip the GL call entirely.
  */
-function startRenderLoop(gl: GlViewport, session: NethackSession, app: App): void {
+function createRenderLoop(gl: GlViewport, session: NethackSession, app: App): RenderLoop {
   let dirty = true;
   const mark = (): void => { dirty = true; };
   session.on('change', mark);
@@ -157,6 +182,7 @@ function startRenderLoop(gl: GlViewport, session: NethackSession, app: App): voi
     requestAnimationFrame(raf);
   };
   requestAnimationFrame(raf);
+  return { mark };
 }
 
 /** Read the active fps mode (if the App is in fps), or null. */
@@ -166,16 +192,26 @@ function getFps(app: App): FpsMode | null {
   return app.activeMode as unknown as FpsMode;
 }
 
-/** Snapshot the session/pose/sprites and hand them to the GL viewport. */
+/** Snapshot the session/pose/sprites and hand them to the GL viewport. In
+ *  ortho the hero is drawn as an `@` sprite (see `gl-viewport.ts`); in fps
+ *  it stays invisible (the camera is at the hero cell). */
 function renderFrame(gl: GlViewport, session: NethackSession, app: App): void {
   const hero = session.hero;
   if (hero === null) return;
   const fps = getFps(app);
-  const facing: Facing | null = fps ? fps.currentFacing : null;
   const yaw = fps ? fps.currentYaw : 0;
   const vFovDeg = fps ? fps.vFovDeg : 60;
   const pose = poseFor(hero, yaw);
-  const sprites = spritesFromMap(session, hero, facing === null);
+  const includeHero = gl.currentView === 'ortho';
+  const sprites = spritesFromMap(session, hero, includeHero);
+  if (includeHero) {
+    const heroIdx = sprites.findIndex((s) => s.x === hero.x && s.y === hero.y);
+    if (heroIdx >= 0) {
+      // Pin the hero sprite to the standard billboard height so the ortho
+      // frustum sizing (7 × height) leaves the hero at ≈ 1/7 of the viewport.
+      sprites[heroIdx] = { ...sprites[heroIdx]!, height: HERO_SPRITE_HEIGHT };
+    }
+  }
   gl.render(session.map, pose, sprites, vFovDeg);
 }
 

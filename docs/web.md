@@ -280,27 +280,88 @@ before the App sees it (the App also uses `F5` for its terminal-theme
 cycle — that still happens, since the DOM terminal is what the HUD
 paints into).
 
+### Ortho view
+
+`GlViewport.setView('fps' | 'ortho')` swaps between the first-person
+perspective camera and a 3/4 overhead `OrthographicCamera` — the
+"Diablo/Fallout" view of the same three.js scene. `F3` in the browser
+selects ortho, `F2` returns to fps; both key bindings mark the render
+loop dirty immediately (fixes the T-0031 nit where `F5` needed a game
+event before the change showed). `main.ts` intercepts F5/F2/F3 at the
+document level in the capture phase so the viewport reacts before the
+App consumes them.
+
+The maths lives in `web/src/gl/ortho-camera.ts`. `placeOrthoCamera(cam,
+hero, cols, rows, cellAspect)` positions the camera at azimuth 225°
+(NW of the hero cell centre) and elevation 35° above the horizon, and
+sizes the frustum so `viewHeight = 7 · HERO_SPRITE_HEIGHT` world units
+(the hero fills ≈ 1/7 of the viewport height), with width = height ·
+`cols / (rows · cellAspect)`. The DOM terminal's cells are twice as
+tall as wide, so `cellAspect = 2`; the arithmetic returns plain numbers
+(`orthoPlacement`) so the tests assert positions and frustum sides
+without WebGL. The frustum is `near = 0.1`, `far = 200` (a modest far
+plane keeps depth-based styles from going black across the ortho box).
+
+**Per-view fog.** The exponential scene fog must be weaker in ortho than
+in fps: the fps camera sits at the hero cell (depths 1–10, so density
+`0.10` just fades the far corridor), but the ortho camera is ~40 cells
+away, where density `0.10` gives a fog factor of ≈ 1 and blackens the
+whole frame. `setView` therefore switches `scene.fog.density` between
+`FPS_FOG_DENSITY = 0.10` and `ORTHO_FOG_DENSITY = 0.01`, so the 3/4 view
+keeps only a faint depth cue instead of vanishing.
+
+**Debug handle.** When the GL viewport is mounted, `main.ts` exposes
+`window.__asciihack = { gl }`; calling `gl.debugInfo()` returns a
+plain-number snapshot (`view`, the active `camera`'s `type`/`position`/
+`target`/`near`/`far`/frustum sides, `meshes.walls/floors/sprites`,
+`styleId`) for diagnosing camera or frustum issues from the page
+console.
+
+The hero is invisible in fps (the camera sits at the hero cell) and
+visible in ortho: `renderFrame` includes it in the sprite list and pins
+its height to `HERO_SPRITE_HEIGHT`. `tiles.json` does not carry the
+player role's tile on every build, so the hero sprite falls back to a
+generated `@` canvas texture (lazy, cached), tinted with the sprite's
+palette colour.
+
+**Cutaway.** Walls strictly in front of the hero (greater `x + y`) and
+within 2 cells on each axis — the same rule as the terminal ortho
+(`src/render/ortho.ts:isCutaway`) — swap for a translucent ghost cube
+(`opacity: 0.35`, `depthWrite: false`) so the hero stays visible
+through them. `applyCutaway` collapses the corresponding wall
+`InstancedMesh` instances to zero scale and mirrors them into a
+separate `cutawayMesh` with the ghost material; the swap is memoised
+on `hero cell + wall count` so we only touch GPU state when something
+actually changed. `cutawayCellsFor(hero)` is pure and returns the set
+of cell keys.
+
+The compass rose is still painted by `OrthoMode` into the DOM
+terminal's viewport rectangle (the terminal-ortho "W N / + / S E"
+layout at the top-left); the ortho GL scene shows through the
+transparent viewport cells underneath it.
+
 ### The frame loop
 
 `requestAnimationFrame` drives the render loop, but three.js is only
 invoked when there is something new to draw: the session emits `change`
-or `request` (map, hero, pending prompt), or the fps mode is animating
-a turn (`FpsMode.isTurning`). Idle frames skip WebGL entirely, so a
-paused game costs zero GPU work. Every frame that does render calls
+or `request` (map, hero, pending prompt), the fps mode is animating a
+turn (`FpsMode.isTurning`), or a caller marks the loop dirty (F5/F2/F3
+in `main.ts`). Idle frames skip WebGL entirely, so a paused game costs
+zero GPU work. Every frame that does render calls
 `SceneBuilder.refresh(level)` (rebuilds only when the kind grid
 changed), `updateSprites(spritesFromMap(session, hero, …))`, positions
-the camera, then hands the scene + camera to `StyleRenderer.render`
+the active camera, then hands the scene + camera to `StyleRenderer.render`
 which renders into the low-res target and paints the style quad to the
 canvas.
 
 `resize(cols, rows, cellW, cellH)` runs on start and on every DOM-side
-resize (a `ResizeObserver` on `#term`); it recomputes the canvas size
-and the low-res scene target and updates the camera aspect.
+resize (a `ResizeObserver` on `#term`); it recomputes the canvas size,
+the low-res scene target and the perspective camera aspect (the ortho
+frustum is derived from `cols × rows × cellAspect` on every ortho
+frame).
 
 ## Coming next
 
-- **T-0032** — ortho camera on top of the three.js scene (uses the
-  same `SceneBuilder`).
 - **T-0033 (later)** — WASM transport for static hosting: an emscripten
   build of `libnethack.a` replaces the WS server so the page runs
   standalone.
