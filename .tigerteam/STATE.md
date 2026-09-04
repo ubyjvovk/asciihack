@@ -73,6 +73,12 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   before the first ticket.
 
 ## Board snapshot
+- 2026-09-04 06:40 — T-0032 (browser ortho camera; one rework: per-view
+  fog, debug handle `window.__asciihack.gl.debugInfo()`), T-0033 (lattice
+  fade + docs), T-0034 (lit/dark rooms) accepted; **34 done, board empty**.
+  Browser wave complete for the thin-client transport. Open decisions for
+  the user: static WASM build for GitHub-Pages hosting; deploying the ws
+  server + ssh on a host; what next.
 - 2026-09-04 05:20 — T-0031 accepted after one rework: the browser now
   renders the three.js dungeon through AsciiCity's amber shader (verified
   headless with SwiftShader; page + canvas screenshots). 31 done. Queued:
