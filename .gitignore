@@ -8,3 +8,4 @@ build/
 .tigerteam/artifacts/
 .tigerteam/digests/
 .cache/
+dist-web/
