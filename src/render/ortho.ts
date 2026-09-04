@@ -3,7 +3,10 @@
  * projection locked by ticket T-0021). Pure and deterministic: fills a
  * `FrameBuffer` with a zoomable 2:1 isometric view of the remembered level,
  * centred on the hero, exactly like the raycaster so the same quantizer and
- * screen writer show it.
+ * screen writer show it. The look follows the first-person readable grammar
+ * (docs/render.md "Look"): dark block faces that quantize to sparse glyphs,
+ * bright top rims and corner lines at absolute brightness, dark seams, and
+ * distance fog that leaves near edges crisp.
  *
  * Projection: a map point (X, Y) (x east, y south) hits the screen column
  * `c = ox + 2k·(X − Y)` and row `r = oy + k·(X + Y)`. The image of each unit
@@ -16,7 +19,7 @@
  */
 import { isSolid, type CellKind, type FrameBuffer, type LevelView, type Sprite } from '../model/types.js';
 import { KIND_COLORS } from './raycast.js';
-import { brickShade } from './texture.js';
+import { brickShade, floorShade, MORTAR } from './texture.js';
 
 /** Screen-space origin of the isometric projection (also carries the zoom). */
 export interface Origin {
@@ -32,11 +35,23 @@ export interface Origin {
 export interface OrthoOptions {
   /** Explicit zoom factor `k` (default `clamp(round(rows/28), 1, 6)`). */
   zoom?: number;
-  /** Fog attenuation coefficient over Chebyshev distance from the hero (default 0.04). */
+  /** Fog attenuation coefficient over Chebyshev distance from the hero (default 0.06). */
   fogK?: number;
 }
 
-const DEFAULT_FOG_K = 0.04;
+const DEFAULT_FOG_K = 0.06;
+
+/** Absolute linear-RGB levels for the readable look (docs/render.md "Look"). */
+const FACE_TOP = 0.16; // flat dark lid over every block's top face
+const RIM_NEAR = 0.75; // upper two edges of the top face
+const RIM_FAR = 0.45; // lower two edges of the top face
+const EDGE_CORNER = 0.55; // vertical corner between the two side faces
+const EDGE_BOT = 0.25; // the block's bottom contact line
+const MORTAR_ABS = 0.05; // brick mortar, same absolute level as the raycaster
+const SEAM_ABS = 0.3; // floor diamond seams
+const DOOR_POST = 0.7; // wall post cells flanking a doorway / open door
+/** Faces fade with this fog; rims within this Chebyshev distance stay crisp. */
+const NEAR_CRISP = 3;
 
 /** Clamp `v` to [lo, hi]. */
 function clamp(v: number, lo: number, hi: number): number {
@@ -112,6 +127,22 @@ export function renderOrtho(
   const spriteByCell = new Map<string, Sprite>();
   for (const s of sprites) spriteByCell.set(`${s.x},${s.y}`, s);
 
+  // --- doorway posts: the wall cells flanking a doorway / open door ---
+  // A doorway is a floor tile in the door colour; its two post cells (the
+  // wall cells west and east of it) paint at the absolute 0.70 level so the
+  // opening reads as framed, like the raycaster's frame posts.
+  const postCells = new Set<string>();
+  for (let y = 0; y < level.height; y++) {
+    for (let x = 0; x < level.width; x++) {
+      const kd = level.kindAt(x, y);
+      if (kd !== 'doorway' && kd !== 'door_open') continue;
+      for (const px of [x - 1, x + 1]) {
+        const kp = level.kindAt(px, y);
+        if (isSolid(kp) && kp !== 'unexplored') postCells.add(`${px},${y}`);
+      }
+    }
+  }
+
   // --- cutaway: a wall stands between the camera and a nearby figure ---
   // A wall is "in front of" a figure when its x+y exceeds the figure's and it
   // is within 2 cells of it in both axes; walls in front of the hero (or of a
@@ -145,14 +176,18 @@ export function renderOrtho(
       const kind = level.kindAt(x, y);
       const i = r * cols + c;
       const o = i * 3;
-      const atten = Math.exp(-fogK * Math.max(Math.abs(x - hx), Math.abs(y - hy)));
+      const dist = Math.max(Math.abs(x - hx), Math.abs(y - hy));
+      const atten = Math.exp(-fogK * dist);
       if (kind === 'unexplored') {
         // the unknown: pure black with faint diamond lattice seams (also covers
-        // outside the 80×21 map, so the whole viewport shows the lattice)
+        // outside the 80×21 map, so the whole viewport shows the lattice). The
+        // seams sit at 0.09 absolute so they survive the quantizer's black
+        // point (0.09·1.7 ≈ 0.153 > 0.10 after the exposure curve) — at the old
+        // 0.05 they quantized to space and the room floated in pure black again.
         if (isNearEdge(X, Y)) {
-          fb.rgb[o] = 0.05 * atten;
-          fb.rgb[o + 1] = 0.05 * atten;
-          fb.rgb[o + 2] = 0.07 * atten;
+          fb.rgb[o] = 0.09 * atten;
+          fb.rgb[o + 1] = 0.09 * atten;
+          fb.rgb[o + 2] = 0.09 * atten;
         } else {
           fb.rgb[o] = 0;
           fb.rgb[o + 1] = 0;
@@ -161,13 +196,26 @@ export function renderOrtho(
         continue;
       }
       if (isSolid(kind)) continue; // painted as a block by the wall pass
-      const base = KIND_COLORS[kind];
-      let shade = 1;
-      if (isNearEdge(X, Y)) shade = 0.6; // tile seam
-      else if (kind !== 'corridor' && (x + y) % 2 === 1) shade = 0.92; // checker
-      fb.rgb[o] = base[0] * shade * atten;
-      fb.rgb[o + 1] = base[1] * shade * atten;
-      fb.rgb[o + 2] = base[2] * shade * atten;
+      if (kind === 'floor' || kind === 'doorway' || kind === 'door_open') {
+        // flagstone floor: stones ±20 % from `floorShade`, diamond seams at an
+        // absolute 0.30 so they read instead of fading with the dark base.
+        const base = kind === 'floor' ? KIND_COLORS[kind] : KIND_COLORS.door_open;
+        if (isNearEdge(X, Y)) {
+          fb.rgb[o] = SEAM_ABS * atten;
+          fb.rgb[o + 1] = SEAM_ABS * atten;
+          fb.rgb[o + 2] = SEAM_ABS * atten;
+        } else {
+          const tex = floorShade(X, Y);
+          fb.rgb[o] = base[0] * tex * atten;
+          fb.rgb[o + 1] = base[1] * tex * atten;
+          fb.rgb[o + 2] = base[2] * tex * atten;
+        }
+      } else {
+        const base = KIND_COLORS[kind];
+        fb.rgb[o] = base[0] * atten;
+        fb.rgb[o + 1] = base[1] * atten;
+        fb.rgb[o + 2] = base[2] * atten;
+      }
       fb.depth[i] = x + y;
     }
   }
@@ -189,18 +237,23 @@ export function renderOrtho(
     const rBot = sy + k;
     if (rBot < 0 || rTop >= rows) return; // off-screen vertically
     const base = KIND_COLORS[kind];
-    const atten = Math.exp(-fogK * Math.max(Math.abs(x - hx), Math.abs(y - hy)));
+    const dist = Math.max(Math.abs(x - hx), Math.abs(y - hy));
+    const atten = Math.exp(-fogK * dist);
+    // Rims within 3 cells of the hero stay crisp (no fog fade); beyond that
+    // they fade like the faces so distant blocks still read through the fog.
+    const near = dist <= NEAR_CRISP;
+    const rimAtten = near ? 1 : atten;
     const depthVal = x + y;
     const seed = y * 80 + x;
     const useBrick = kind === 'wall';
     const cutaway = isCutaway(x, y);
-    const setBlockCell = (c: number, r: number, f: number): void => {
+    const setBlockCell = (c: number, r: number, rr: number, gg: number, bb: number): void => {
       const i = r * cols + c;
       const o = i * 3;
-      const mult = (cutaway ? 0.35 : 1) * f * atten;
-      fb.rgb[o] = base[0] * mult;
-      fb.rgb[o + 1] = base[1] * mult;
-      fb.rgb[o + 2] = base[2] * mult;
+      const ghost = cutaway ? 0.35 : 1;
+      fb.rgb[o] = rr * ghost;
+      fb.rgb[o + 1] = gg * ghost;
+      fb.rgb[o + 2] = bb * ghost;
       fb.depth[i] = depthVal;
       if (cutaway && fb.overlayCh[i] !== 0) {
         // an already-drawn figure letter: keep it, dimmed (x-ray through the ghost wall)
@@ -214,34 +267,82 @@ export function renderOrtho(
         fb.overlayRgb[o + 2] = 0;
       }
     };
+    const sideBotOf = (c: number): number => {
+      const gap = Math.abs(c - sx);
+      return Math.floor(sy + (2 * k - gap) / 2);
+    };
+    // Upper/lower boundary rows of the *lid* (the base diamond shifted up h).
+    // lidTopOf uses the same -k apex the wall pass below uses for the faces
+    // (sy - k at gap 0), so the lid's top row is the true diamond edge; the
+    // side faces hang below the lid's bottom row.
+    const lidTopOf = (c: number): number => Math.ceil(sy - k + Math.abs(c - sx) / 2 - h);
+    const lidBotOf = (c: number): number => sideBotOf(c) - h;
+    // Paint one side-face cell: the vertical corner column and the bottom
+    // contact line at absolute brightness, the body as the (fogged) base.
+    // Precedence is top rim > corner > contact > body, like the raycaster:
+    // the corner wins over contact except at the two bottom diamond tips.
+    // Doorway posts paint entirely at the absolute 0.70 level instead.
+    const isPost = postCells.has(`${x},${y}`);
+    const paintFace = (c: number, r: number, bot: number, f: number): void => {
+      const atBottomTip = r === bot && (c === sx - 2 * k + 1 || c === sx + 2 * k - 1);
+      if (isPost) {
+        const v = DOOR_POST * rimAtten;
+        setBlockCell(c, r, v, v, v);
+      } else if (c === sx && !atBottomTip) {
+        // the vertical corner between the two faces, absolute brightness
+        const v = EDGE_CORNER * rimAtten;
+        setBlockCell(c, r, v, v, v);
+      } else if (r === bot) {
+        // the block's bottom contact line, absolute brightness
+        const v = EDGE_BOT * rimAtten;
+        setBlockCell(c, r, v, v, v);
+      } else {
+        const v = f * atten;
+        setBlockCell(c, r, base[0] * v, base[1] * v, base[2] * v);
+      }
+    };
     for (let c = cMin; c <= cMax; c++) {
       if (c < 0 || c >= cols) continue;
       const gap = Math.abs(c - sx);
-      const topBase = sy - k + gap / 2; // upper boundary of the base diamond at c
-      const botBase = sy + (2 * k - gap) / 2; // lower boundary of the base diamond at c
+      const botBase = sideBotOf(c); // lower boundary of the base diamond at c
       // top face = the base diamond shifted up h; side face = the wall below it.
-      const topTop = Math.ceil(topBase - h);
-      const topBot = Math.floor(botBase - h);
-      const sideBot = Math.floor(botBase);
-      for (let r = Math.max(0, topTop); r <= Math.min(rows - 1, topBot); r++) {
-        // rim: 1-cell lighter line on the upper two edges, 1-cell dark on the lower two
-        setBlockCell(c, r, r === topTop ? 1.2 : r === topBot ? 0.6 : 1.0);
+      // The lid keeps ONE row per diamond row: the lid's true diamond rows
+      // wantTop..wantBot (not the loop's ±1 footprint, which overshoots the
+      // diamond at the apex and smears the rim onto the neighbour tile).
+      // The side faces hang below the lid's bottom row.
+      const wantTop = lidTopOf(c);
+      const sideBot = botBase;
+      const r0 = Math.max(0, wantTop);
+      const r1 = Math.min(rows - 1, lidBotOf(c));
+      for (let r = r0; r <= r1; r++) {
+        // the top face's upper edge paints at the absolute 0.75, its lower
+        // edge at 0.45 (docs/render.md "Look"); the rows between are the
+        // dark 0.16 lid. Doorway posts keep 0.70 everywhere.
+        let v: number;
+        if (isPost) v = DOOR_POST * rimAtten;
+        else if (r === wantTop) v = RIM_NEAR * rimAtten;
+        else if (r === lidBotOf(c)) v = RIM_FAR * rimAtten;
+        else v = FACE_TOP * atten;
+        setBlockCell(c, r, v, v, v);
       }
-      for (let r = Math.max(0, topBot + 1); r <= Math.min(rows - 1, sideBot); r++) {
-        let f: number;
-        if (c === sx) {
-          f = 1.1; // the vertical corner between the two faces
-        } else {
+      for (let r = Math.max(0, lidBotOf(c) + 1); r <= Math.min(rows - 1, sideBot); r++) {
+        if (useBrick) {
+          // brick-textured wall: the body is base × face factor × brick
+          // (±0.03), the mortar seams paint at the absolute 0.05 level.
           const faceFactor = c < sx ? 0.55 : 0.75;
-          if (useBrick) {
-            const u = c < sx ? (c - (sx - 2 * k)) / (2 * k) : (c - sx) / (2 * k);
-            const v = (r - (botBase - h)) / h;
-            f = faceFactor * brickShade(u, v, seed);
+          const u = c < sx ? (c - (sx - 2 * k)) / (2 * k) : (c - sx) / (2 * k);
+          const v = (r - (botBase - h)) / h;
+          const tex = brickShade(u, v, seed);
+          if (tex === MORTAR) {
+            const m = MORTAR_ABS * atten;
+            setBlockCell(c, r, m, m, m);
           } else {
-            f = faceFactor;
+            paintFace(c, r, sideBot, faceFactor * tex);
           }
+        } else {
+          // stone, doors, tree, bars: flat faces, no texture
+          paintFace(c, r, sideBot, c < sx ? 0.55 : 0.75);
         }
-        setBlockCell(c, r, f);
       }
     }
   };
