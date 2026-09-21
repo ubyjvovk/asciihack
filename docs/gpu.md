@@ -136,6 +136,32 @@ mode on `high`**. `?q=` exists for slower machines.
 Workers cannot see a rendered frame and containers have no GPU. Every ticket
 in this wave is therefore verified by unit tests over the *pure* parts (node
 graph construction, mood tables, voxel geometry, size math) plus
-`npx tsc --noEmit`; the eyeball review is the PM's, on the host, with
-`scripts/web-shot.mjs` (ported from `~/afterburn/tools/shot.mjs`). A worker
-must say plainly in its report which claims it could not verify.
+`npx tsc --noEmit` and `npx tsc --noEmit -p web/tsconfig.json`. A worker must
+say plainly in its report which claims it could not verify.
+
+The eyeball review is the PM's, on the host, through two pieces of tooling
+that already exist (PM-owned; **not in any ticket's scope**):
+
+- **`/scene.html`** — `web/src/scene-bench.ts`, a standalone bench that mounts
+  `GlViewport` over a synthetic level (lit room, doorway, dark corridor,
+  both staircases) with **no WebSocket, no server and no NetHack**. Query:
+  `?pose=x,y,yawDeg`, `?render=<style>`, `?fov=`, `?view=fps|ortho`, and
+  whatever the viewport reads (`?gpu=`, `?q=`). Arrow keys/WASD walk, `[`/`]`
+  cycle styles. It sets `window.__ready` after the second frame and exposes
+  `window.__bench` (`viewport`, `setPose`, `debugInfo()`, `frames`).
+- **`scripts/web-shot.mjs`** — headless screenshot, ported from
+  `~/afterburn/tools/shot.mjs`. Playwright is deliberately **not** a
+  dependency: the script resolves it from `~/asciicity/node_modules` (or
+  `$PLAYWRIGHT_DIR`), with the browsers in `~/.cache/ms-playwright`.
+
+```sh
+npm run web:dev &                       # vite on 127.0.0.1:5173
+node scripts/web-shot.mjs "/scene.html?render=amber" shot.png --swiftshader
+node scripts/web-shot.mjs "/scene.html?gpu=raw&q=high" raw.png --gpu --strict
+```
+
+`--swiftshader` forces software GL (portable, no GPU needed); `--gpu` asks for
+the real device and is what the WebGPU path wants. The tool prints console
+errors, page errors, failed requests and `window.__bench.debugInfo()`, and
+`--strict` makes any of those a non-zero exit. Baseline "before" frame:
+`.tigerteam/shots/before-amber.png`.
