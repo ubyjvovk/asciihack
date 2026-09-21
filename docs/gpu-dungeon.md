@@ -69,27 +69,45 @@ lava `ember`, ice `crystalCold0`.
 
 Wetness had been doing double duty in T-0053's predecessor look: it darkened
 albedo *and* its sheen picked out flagstone edges. Removing it made stone
-dry — correct — but the amber quantiser noticed the floor's edge cue
-missing (measured on the amber ASCII output, same pose, before → after
-T-0053):
+dry — correct — but the amber quantiser saw its distinct-level count fall
+(measured on the amber ASCII output, same pose, before → after T-0053):
 
 |            | black  | mean | p95 | **levels** |
 |------------|--------|------|-----|-----------:|
 | wet stone  | 77.4 % | 10.4 | 62  | **148**    |
 | dry stone  | 74.7 % | 11.4 | 66  | **134**    |
 
-Brightness is fine; the 14 lost distinct levels are what mattered — that
-is exactly the resource the quantiser spends. T-0054 restores them in the
-geometry instead of by making things wet again: `bakeChunkCellBoxes` now
-constructs its `VoxelBuilder` with **`jitter: 0.08`** (per-box lightness
-`±8 %`) for every wall and floor stone box.
+T-0054 first tried to win those 14 levels back by raising the per-box
+lightness jitter in `bakeChunkCellBoxes` from `±4 %` to `±8 %`. It did
+**not** work: the level count moved from 134 to 135 on the amber output,
+essentially unchanged. Why, and why we kept the change anyway:
 
-`vendor/afterburn/docs/ART_BIBLE.md` §2 asks for **`±3–6 %`**, and we went
-above that band **deliberately**. Their range is tuned for surfaces with a
-wet sheen picking up the edges; dry stone here has to carry the readability
-on its own. The `bakeChunkCeilingBoxes` builder stays at `jitter: 0.03`
-(the ceiling sits above the eye, has no edge cue to lose, and its role is
-to darken the room from above without shimmering).
+- **Fine-grained diffuse jitter averages out inside an ASCII cell.** Boxes
+  are 0.125 m on a side; an ASCII cell covers many of them at every pose,
+  and once the quantiser downsamples the frame each cell reads the *mean*
+  brightness under it. Randomly-signed per-box lightness noise cancels on
+  average and cannot produce new distinct levels at the quantiser's grain.
+- **The cue T-0053 removed was specular, not diffuse.** The wet sheen
+  picked up flagstone edges as bright, directional highlights — those
+  survive the average because they are localised, not diffused. Diffuse
+  albedo jitter cannot stand in for a specular edge cue.
+
+**`jitter: 0.08` is kept**, but for its own sake (per-box variation is
+harmless and marginally more varied at close inspection), *not* because it
+"puts back the levels". The count is a rough diversity proxy the PM
+invented for T-0053; it is not a target worth distorting the art for, and
+on every other measure the dry look already **beats** the wet one
+(black 77.4 % → 74.7 %, mean 10.4 → 11.4, p95 62 → 66 — brighter, less
+crushed, more headroom at the top). No further tuning of brightness or
+saturation is planned to chase the level count.
+
+`vendor/afterburn/docs/ART_BIBLE.md` §2 asks for `±3–6 %`; `±8 %` is
+above that band. Their range is tuned for surfaces with a wet sheen
+picking up edges — with no sheen on dry stone the extra variation is
+inaudible at any reasonable distance, so the deviation is deliberate and
+costs nothing. The `bakeChunkCeilingBoxes` builder stays at `jitter: 0.03`
+(the ceiling sits above the eye, has no edge cue to lose either way, and
+its role is to darken the room from above without shimmering).
 
 ## Dry by default (T-0053)
 
