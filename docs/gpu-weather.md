@@ -1,19 +1,26 @@
 # Dungeon-air overlay (`web/src/gpu/weather.ts`)
 
-Companion note to `docs/gpu.md`. Owned by the T-0044 delivery. Ports
-`vendor/afterburn/src/render/weather.js` into a dungeon-shaped overlay: an
-independent `THREE.Scene` composited additively **after** the lighting stack
-by `createPipeline({ overlay })`, so transparent particle quads never touch
-the G-buffer that SSGI/SSR read (`docs/gpu-pipeline.md` "Pass order").
+Companion note to `docs/gpu.md`. Owned by the T-0044 delivery, adjusted by
+T-0055. Ports `vendor/afterburn/src/render/weather.js` into a dungeon-shaped
+overlay: an independent `THREE.Scene` composited additively **after** the
+lighting stack by `createPipeline({ overlay })`, so transparent particle quads
+never touch the G-buffer that SSGI/SSR read
+(`docs/gpu-pipeline.md` "Pass order").
 
-The look the ticket asks for:
+Three emitters exist in the machinery:
 
 - **drips** falling from the ceiling in wet rooms,
 - **dust motes** drifting in torchlight,
 - **embers** rising from a torch or lava.
 
-Empty air is what makes a dungeon feel like a place, so this overlay is the
-cheapest large gain in "does it feel like a place."
+**Every one is silent by default (T-0055).** Afterburn's overlay was tuned for
+an open valley in the rain; the ported motes and drips read as "particles all
+over" when the level is a sealed stone dungeon, so `createWeather()` allocates
+**zero** instances on every emitter unless the caller passes counts:
+`createWeather(W, { drips, motes, embers })` (see "Emit nothing by default"
+below). The mood plumbing, the tint uniforms and the overlay pass wiring all
+still exist, so a later ticket (embers over a lava pool; a monsoon room) is a
+single-number change, not a rebuild.
 
 ## Shape
 
@@ -25,20 +32,48 @@ One `InstancedMesh` per emitter, three total. Each mesh:
 - has `frustumCulled = false` — the wrap volume tracks the camera, so a
   three.js frustum test against the mesh's bounding sphere would clip the
   volume prematurely (see afterburn's original, which sets the same flag);
-- has a **pre-allocated** instance count fixed at construction:
+- has an instance count fixed at construction — **zero by default** (T-0055),
+  and otherwise whatever the caller passed in `CreateWeatherOptions`.
 
-| Emitter | Instance count | Wrap radius (cells) | Vertical extent (m) |
-|---|---:|---:|---:|
-| `drips`  | 400 | ±7 | 4.0 |
-| `motes`  | 560 | ±8 | 2.5 |
-| `embers` | 300 | ±5 | 2.5 |
+| Emitter | Default count | Afterburn-scale (opt-in) | Wrap radius (cells) | Vertical extent (m) |
+|---|---:|---:|---:|---:|
+| `drips`  | **0** | `DRIP_COUNT = 400` | ±7 | 4.0 |
+| `motes`  | **0** | `MOTE_COUNT = 560` | ±8 | 2.5 |
+| `embers` | **0** | `EMBER_COUNT = 300` | ±5 | 2.5 |
 
-The counts are the exports `DRIP_COUNT`, `MOTE_COUNT`, `EMBER_COUNT` and are
-the number the shader graph derives all positions from — `positionNode` uses
+The afterburn-scale counts are still exported so a caller can spell the intent
+without hard-coding the magic number:
+`createWeather(W, { embers: EMBER_COUNT })`. The instance count is the number
+the shader graph derives all positions from — `positionNode` uses
 `instanceIndex`, `time`, `hash()` and the `focus` uniform to place each
 particle. There is no per-frame JS particle loop and no per-frame allocation
 (afterburn's rule: "everything is GPU-animated from instance ids — zero
 per-frame CPU work"). `update()` only writes small scalar uniforms.
+
+## Emit nothing by default (T-0055)
+
+The user's verdict on T-0044's first cut: *"stop the particles all over, makes
+no sense in the dungeon"*. Afterburn's motes and drips belong to an open
+valley in the rain, not a sealed stone room, so the dungeon's default is
+silence:
+
+```ts
+createWeather(W);                              // 0 drips / 0 motes / 0 embers
+createWeather(W, { embers: EMBER_COUNT });     // opt one emitter back in
+```
+
+The mood table (`DRIPS_PER_MOOD`, `MOTES_PER_MOOD`, `EMBERS_PER_MOOD`), the
+tint tables, the `emitterTargets` mapping and the `pass(overlay, camera)`
+wiring inside `createPipeline` are all unchanged: turning an emitter back on
+is one number in the call site, and the existing per-mood intensities light
+up as they always did (`emitterTargets('lava', W).embers` is still `0.9`).
+
+The mesh count is a construction-time knob, so a mood transition never
+reallocates — a lava level that opted its embers in with `EMBER_COUNT`
+instances keeps those instances even when the atmosphere fades into
+`torchlit`; the intensity uniform simply falls to `0.20 · (0.4 + 0.6 · glow)`
+and the mesh hides itself under `VISIBLE_EPS`. A per-frame recount is out of
+scope on purpose (`docs/gpu.md` §3, "no per-frame allocation").
 
 ## Wrap volume — `wrapAround(base, focus, halfExtent)`
 
@@ -119,9 +154,11 @@ discs — no drips or embers on the wire.
 The overlay lives inside `GpuPath` next to `sprites` and `dungeon`. Build
 order at boot:
 
-1. `createWeather(W)` — constructs the scene, the three InstancedMeshes and
-   the uniforms. Reads the shared `W` block by reference; no dependency on
-   the pipeline or the atmosphere.
+1. `createWeather(W)` — constructs the scene, the three (default: zero-count)
+   InstancedMeshes and the uniforms. Reads the shared `W` block by reference;
+   no dependency on the pipeline or the atmosphere. The default zero counts
+   (T-0055) mean the current call site emits nothing; a future level type
+   that wants a specific emitter passes `{ drips, motes, embers }` here.
 2. `createPipeline({ …, overlay: weather.scene })` — the pipeline reads
    `overlay` at graph-build time (`docs/gpu-pipeline.md` "Pass order") and
    adds one `pass(overlay, camera)` after `godrays` and before the firefly
@@ -145,10 +182,10 @@ tier ladder.
 
 ## The tests
 
-`tests/gpu-weather.test.ts` covers the two cases the ticket names and
-nothing else. Both are node-only; three r185's `InstancedMesh` and
-`MeshBasicNodeMaterial` construct fine without a renderer (T-0042's
-`SpriteLayer` tests exercise the same pattern).
+`tests/gpu-weather.test.ts` covers three cases and nothing else. Every case
+is node-only; three r185's `InstancedMesh` and `MeshBasicNodeMaterial`
+construct fine without a renderer (T-0042's `SpriteLayer` tests exercise the
+same pattern).
 
 - **"the mood id and W uniforms choose which emitters are active and how
   strong"** — pins `emitterTargets` across the five moods for four `W`
@@ -156,10 +193,17 @@ nothing else. Both are node-only; three r185's `InstancedMesh` and
   and runs `update` twice with mutating `W` values to confirm the eased
   intensity uniforms and the `visible` flags track the mapping.
 - **"the particle buffer is allocated once and wraps around the camera"** —
-  pins the InstancedMesh counts before and after twenty updates with a
-  moving focus, checks the geometry / material identities survive, and
-  proves the pure `wrapAround` helper (which the GPU shader implements)
-  keeps particles bounded and follows the camera.
+  builds a handle with the afterburn-scale counts (`{ drips: DRIP_COUNT,
+  motes: MOTE_COUNT, embers: EMBER_COUNT }`), pins the InstancedMesh counts
+  before and after twenty updates with a moving focus, checks the geometry /
+  material identities survive, and proves the pure `wrapAround` helper (which
+  the GPU shader implements) keeps particles bounded and follows the camera.
+- **"no emitter produces particles by default"** (T-0055) — a plain
+  `createWeather()` allocates zero instances on every emitter, and a full
+  ease-in on a mood that would normally drip hard does not reallocate.
+  Confirms that the mood plumbing survives (a soaked `lava` mood still maps
+  to `embers = 0.9`) and that a targeted opt-in (`{ embers: EMBER_COUNT }`)
+  reaches only the emitter it asks for.
 
 ## What I could not verify
 

@@ -383,6 +383,69 @@ describe('gpu/dungeon — bakeLevel + DungeonScene', () => {
     expect(min).toBeGreaterThanOrEqual(48 / BG);
   });
 
+  it('every floor cell is fully tiled, worn quadrants included', () => {
+    // T-0055: `buildFloor` used to skip a 4×1×4 quadrant at 10 % probability,
+    // leaving a black square in the middle of a lit floor cell. It now
+    // always places all four quadrants; on the same seeded 10 % roll, the
+    // worn quadrant is a `basalt0` tile recessed one voxel (y ∈ [-0.125, 0] m)
+    // so the wear reads as a sunken flagstone instead of a hole.
+    const H = 6, W = 6;
+    const rows: string[] = [];
+    for (let y = 0; y < H; y++) rows.push('.'.repeat(W));
+    const level = levelFromAscii(rows);
+
+    let sawRecessed = false;
+    for (const seed of [1, 7, 13, 42, 99]) {
+      const { writer, boxCount } = bakeLevel(level, { seed });
+      // Every floor cell contributes exactly four flagstone quadrants plus
+      // an optional mud pebble (≤ 1 per cell at 25 % probability), so the
+      // per-level box count is in `[4·N, 5·N]`. Fewer than `4·N` would mean a
+      // hole survived, more than `5·N` would mean an extra flagstone snuck in.
+      expect(boxCount).toBeGreaterThanOrEqual(4 * H * W);
+      expect(boxCount).toBeLessThanOrEqual(5 * H * W);
+
+      // Split the writer's vertices into the sixteen quadrant zones of the
+      // level (four per cell). Each zone is 0.5 m × 0.5 m in XZ, centred on
+      // a flagstone quadrant; every zone must contain at least one vertex
+      // at flagstone y (`[-0.125, 0.125] m` covers both normal and recessed
+      // tiles), regardless of the seed.
+      const E = 1e-6;
+      const nv = writer.nv;
+      const pos = writer.pos;
+      for (let cy = 0; cy < H; cy++) {
+        for (let cx = 0; cx < W; cx++) {
+          for (const qx of [0, 0.5]) {
+            for (const qz of [0, 0.5]) {
+              const minX = cx + qx - E;
+              const maxX = cx + qx + 0.5 + E;
+              const minZ = cy + qz - E;
+              const maxZ = cy + qz + 0.5 + E;
+              let found = false;
+              for (let i = 0; i < nv; i++) {
+                const px = pos[i * 3]!;
+                const py = pos[i * 3 + 1]!;
+                const pz = pos[i * 3 + 2]!;
+                if (px >= minX && px <= maxX && pz >= minZ && pz <= maxZ && py >= -0.125 - E && py <= 0.125 + E) {
+                  found = true;
+                  break;
+                }
+              }
+              expect(found, `seed=${seed} cell=(${cx},${cy}) quadrant=(${qx},${qz})`).toBe(true);
+            }
+          }
+        }
+      }
+      // A recessed quadrant's bottom face sits at `y = -0.125`; a vertex
+      // strictly below zero proves the worn treatment fired without leaving
+      // a hole. Across five seeds and 144 quadrant rolls, ~14 fires are
+      // expected on average.
+      for (let i = 0; i < nv; i++) {
+        if (pos[i * 3 + 1]! < -1e-6) { sawRecessed = true; break; }
+      }
+    }
+    expect(sawRecessed).toBe(true);
+  });
+
   it('a fully known 80x21 level stays under the box budget and bakes in under 50 ms', () => {
     const big: LevelView = levelFromAscii(buildBigRoomRows(), { lit: (k) => (k === 'floor' ? true : undefined) });
 
