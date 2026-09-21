@@ -3,8 +3,9 @@
  * spawns one `nh-bridge` per socket connection. Every stdout line from the
  * bridge is forwarded to the socket as a text frame; every text frame from
  * the socket is written to the bridge's stdin. Closing the socket kills the
- * bridge. Bind to `127.0.0.1` by default — this is a game server with no
- * auth (docs/ssh.md-equivalent for the browser transport).
+ * Binds every interface (`0.0.0.0`) by default so a browser on another
+ * machine can reach it; set `ASCIIHACK_WS_HOST=127.0.0.1` (or `--host=`) for
+ * loopback only. There is **no authentication** — see docs/web.md "Security".
  *
  * Run: `npm run web:server [-- --port 8790] [--playgrounds DIR]`.
  */
@@ -41,7 +42,7 @@ export interface ServerFlags {
 /** Parse `argv.slice(2)` into `ServerFlags` (env overrides for defaults). */
 export function parseServerFlags(argv: readonly string[]): ServerFlags {
   const flags: ServerFlags = {
-    host: process.env.ASCIIHACK_WS_HOST ?? '127.0.0.1',
+    host: process.env.ASCIIHACK_WS_HOST ?? '0.0.0.0',
     port: Number(process.env.ASCIIHACK_WS_PORT ?? '8790'),
     bridge: process.env.ASCIIHACK_BRIDGE ?? DEFAULT_BRIDGE,
     playgroundSrc: process.env.ASCIIHACK_PLAYGROUND_SRC ?? DEFAULT_PLAYGROUND_SRC,

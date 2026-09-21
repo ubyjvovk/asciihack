@@ -106,7 +106,7 @@ Flags:
 
 | flag | default | meaning |
 |---|---|---|
-| `--host=` | `127.0.0.1` | interface to bind |
+| `--host=` | `0.0.0.0` | interface to bind |
 | `--port=` | `8790` | TCP port |
 | `--bridge=` | `build/nethack/bridge/nh-bridge` | bridge binary |
 | `--playgrounds=` | `~/.asciihack/players` | per-player playground root |
@@ -118,17 +118,33 @@ Env overrides use `ASCIIHACK_WS_HOST`, `ASCIIHACK_WS_PORT`,
 ## The Vite dev server (`web/vite.config.ts`)
 
 - Root: `web/`.
+- `server.host` is `0.0.0.0` (override: `ASCIIHACK_WEB_HOST`), with
+  `allowedHosts: true` so a LAN IP or Tailscale name in the `Host` header is
+  accepted.
 - `server.proxy['/play']` forwards WebSocket upgrades to `ws://127.0.0.1:8790`
-  (overrideable with `ASCIIHACK_WS_URL`).
+  (overrideable with `ASCIIHACK_WS_URL`) — the proxy hop stays on loopback
+  even when the dev server is public, so only one process needs the open bind.
 - Build output: `dist-web/`.
 
 ## Security
 
-The WS server binds to `127.0.0.1` by default and has **no authentication**
-— treat it like the terminal client: only reachable through your ssh
-tunnel or over localhost. Exposing it on `0.0.0.0` is a foot-gun; if you
-need multi-player, put an ssh tunnel or an authenticated reverse proxy
-in front and mirror `bin/asciihack-lib.sh`'s name rules there too.
+Both servers bind **every interface (`0.0.0.0`) by default** — changed
+2026-09-21 at the user's request so the page is reachable from another
+machine — and the WS server has **no authentication**. Anyone who can reach
+the port gets a NetHack process of their own, named by `?name=`.
+
+Back to loopback only:
+
+```sh
+ASCIIHACK_WEB_HOST=127.0.0.1 npm run web:dev
+ASCIIHACK_WS_HOST=127.0.0.1 npm run web:server     # or --host=127.0.0.1
+```
+
+On an untrusted network, do that and reach it over an ssh tunnel instead; if
+you want real multi-player, put an authenticated reverse proxy in front and
+mirror `bin/asciihack-lib.sh`'s name rules there too. The Vite dev server
+also runs with `allowedHosts: true`, since with an open bind address the
+Host-header check is not the thing protecting anything.
 
 ## Smoke test
 

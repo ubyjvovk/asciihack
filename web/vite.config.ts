@@ -7,12 +7,20 @@ import { resolve } from 'node:path';
 import { defineConfig } from 'vite';
 
 const WS_TARGET = process.env.ASCIIHACK_WS_URL ?? 'ws://127.0.0.1:8790';
+/** Dev-server bind address. Defaults to every interface so the page is
+ *  reachable from other machines on the LAN; set `ASCIIHACK_WEB_HOST=127.0.0.1`
+ *  to go back to loopback only. See docs/web.md "Security". */
+const WEB_HOST = process.env.ASCIIHACK_WEB_HOST ?? '0.0.0.0';
 
 export default defineConfig({
   root: __dirname,
   server: {
-    host: '127.0.0.1',
+    host: WEB_HOST,
     port: 5173,
+    // Bound on every interface, so requests arrive with whatever Host header
+    // the client used (a LAN IP, a Tailscale name). Vite blocks unknown hosts
+    // by default; allow them, since the bind address is the real gate here.
+    allowedHosts: true,
     proxy: {
       '/play': {
         target: WS_TARGET,
