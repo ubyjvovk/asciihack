@@ -282,6 +282,19 @@ node scripts/web-shot.mjs "/scene.html?gpu=raw&q=high" raw.png --gpu --strict
 
   The pre-port baseline is `.tigerteam/shots/sheet-before.png` — compare
   against it, not against memory.
+- **`scripts/shot-stats.py`** — brightness statistics for a shot, so tuning is
+  measurable rather than argued. The pre-port numbers at 1280×720, hero in the
+  room facing the doorway:
+
+  | shot | black | mean | p95 | levels |
+  |---|---|---|---|---|
+  | `before-amber.png` | 94.8 % | 1.5 | 10 | 62 |
+  | `before-ascii.png` | 82.7 % | 10.4 | 80 | 146 |
+
+  A large black share is inherent to ASCII (a glyph is thin strokes on black),
+  so read these **relatively**: the port should move `mean` and `p95` up and
+  `levels` up, because more of the frame lands inside the quantiser's usable
+  range instead of under its black point.
 
 `--swiftshader` forces software GL (portable, no GPU needed); `--gpu` asks for
 the real device and is what the WebGPU path wants. The tool prints console
