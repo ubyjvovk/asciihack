@@ -235,8 +235,10 @@ The eyeball review is the PM's, on the host, through two pieces of tooling
 that already exist (PM-owned; **not in any ticket's scope**):
 
 - **`/scene.html`** — `web/src/scene-bench.ts`, a standalone bench that mounts
-  `GlViewport` over a synthetic level (lit room, doorway, dark corridor,
-  both staircases) with **no WebSocket, no server and no NetHack**. Query:
+  `GlViewport` over a synthetic level — a lit room with both staircases, a
+  doorway into a dark corridor, then a closed door into a second chamber of
+  water, ice, lava and a fountain, so every special-cased cell kind is
+  reachable — with **no WebSocket, no server and no NetHack**. Query:
   `?pose=x,y,yawDeg`, `?render=<style>`, `?fov=`, `?view=fps|ortho`, and
   whatever the viewport reads (`?gpu=`, `?q=`). Arrow keys/WASD walk, `[`/`]`
   cycle styles. It sets `window.__ready` after the second frame and exposes
