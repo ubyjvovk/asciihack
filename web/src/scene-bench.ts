@@ -12,7 +12,7 @@
  * cycle the style. `window.__bench` and `window.__ready` are the automation
  * handles.
  */
-import { type CellKind, type LevelView, type MapCell, type Pose } from '../../src/model/types.js';
+import { type CellKind, type LevelView, type MapCell, type Pose, type Sprite } from '../../src/model/types.js';
 import { GlViewport } from './gl/gl-viewport.js';
 
 /**
@@ -76,6 +76,21 @@ function benchLevel(): LevelView {
   };
 }
 
+/**
+ * A few stand-ins so the sprite layer is visible on the bench: the hero, a
+ * monster down the room, a pet beside it and an object on the floor. No tile
+ * art — the renderer's generic figure is what we are checking here.
+ * `?sprites=0` renders an empty dungeon.
+ */
+function benchSprites(): Sprite[] {
+  return [
+    { x: 9.5, y: 2.5, ch: 'd', rgb: [0.85, 0.75, 0.35], cls: 'mon', height: 0.6 },
+    { x: 8.5, y: 4.5, ch: 'f', rgb: [0.55, 0.85, 0.95], cls: 'pet', height: 0.45 },
+    { x: 11.5, y: 3.5, ch: 'T', rgb: [0.95, 0.35, 0.3], cls: 'mon', height: 1.2 },
+    { x: 6.5, y: 3.5, ch: '(', rgb: [0.8, 0.8, 0.5], cls: 'obj', height: 0.3 },
+  ];
+}
+
 /** Parse `?pose=x,y,yawDeg`; falls back to the hero standing in the room facing east. */
 function poseFromQuery(search: string): Pose {
   const raw = new URLSearchParams(search).get('pose');
@@ -124,9 +139,10 @@ function boot(): void {
     ev.preventDefault();
   });
 
+  const sprites = params.get('sprites') === '0' ? [] : benchSprites();
   let frames = 0;
   const loop = (): void => {
-    viewport.render(level, pose, [], fov);
+    viewport.render(level, pose, sprites, fov);
     frames += 1;
     if (frames === 2) window.__ready = true;
     window.requestAnimationFrame(loop);

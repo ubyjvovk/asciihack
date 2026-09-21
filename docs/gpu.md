@@ -212,6 +212,18 @@ ASCII output through the styled path, 1280×720, `q=high`, three poses:
 Stable across poses, which is what you want — the brightness comes from the
 lighting, not from one lucky camera angle.
 
+**Stochastic SSR is noisier, and only on the fallback backend.** Measuring
+high-frequency energy (mean absolute difference between neighbouring pixels)
+across the raw frame as the wave landed: 1.89 before the mood environment,
+**2.12** after it, 2.26 with sprites. That is the cost of T-0041's stochastic
+gate — the mirror path afterburn uses does not need a denoiser, the
+stochastic one does, and three's `DenoiseNode` is not in the graph. It does
+not converge with more frames, so it is ray noise, not TRAA warm-up. Two
+reasons not to chase it: the **WebGPU backend uses the mirror path**, so a
+real browser never sees it; and styled mode averages sub-samples per cell,
+which suppresses it. Revisit only if the WebGL2 fallback becomes the common
+case.
+
 **Not measured here, and it cannot be:** real frame time. Every number in this
 document comes from SwiftShader software rasterisation, where `q=high` costs
 ~240 ms/frame at 640×360. That says nothing about a real GPU; it only proves
