@@ -260,6 +260,16 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   yet.
 
 ## Next actions
+- **Queued as drafts, promote after T-0040 lands** (in this order):
+  T-0045 look tuning (fill its table from the eyeball review first),
+  T-0046 chunked dungeon rebuild — *this one matters*: `DungeonScene`
+  rebakes the whole level on any cell-kind change, which in NetHack is almost
+  every step while exploring, so a ~50 ms rebake lands on the move frame;
+  then T-0042 sprites, T-0043 ortho on the GPU path, T-0044 dungeon air.
+  T-0042/43/44/45/46 are mutually independent — that is when the fleet needs
+  more than one opus lane. The supervisor only reloads `scale` on restart, so
+  **add lanes with backgrounded `tigerteam worker run opus --once`** instead
+  of restarting it mid-ticket (never wrap that in `timeout`).
 - **The afterburn port (T-0036..T-0040) is the live wave.** Order:
   T-0036 (voxel kit) ∥ T-0037 (renderer + pipeline) → T-0038 (material +
   moods) → T-0039 (dungeon bake) → T-0040 (compose + viewport wiring).
