@@ -5,7 +5,10 @@
  * dungeon through the active AsciiCity style (`amber` by default, `F5`
  * cycles). Two cameras share the scene: a `PerspectiveCamera` for the
  * first-person view and an `OrthographicCamera` for the 3/4 overhead
- * "Diablo/Fallout" view. `setView('fps' | 'ortho')` switches between them.
+ * "Diablo/Fallout" view. `setView('fps' | 'ortho' | 'third')` switches
+ * between them; `third` is afterburn's long-lens diorama follow (T-0052,
+ * `docs/gpu-thirdperson.md`), reusing the perspective camera at a
+ * behind-and-above pose.
  *
  * The canvas is absolutely positioned; `resize(cols, rows, cellW, cellH)`
  * moves it under the DOM terminal's viewport rectangle (message line at
@@ -68,6 +71,15 @@ import {
   type ViewportPath,
 } from '../gpu/path.js';
 import { SpriteLayer } from '../gpu/sprites.js';
+import {
+  clampThirdDist,
+  dampPose,
+  THIRD_DIST_DEFAULT_CELLS,
+  THIRD_FOV_DEG,
+  thirdPersonPose,
+  wrapYawSteps,
+  type DampState,
+} from '../gpu/thirdperson.js';
 import { createWeather, type WeatherHandle } from '../gpu/weather.js';
 
 /** Distance in cells the hero's lantern reaches before falling to black. */
@@ -137,7 +149,11 @@ export class GlViewport {
   private cutawayMesh: THREE.InstancedMesh | null = null;
   private lastCutawayKey = '';
   private lastHeroCell = { x: 0, y: 0 };
-  private view: 'fps' | 'ortho' = 'fps';
+  private view: 'fps' | 'ortho' | 'third' = 'fps';
+  private thirdYawSteps = 0;
+  private thirdDist = THIRD_DIST_DEFAULT_CELLS;
+  private thirdDamped: DampState | null = null;
+  private lastFrameTime = 0;
   private cols = 80;
   private rows = 24;
   private cellW = 9;
@@ -266,23 +282,47 @@ export class GlViewport {
     return this.style.setStyle(id);
   }
 
-  /** Switch between first-person and 3/4 overhead ortho cameras. */
-  setView(view: 'fps' | 'ortho'): void {
+  /** Switch between first-person, 3/4 overhead ortho and third-person cameras. */
+  setView(view: 'fps' | 'ortho' | 'third'): void {
     if (this.view === view) return;
     this.view = view;
     // The ortho camera is far from the scene, so its fog density must be much
-    // lower than the fps close-up or the whole view is fogged to black.
+    // lower than the fps close-up or the whole view is fogged to black. The
+    // third view sits at ~11 cells (docs/gpu-thirdperson.md §"Fog"), which is
+    // atmospheric rather than black at the mood densities — no rescale.
     if (this.scene.fog instanceof THREE.FogExp2) {
       this.scene.fog.density = view === 'ortho' ? ORTHO_FOG_DENSITY : FPS_FOG_DENSITY;
     }
-    // Force `applyCutaway` to re-evaluate on the next frame in either
-    // direction (entering ortho enables ghosts; leaving restores the walls).
+    // Force `applyCutaway` to re-evaluate on the next frame in any direction
+    // (entering ortho enables ghosts; leaving restores the walls).
     this.lastCutawayKey = '';
+    // Drop the third-person damped state so entering `third` starts from the
+    // wanted pose (no snap-in from a stale hero cell).
+    if (view !== 'third') this.thirdDamped = null;
   }
 
   /** Which camera the next `render` call will use. */
-  get currentView(): 'fps' | 'ortho' {
+  get currentView(): 'fps' | 'ortho' | 'third' {
     return this.view;
+  }
+
+  /**
+   * Rotate the third-person yaw by `step` × 45°. Positive = clockwise (E),
+   * negative = counter-clockwise (Q). Wrapped modulo 8 by `wrapYawSteps`, so
+   * repeated presses never overflow. No-op when the viewport is not in the
+   * third view — the state persists so re-entering keeps the last angle.
+   */
+  rotateThird(step: number): void {
+    this.thirdYawSteps = wrapYawSteps(this.thirdYawSteps + step);
+  }
+
+  /**
+   * Zoom the third-person camera by `delta` cells (positive = out, negative =
+   * in). Clamped to `[THIRD_DIST_MIN_CELLS, THIRD_DIST_MAX_CELLS]` — the
+   * afterburn `18–34 m` band converted through `THIRD_SCALE`.
+   */
+  zoomThird(delta: number): void {
+    this.thirdDist = clampThirdDist(this.thirdDist + delta);
   }
 
   /** Cycle through `STYLE_ORDER` (positive = next, negative = previous). */
@@ -325,6 +365,7 @@ export class GlViewport {
     const h = this.lastHeroCell;
     if (usingGpu) {
       const gpu = this.gpu!;
+      // Third-person reuses the perspective `gpu.camera`, just repositioned.
       const cam = this.view === 'ortho' ? gpu.orthoCamera : gpu.camera;
       const isOrtho = this.view === 'ortho';
       return {
@@ -353,6 +394,7 @@ export class GlViewport {
         mood: this.gpu?.mood ?? null,
       };
     }
+    // Third-person reuses the legacy `this.camera` (perspective), repositioned.
     const cam = this.view === 'ortho' ? this.orthoCamera : this.camera;
     const isOrtho = cam instanceof THREE.OrthographicCamera;
     return {
@@ -404,14 +446,18 @@ export class GlViewport {
    * unused in ortho — the frustum is derived from the viewport rectangle).
    */
   render(level: LevelView, pose: Pose, sprites: readonly Sprite[], vFovDeg: number): void {
-    // Keep the legacy perspective camera at the hero cell in every view so the
-    // lantern light (child of `camera`) stays anchored to the hero even when
-    // the ortho camera is doing the rendering.
-    this.camera.position.set(pose.x, EYE_HEIGHT, pose.y);
-    this.camera.rotation.set(CAMERA_PITCH, -pose.yaw, 0, 'YXZ');
-    if (this.camera.fov !== vFovDeg) {
-      this.camera.fov = vFovDeg;
-      this.camera.updateProjectionMatrix();
+    // Keep the legacy perspective camera at the hero cell in fps + ortho so
+    // the lantern light (child of `camera`) stays anchored to the hero even
+    // when the ortho camera is doing the rendering. The third view moves the
+    // camera further out below; the lantern rides with it on the legacy path
+    // (a limitation of that path, called out in `docs/gpu-thirdperson.md`).
+    if (this.view !== 'third') {
+      this.camera.position.set(pose.x, EYE_HEIGHT, pose.y);
+      this.camera.rotation.set(CAMERA_PITCH, -pose.yaw, 0, 'YXZ');
+      if (this.camera.fov !== vFovDeg) {
+        this.camera.fov = vFovDeg;
+        this.camera.updateProjectionMatrix();
+      }
     }
     const heroCell = { x: Math.floor(pose.x), y: Math.floor(pose.y) };
     this.lastHeroCell = heroCell;
@@ -438,6 +484,16 @@ export class GlViewport {
         this.applyCutaway(heroCell);
         placeOrthoCamera(this.orthoCamera, heroCell, this.cols, this.rows, 2);
         this.style.render(this.scene, this.orthoCamera);
+      } else if (this.view === 'third') {
+        this.applyCutaway(null);
+        const p = this.stepThirdPose(heroCell);
+        this.camera.position.set(p.position.x, p.position.y, p.position.z);
+        this.camera.lookAt(p.target.x, p.target.y, p.target.z);
+        if (this.camera.fov !== p.fov) {
+          this.camera.fov = p.fov;
+          this.camera.updateProjectionMatrix();
+        }
+        this.style.render(this.scene, this.camera);
       } else {
         this.applyCutaway(null);
         this.style.render(this.scene, this.camera);
@@ -464,8 +520,15 @@ export class GlViewport {
       rows,
       viewportPx,
     );
+    // Advance the third-person spring damper once per frame (fps + ortho pass
+    // `null`; the branch inside `GpuPath.render` short-circuits to the ordinary
+    // hero-cell pose). Doing it here keeps the damped state on the viewport
+    // where the legacy path already reads it.
+    const thirdFrame = this.view === 'third'
+      ? this.stepThirdPose({ x: Math.floor(pose.x), y: Math.floor(pose.y) })
+      : null;
     try {
-      gpu.render(level, pose, sprites, vFovDeg, path, size, viewportPx, this.pinnedMood, this.view, this.cols, this.rows);
+      gpu.render(level, pose, sprites, vFovDeg, path, size, viewportPx, this.pinnedMood, this.view, this.cols, this.rows, thirdFrame);
     } catch (err) {
       this.fallbackToLegacy(err);
       // Re-run this frame on the legacy path so the user gets something.
@@ -652,6 +715,24 @@ export class GlViewport {
     }
   }
 
+  /**
+   * Compute the third-person camera pose for `hero` this frame and run the
+   * spring damper forward by the wall-clock delta since the last call. Used
+   * by both the legacy render path and the GPU render path — legacy writes
+   * the returned pose onto `this.camera`; GPU passes it into `GpuPath.render`
+   * so the same damped state drives both cameras.
+   */
+  private stepThirdPose(hero: { x: number; y: number }): ThirdPersonFrame {
+    const wanted = thirdPersonPose(hero, this.thirdYawSteps, this.thirdDist);
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const dt = this.lastFrameTime === 0 ? 0.016 : Math.min(0.1, (now - this.lastFrameTime) / 1000);
+    this.lastFrameTime = now;
+    const wantedState: DampState = { position: wanted.position, target: wanted.target };
+    const damped = this.thirdDamped === null ? wantedState : dampPose(this.thirdDamped, wantedState, dt);
+    this.thirdDamped = damped;
+    return { position: damped.position, target: damped.target, fov: wanted.fov, focus: wanted.focus };
+  }
+
   private spriteMaterialFor(s: Sprite): THREE.SpriteMaterial {
     // Sprites with no tile art get a generated `@` canvas texture for the
     // hero fallback (T-0032): tiles.json does not carry the player-role
@@ -733,9 +814,9 @@ const EMPTY_STRING_SET: ReadonlySet<string> = new Set();
  * (its frustum is FOV-derived, not a box).
  */
 export interface DebugInfo {
-  view: 'fps' | 'ortho';
+  view: 'fps' | 'ortho' | 'third';
   camera: {
-    type: 'fps' | 'ortho';
+    type: 'fps' | 'ortho' | 'third';
     position: { x: number; y: number; z: number };
     target: { x: number; y: number; z: number };
     near: number;
@@ -757,6 +838,16 @@ export interface DebugInfo {
   quality: QualityName | null;
   /** Current mood id being applied by the GPU path, or null. */
   mood: MoodId | null;
+}
+
+/** Per-frame third-person pose after the spring damper (`dampPose`) has run.
+ *  The wanted pose is computed by `thirdPersonPose`; the damper pulls
+ *  position/target toward it and passes the result into both render paths. */
+interface ThirdPersonFrame {
+  position: { x: number; y: number; z: number };
+  target: { x: number; y: number; z: number };
+  fov: number;
+  focus: number;
 }
 
 /** Camera used by `blitRawToCanvas` — the compose shader ignores it, but
@@ -953,7 +1044,7 @@ class GpuPath {
   mood: MoodId;
   private lastTime = 0;
   private lastMoodDecision: MoodId | null = null;
-  private lastView: 'fps' | 'ortho' = 'fps';
+  private lastView: 'fps' | 'ortho' | 'third' = 'fps';
   private lastGhostKey = '';
 
   private constructor(init: {
@@ -1213,9 +1304,10 @@ class GpuPath {
     size: { w: number; h: number },
     viewportPx: { cssW: number; cssH: number; dpr: number },
     pinnedMood: MoodId | null,
-    view: 'fps' | 'ortho',
+    view: 'fps' | 'ortho' | 'third',
     viewportCols: number,
     viewportRows: number,
+    thirdFrame: ThirdPersonFrame | null,
   ): void {
     // 1. Camera. The pipeline was built against `this.camera` (perspective)
     //    at boot; F3 rebuilds the graph against the real `OrthographicCamera`
@@ -1230,6 +1322,18 @@ class GpuPath {
       orthoPlace = orthoPlacement(heroCell, viewportCols, viewportRows, 2);
       applyOrthoPlacementTo(this.orthoCamera, orthoPlace);
       this.orthoCamera.updateMatrixWorld(true);
+    } else if (view === 'third' && thirdFrame !== null) {
+      // Third-person: perspective camera lifted behind + above the hero at
+      // the ART_BIBLE §6 pitch/distance. Uses the damped pose the viewport
+      // stepped this frame — see `docs/gpu-thirdperson.md` "The spring".
+      this.camera.position.set(thirdFrame.position.x, thirdFrame.position.y, thirdFrame.position.z);
+      this.camera.lookAt(thirdFrame.target.x, thirdFrame.target.y, thirdFrame.target.z);
+      const aspect = viewportPx.cssW / Math.max(1, viewportPx.cssH);
+      if (this.camera.fov !== thirdFrame.fov || this.camera.aspect !== aspect) {
+        this.camera.fov = thirdFrame.fov;
+        this.camera.aspect = aspect;
+        this.camera.updateProjectionMatrix();
+      }
     } else {
       this.camera.position.set(pose.x, EYE_HEIGHT, pose.y);
       this.camera.rotation.set(CAMERA_PITCH, -pose.yaw, 0, 'YXZ');
@@ -1252,12 +1356,18 @@ class GpuPath {
     //     way in. `handle.setCamera` is a graph rebuild — cheap on paper,
     //     never called per frame, only when F3 flips `view`.
     if (view !== this.lastView) {
-      this.handle.setCamera(pipelineCameraForView(view, {
+      // Third-person is a perspective camera too, so it uses `'fps'` for the
+      // `pipelineCameraForView` and `moodFogDensityForView` picks — same
+      // reference identity as fps, so `setCamera` no-ops after the initial
+      // build. Only `'ortho'` rebuilds the graph.
+      this.handle.setCamera(pipelineCameraForView(view === 'ortho' ? 'ortho' : 'fps', {
         perspective: this.camera,
         orthographic: this.orthoCamera,
       }));
+      // Ceiling occludes the third-person camera (it sits ~7 units up above
+      // the 1-unit ceiling), so hide it there too — only fps keeps it lit.
       this.dungeon.ceiling.visible = view === 'fps';
-      if (view === 'fps') this.disposeGhostMesh();
+      if (view !== 'ortho') this.disposeGhostMesh();
       this.lastGhostKey = '';
       this.lastView = view;
     }
@@ -1314,7 +1424,9 @@ class GpuPath {
     //     40 cells out; scaled by 0.1 that becomes ≈ 67 %.
     const currentMood = this.atmosphere.state;
     this.fogColor.value.setHex(currentMood.fog.color);
-    this.fogDensity.value = moodFogDensityForView(view, currentMood.fog.density);
+    // Third-person sits at ~11 cells: `e^(−0.10·11) ≈ 33 %` is atmospheric
+    // rather than black, so it takes the fps density unchanged (no rescale).
+    this.fogDensity.value = moodFogDensityForView(view === 'ortho' ? 'ortho' : 'fps', currentMood.fog.density);
 
     // 5. Apply the styled/raw grade overrides *after* the mood writes so the
     //    mood's vignette/grain don't leak into styled mode (docs/gpu.md §6.1).
@@ -1329,13 +1441,17 @@ class GpuPath {
       // vignette and grain are left alone: whatever the mood wrote applies.
     }
 
-    // 5b. Push the ortho camera distance into the DOF focus so the entire
-    //     board renders sharp under the overhead view. The mood table sets
-    //     focus ≈ 5 m for the fps camera; the ortho camera sits ~40 m out.
+    // 5b. Push the far camera's distance into the DOF focus so the focal
+    //     plane lands where the ticket says. Ortho: the whole board is inside
+    //     `[focus ± focusRange]`. Third-person: the mood's focusRange (a few
+    //     units) stays, so the hero is the only thing in the sharp slab and
+    //     the near/far dungeon blurs — ART_BIBLE §6 "gentle, diorama, not mush".
     if (view === 'ortho' && orthoPlace !== null) {
       const dof = orthoDofFocus(orthoPlace);
       this.handle.look.focus.value = dof.focus;
       this.handle.look.focusRange.value = dof.focusRange;
+    } else if (view === 'third' && thirdFrame !== null) {
+      this.handle.look.focus.value = thirdFrame.focus;
     }
 
     // 5c. Advance the dungeon-air overlay (T-0044). The mood id + shared W
