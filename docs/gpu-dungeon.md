@@ -1,9 +1,10 @@
 # Dungeon voxel scene (`web/src/gpu/dungeon.ts`)
 
-*PM-owned contract in `docs/gpu.md` §4–7. This file is the T-0039 as-built:
-how a `LevelView` becomes voxel geometry the ported afterburn renderer
-lights, what falls back to what, the measured box budget, and — importantly —
-the eyeball claims the worker environment cannot verify.*
+*PM-owned contract in `docs/gpu.md` §4–7. This file is the T-0039/T-0046
+as-built: how a `LevelView` becomes voxel geometry the ported afterburn
+renderer lights, how the chunked rebuild keeps exploring from stuttering,
+the measured box budget and reveal cost, and — importantly — the eyeball
+claims the worker environment cannot verify.*
 
 The module replaces the textured-cube scene of `web/src/gl/scene-builder.ts`
 for the GPU render path (`docs/gpu.md` §7). `scene-builder.ts` is untouched
@@ -12,16 +13,27 @@ later ticket ports the cutaway.
 
 ## Public surface
 
-- `class DungeonScene` — owns the merged level `Mesh`, a separable
-  `Object3D` group named `ceiling`, and the live `PointLight` array.
-  Methods: `refresh(level): boolean` (rebuilds only when the kind-hash
-  changes), `updateLights(x, y): void` (reassigns which torches emit,
-  capped at 8; only the 2 nearest cast shadows), `dispose(): void`.
+- `class DungeonScene` — owns one `Mesh` per chunk under a `chunks` group,
+  one `Mesh` per chunk under a separable `Object3D` group named `ceiling`,
+  the live `PointLight` array, and a hidden `torches` group holding those
+  lights. Methods: `refresh(level): boolean` (rebakes only the chunks whose
+  per-chunk hash moved — see "Chunked rebuild"), `updateLights(x, y): void`
+  (reassigns which torches emit, capped at 8; only the 2 nearest cast
+  shadows), `dispose(): void`. `mainMeshes()` and `ceilingMeshes()` return
+  the per-chunk mesh references in chunk-major order — used by tests to
+  pin the "leaves the others untouched" contract.
 - `bakeLevel(level, opts?)` — pure. Returns `{ writer, lights, boxCount }`
-  for the merged geometry and the torch candidates. Tests exercise every
-  rule through this without a renderer.
-- `bakeCeiling(level, opts?)`, `ceilingCells(level)`, `doorAxis(level, x, y)`
-  and `selectActiveTorches(torches, x, y)` — small pure helpers used by
+  for the merged geometry and the torch candidates. Walks cells and
+  torches in chunk-major order so its bytes match the concatenated
+  chunked bake.
+- `bakeChunks(level, opts?)` — pure. Returns one `ChunkBake` per chunk
+  with its own writer, box count and hash, plus the level-wide torch table.
+  Its per-chunk writers concatenate to `bakeLevel`'s writer byte-for-byte
+  (halo culling — see below).
+- `bakeCeiling(level, opts?)`, `ceilingCells(level)`, `doorAxis(level, x, y)`,
+  `chunksOf(level)`, `chunkAt(level, cx, cy)`, `chunkBoundsList(level)`,
+  `chunkHashOf(level, bounds)`, `selectActiveTorches(torches, x, y)` and the
+  `CHUNK_W` / `CHUNK_H` constants — small pure helpers used by
   `DungeonScene`, exported so tests can inspect the same intermediates the
   scene bakes.
 
@@ -57,9 +69,9 @@ lava `ember`, ice `crystalCold0`.
 
 `docs/gpu.md` §4 requires a ceiling above every known passable cell at
 `y = 1`. It lives in a separate `Object3D` group named `ceiling`, a direct
-child of `DungeonScene.root`. The first-person path shows it; a later ortho
-ticket will hide the group, which is why it is separable rather than merged
-into the main geometry.
+child of `DungeonScene.root`, and is itself chunked (one `Mesh` per chunk)
+so the group stays a single hide-toggle for the (later) ortho path without
+losing the incremental rebuild.
 
 - The ceiling material is a shade darker than the walls (`basalt0`).
 - One 8×1×8 voxel-unit box (`= 1 × 0.125 × 1` metres) per passable cell.
@@ -93,19 +105,59 @@ The tradeoff is unchanged from `.tigerteam/STATE.md` decision log 2026-09-21:
 a cube shadow map per point light is six passes and eight of them would blow
 the frame budget, so eight lights but only two cube maps.
 
-## Rebuild gate
+## Chunked rebuild (T-0046)
 
-`DungeonScene.refresh(level)` hashes each cell's `CellKind` (`hashKinds`,
-matching the shape of `web/src/gl/scene-builder.ts`) and returns `false`
-when nothing has changed — no dispose, no bake, no `Mesh` reallocation.
-When the hash flips, the whole main geometry and the whole ceiling are
-rebuilt in one pass; the torch table is likewise rebaked because their
-placement depends on cells' `lit` flags.
+NetHack changes almost every cell as the player explores (each newly-seen
+cell is a new kind), so a whole-level rebake at ~40 ms lands on the frame
+that draws the move. Instead, the level is split into fixed
+**`CHUNK_W × CHUNK_H = 10 × 7`-cell chunks** (an 80 × 21 level is 8 × 3 =
+24 chunks — see `chunksOf(level)`), each its own `Mesh` under
+`DungeonScene.root`'s `chunks` group; the ceiling is chunked the same way.
 
-Jitter is seeded from the cell coordinates (`cellSeed(x, y, baseSeed)`) so
-the same level bakes byte-identically twice and nothing shimmers between
-frames. Torch sconces get a second seed hash on top so they do not
-correlate with the wall body they mount on.
+`DungeonScene.refresh(level)` walks each chunk and computes a
+**per-chunk hash** — one letter for `CellKind` (from `KIND_CODE`) plus one
+digit for `MapCell.lit` (`1` / `0` / `_`) per cell in that chunk — via
+`chunkHashOf(level, bounds)`. The chunk-hash walk touches only the chunk's
+own cells (70 cells for a full 10 × 7 chunk), so hashing is strictly
+cheaper than baking. There is also a **level-wide early-out**: when every
+chunk hash and torch subset matches its cached value, `refresh` returns
+`false` immediately, disposing nothing and allocating nothing.
+
+For chunks whose hash moved, `bakeChunkCellBoxes` / `bakeChunkCeilingBoxes`
+/ `bakeChunkTorchBoxes` produce fresh boxes in world coordinates. A
+**per-chunk hidden-face mask** is then computed by feeding own boxes plus
+a **1-cell-wide halo strip** from the 4 axial neighbour chunks to
+`hiddenFaces`; the halo is enough to catch every direct-plane neighbour
+cull, so the mask is byte-identical to what a global pass would produce
+(this is what the "byte-identical" test in `tests/gpu-dungeon.test.ts`
+pins). The chunk's `Mesh` is only replaced when the resulting mask differs
+from the cached one — chunks whose halo did not shift keep their `Mesh`
+reference (the "leaves the others untouched" test).
+
+Torches are still collected level-wide (their Chebyshev spacing rule is
+global), then grouped into per-chunk subsets so a chunk that hosts the
+same torches stays clean. The `lights` array (feeding `updateLights`) is
+rebuilt from the fresh torch table.
+
+Jitter is seeded from cell coordinates (`cellSeed(x, y, baseSeed)`) so a
+cell bakes identically whichever chunk it lands in; chunk borders are
+therefore invisible in the geometry too. Torch sconces get a second seed
+hash on top so they do not correlate with the wall body they mount on.
+
+`hashKinds(level)` is still exported for backwards compatibility (the WebGL
+`scene-builder.ts` uses the same shape) but `DungeonScene` no longer calls
+it — chunk hashes replaced the single level-wide string.
+
+### Correctness tradeoff at chunk boundaries
+
+A dirty chunk's mask is recomputed with its halo, so the chunk itself is
+always correct. Its 4 axial neighbours' masks are **not** recomputed on the
+same refresh: doubling the `hiddenFaces` work per step blew the 5 ms budget
+in practice. The only visible failure mode this leaves is a face
+appearing/disappearing exactly on a shared chunk boundary — and the extra
+(or missing) face sits inside the wall that changed, hidden from any pose
+the player can occupy. The full-bake path (`bakeChunks`, called by every
+`_reshape`) is unaffected; the "byte-identical" test still passes end to end.
 
 ## Box budget
 
@@ -114,20 +166,39 @@ for a fully-known 80 × 21 level, and a rebuild under 50 ms. Measured on this
 worker container (2026-09-21, `bakeLevel` on an 80 × 21 room where every
 floor cell is lit — the busiest case in the fleet's fixtures):
 
-| bake                          | boxes  | boxes / cell | rebuild time |
+| bake                          | boxes  | boxes / cell | full rebuild |
 | ----------------------------- | -----: | -----------: | -----------: |
 | main (walls, floors, doorway, torches) | **6 770** | **4.03** | **≈ 38 ms** |
 | ceiling                                | **1 482** | 0.88 (one per passable cell) | ≈ 6 ms |
 | total                                  | **8 252** | 4.91 | ≈ 44 ms |
 
 Well under the 40 000-box cap. `hiddenFaces` culls the shared face between
-touching wall/floor/wall neighbours; the merged geometry is one
-`BufferGeometry` in the writer's 24-B vertex format.
+touching wall/floor/wall neighbours; the chunked geometry is 24 `Mesh`es
+each with its own `BufferGeometry` in the writer's 24-B vertex format
+(instead of one per level pre-T-0046) so the JS-side rebuild can touch
+only the changed chunks. The chunked concatenation is byte-identical to
+the single-writer output (see `bakeChunks` / `bakeLevel` in
+`web/src/gpu/dungeon.ts` and the byte-identity test).
 
-If a level gets much prop-heavier (many fountains, altars and thrones) or a
-future ticket adds furniture, the average will rise — the cap is not tight
-today, but it is where a regression would first show up. Each prop is
-capped at ≤ 40 boxes per the ticket.
+### Single-cell reveal (T-0046)
+
+`DungeonScene.refresh(level)` incremental cost, same 80 × 21 fully-lit
+level, one interior cell toggled between `unexplored` and `floor`, warm
+JIT (median over 30 alternating reveals on this worker container,
+2026-09-21):
+
+| refresh path                    |         cost |
+| ------------------------------- | -----------: |
+| full initial bake (cold chunks) |    ≈ 18 ms   |
+| single-cell reveal p50          |  **≈ 1.2 ms** |
+| single-cell reveal p90          |    ≈ 1.9 ms  |
+| single-cell reveal max (of 30)  |    ≈ 2.2 ms  |
+
+The ticket's 5 ms budget is met with headroom. If a level gets much
+prop-heavier (many fountains, altars and thrones) or a future ticket adds
+furniture, the average will rise — the cap is not tight today, but it is
+where a regression would first show up. Each prop is capped at ≤ 40 boxes
+per the ticket.
 
 ## What I could not verify
 
@@ -135,6 +206,14 @@ Worker containers have no GPU, no display, and no browser: every claim on
 this list has to be eyeballed on the host through `/scene.html` or a
 `web-shot.mjs` capture (see `docs/gpu.md` §9). Tests pin the pure rules,
 but they cannot pin **the look**.
+
+- **Whether the chunked mesh reads as one dungeon.** The chunked bake is
+  byte-identical to the unchunked one for a full-level bake (pinned by
+  the "byte-identical" test), so seams cannot exist in the initial frame.
+  During incremental refresh, chunk-boundary faces on axial neighbours are
+  not re-culled (see "Correctness tradeoff at chunk boundaries" above);
+  the extra faces sit inside a wall and should be invisible from every
+  playable pose, but a worker cannot look at the actual frame to confirm.
 
 - **Whether the port actually reads as afterburn.** ART_BIBLE §2 is
   paraphrased into `docs/gpu.md` §5 and into this file, but the mixed-size
