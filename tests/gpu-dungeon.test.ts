@@ -24,6 +24,7 @@ import {
   ceilingCells,
   chunksOf,
   doorAxis,
+  isDampCell,
   selectActiveTorches,
 } from '../web/src/gpu/dungeon.js';
 import { levelFromAscii } from './fixtures/levels.js';
@@ -186,6 +187,55 @@ describe('gpu/dungeon — bakeLevel + DungeonScene', () => {
     expect(b.writer.mat.slice(0, nv * 4)).toEqual(a.writer.mat.slice(0, nv * 4));
     expect(b.writer.nrm.slice(0, nv * 4)).toEqual(a.writer.nrm.slice(0, nv * 4));
     expect(b.writer.idx.slice(0, a.writer.ni)).toEqual(a.writer.idx.slice(0, a.writer.ni));
+  });
+
+  it('only cells at or beside water, ice, a fountain or a drawbridge are damp', () => {
+    // Dry-by-default: dungeon.ts marks stone boxes `dry: true` in cells the
+    // predicate rejects, so a mood's residual wetness/puddles only paint
+    // stone the level gives a reason to be wet. The predicate is orthogonal
+    // (n/s/e/w) — diagonal neighbours of a damp source stay dry, and the
+    // damp source cell itself is damp so the pool/basin/ice reflects properly.
+    // Four sources are spread across the grid so no non-source cell touches
+    // more than one, and the ordinary-terrain cells at the corners are far
+    // enough away to stay dry.
+    const grid: CellKind[][] = [
+      ['floor',    'floor',    'floor', 'floor', 'floor',      'floor',      'floor'],
+      ['floor',    'water',    'floor', 'ice',   'floor',      'corridor',   'floor'],
+      ['floor',    'floor',    'floor', 'floor', 'floor',      'floor',      'floor'],
+      ['floor',    'fountain', 'floor', 'floor', 'drawbridge', 'floor',      'floor'],
+      ['floor',    'floor',    'floor', 'floor', 'floor',      'door_open',  'stairs_up'],
+    ];
+    const level: LevelView = {
+      width: 7,
+      height: 5,
+      kindAt(x, y) {
+        if (x < 0 || y < 0 || x >= 7 || y >= 5) return 'unexplored';
+        return grid[y]![x]!;
+      },
+      cellAt() { return null; },
+    };
+
+    // Each damp source cell reports damp.
+    for (const [x, y] of [[1, 1], [3, 1], [1, 3], [4, 3]] as const) {
+      expect(isDampCell(level, x, y)).toBe(true);
+    }
+    // Orthogonal neighbours of the water at (1, 1) are damp.
+    for (const [x, y] of [[0, 1], [2, 1], [1, 0], [1, 2]] as const) {
+      expect(isDampCell(level, x, y)).toBe(true);
+    }
+    // Diagonal neighbours are not damp — the predicate is 4-connected.
+    for (const [x, y] of [[0, 0], [2, 0], [0, 2], [2, 2]] as const) {
+      expect(isDampCell(level, x, y)).toBe(false);
+    }
+    // Corridors, ordinary floor rooms, doors and stairs are dry when nothing
+    // damp is next to them (ticket: "the level gives a reason").
+    expect(isDampCell(level, 5, 1)).toBe(false); // corridor, far from any source
+    expect(isDampCell(level, 6, 0)).toBe(false); // ordinary floor corner
+    expect(isDampCell(level, 5, 4)).toBe(false); // door_open in a dry row
+    expect(isDampCell(level, 6, 4)).toBe(false); // stairs_up in a dry row
+    // Out-of-range coordinates are dry (the LevelView reports `unexplored`).
+    expect(isDampCell(level, -1, 2)).toBe(false);
+    expect(isDampCell(level, 7, 2)).toBe(false);
   });
 
   it('a closed door takes its axis from the neighbouring walls', () => {
