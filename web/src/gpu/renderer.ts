@@ -1,85 +1,94 @@
 /**
- * WebGPU renderer bootstrap (browser-only) ported from
- * `~/afterburn/src/render/renderer.js` and specified by `docs/gpu.md` §3.
- * Probes `navigator.gpu` for the adapter's `maxColorAttachmentBytesPerSample`,
- * constructs a `WebGPURenderer` requesting a 64-byte MRT budget, applies AgX
- * tone mapping at exposure 1.0 and PCF soft shadows, awaits
- * `renderer.init()`, and returns the renderer alongside the caps needed by
- * `createPipeline` and `clampQuality`.
- *
- * Never throws on a missing `navigator.gpu`: three.js falls back to a
- * WebGL2 backend, which is a supported (but capped at `'medium'`) outcome.
+ * WebGPU renderer bootstrap (browser-only) — strict-TypeScript port of
+ * `vendor/afterburn/src/render/renderer.js` (afterburn commit 8492a00).
+ * Probes `navigator.gpu` for `maxColorAttachmentBytesPerSample`, then
+ * constructs a `WebGPURenderer` — requesting the 64-byte MRT budget only
+ * when the probe reports it is available — applies AgX tone mapping at
+ * exposure 1.0, PCF soft shadows, awaits `renderer.init()`, and returns
+ * `{ renderer, caps }` per `docs/gpu.md` §3. Never throws for a missing
+ * `navigator.gpu`: three's WebGL2 fallback backend is a supported outcome
+ * and gets `caps.webgpu = false`, `caps.maxQuality = 'medium'`.
  */
-import * as THREE from 'three';
-import { WebGPURenderer } from 'three/webgpu';
-import { clampQuality, type QualityName, type RendererCaps } from './pipeline.js';
+import * as THREE from 'three/webgpu';
+import type { QualityName, RendererCaps } from './pipeline.js';
 
-const MRT_LIMIT_BYTES = 64;
-
-/** Result of `createRenderer`: the live renderer + probed caps. */
-export interface RendererBundle {
-  renderer: WebGPURenderer;
-  caps: RendererCaps;
-}
-
+/** Probe the adapter so we never request limits the device cannot give. */
 interface AdapterProbe {
   webgpu: boolean;
   mrtBytes: number;
 }
 
-async function probeAdapter(): Promise<AdapterProbe> {
-  const nav = typeof navigator !== 'undefined' ? navigator : undefined;
-  const gpu = nav !== undefined ? (nav as Navigator & { gpu?: GPU }).gpu : undefined;
-  if (gpu === undefined) return { webgpu: false, mrtBytes: 0 };
-  try {
-    const adapter = await gpu.requestAdapter();
-    if (adapter === null) return { webgpu: false, mrtBytes: 0 };
-    const raw = (adapter.limits as unknown as Record<string, number>)['maxColorAttachmentBytesPerSample'];
-    const mrtBytes = typeof raw === 'number' && Number.isFinite(raw) ? raw : 32;
-    return { webgpu: true, mrtBytes };
-  } catch {
-    return { webgpu: false, mrtBytes: 0 };
-  }
+// Minimal WebGPU adapter shape — the `@webgpu/types` package isn't installed
+// and the standard DOM lib doesn't declare `navigator.gpu`.
+interface MinimalAdapter {
+  limits: Record<string, number>;
+}
+interface MinimalGpu {
+  requestAdapter(options?: { powerPreference?: 'high-performance' | 'low-power' }): Promise<MinimalAdapter | null>;
 }
 
-/** Options for `createRenderer`. `canvas` is optional so three can create one. */
+async function probe(): Promise<AdapterProbe> {
+  const out: AdapterProbe = { webgpu: false, mrtBytes: 32 };
+  try {
+    const nav = typeof navigator !== 'undefined' ? (navigator as unknown as { gpu?: MinimalGpu }) : undefined;
+    const gpu = nav?.gpu;
+    if (gpu !== undefined) {
+      const ad = await gpu.requestAdapter({ powerPreference: 'high-performance' });
+      if (ad !== null) {
+        out.webgpu = true;
+        const raw = ad.limits['maxColorAttachmentBytesPerSample'];
+        out.mrtBytes = typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? raw : 32;
+      }
+    }
+  } catch {
+    // fall through to WebGL2 backend
+  }
+  return out;
+}
+
+/** Options for `createRenderer`; matches afterburn's `{ canvas, maxDpr }` shape. */
 export interface CreateRendererOptions {
-  readonly canvas?: HTMLCanvasElement;
-  readonly antialias?: boolean;
-  readonly powerPreference?: 'default' | 'high-performance' | 'low-power';
+  canvas?: HTMLCanvasElement;
+  maxDpr?: number;
+}
+
+/** Result of `createRenderer`: the initialised renderer plus the probed caps. */
+export interface RendererBundle {
+  renderer: THREE.WebGPURenderer;
+  caps: RendererCaps;
 }
 
 /**
  * Build the WebGPU renderer + probe caps. Awaits `renderer.init()` before
- * returning. If the adapter probe fails, the renderer still initialises
- * (three.js falls back to WebGL2); `caps.webgpu` will be `false` and
+ * returning; if the adapter probe fails, the renderer still initialises
+ * (three falls back to WebGL2) and `caps.webgpu` will be `false` /
  * `caps.maxQuality` will be `'medium'`.
  */
-export async function createRenderer(opts: CreateRendererOptions = {}): Promise<RendererBundle> {
-  const probe = await probeAdapter();
-
-  const renderer = new WebGPURenderer({
-    canvas: opts.canvas,
-    antialias: opts.antialias ?? false,
-    powerPreference: opts.powerPreference ?? 'high-performance',
-    requiredLimits: { maxColorAttachmentBytesPerSample: MRT_LIMIT_BYTES },
-  });
-  renderer.toneMapping = THREE.AgXToneMapping;
-  renderer.toneMappingExposure = 1.0;
+export async function createRenderer(o: CreateRendererOptions = {}): Promise<RendererBundle> {
+  const { canvas, maxDpr = 1.5 } = o;
+  const caps: { webgpu: boolean; mrtBytes: number } = await probe();
+  const params: THREE.WebGPURendererParameters = {
+    antialias: false,
+    powerPreference: 'high-performance',
+  };
+  if (canvas !== undefined) params.canvas = canvas;
+  if (caps.webgpu && caps.mrtBytes >= 64) {
+    params.requiredLimits = { maxColorAttachmentBytesPerSample: 64 };
+  }
+  const renderer = new THREE.WebGPURenderer(params);
+  const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+  renderer.setPixelRatio(Math.min(dpr, maxDpr));
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-
+  renderer.toneMapping = THREE.AgXToneMapping;
+  renderer.toneMappingExposure = 1.0;
   await renderer.init();
-
-  const capsBase: RendererCaps = {
-    webgpu: probe.webgpu,
-    mrtBytes: probe.mrtBytes,
-    maxQuality: 'ultra',
-  };
-  const maxQuality: QualityName = clampQuality('ultra', capsBase);
-
+  const backend = renderer.backend as unknown as { isWebGPUBackend?: boolean } | undefined;
+  const isWebGPU = backend?.isWebGPUBackend === true;
+  // Full MRT stack needs the raised attachment budget; otherwise cap quality.
+  const maxQuality: QualityName = isWebGPU && caps.mrtBytes >= 64 ? 'ultra' : 'medium';
   return {
     renderer,
-    caps: { ...capsBase, maxQuality },
+    caps: { webgpu: isWebGPU, mrtBytes: caps.mrtBytes, maxQuality },
   };
 }

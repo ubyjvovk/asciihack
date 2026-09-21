@@ -1,41 +1,71 @@
 /**
- * GPU post-processing pipeline (browser-only) — the MRT → SSGI → SSR →
- * god rays → firefly-clamp → TRAA → DOF → bloom → AgX → grade → vignette →
- * grain → fade node graph ported from `~/afterburn/src/render/pipeline.js`
- * (see `docs/gpu.md` and `docs/gpu-pipeline.md`).
+ * GPU post-processing pipeline (browser-only) — a strict-TypeScript port of
+ * `vendor/afterburn/src/render/pipeline.js` (afterburn commit 8492a00).
  *
- * The impure builder (`createPipeline`) constructs the graph and drives
- * `setQuality`; the pure exports (`clampQuality`, `qualityPlan`,
- * `createLook`) exist so that `tests/gpu-pipeline.test.ts` can pin the
- * behaviour that matters without touching a GPU.
+ * The graph is `MRT (output + optionally diffuseColor / packed normal /
+ * metalrough / velocity) → SSGI or GTAO → SSR → god rays (bilateral blur +
+ * depthAwareBlend) → weather overlay → firefly clamp → TRAA → DOF → bloom
+ * → renderOutput (AgX + sRGB) → FXAA (if selected) → split-tone →
+ * contrast → saturation → vignette → grain → fade`. The nodes and their
+ * order **are** the look; see `docs/gpu.md` §1–3, §8 and
+ * `docs/gpu-pipeline.md` for the rationale.
+ *
+ * The impure builder (`createPipeline`) needs a live renderer/scene/camera;
+ * the pure companions (`clampQuality`, `qualityPlan`, `createLook`,
+ * `QUALITY`) exist so `tests/gpu-pipeline.test.ts` can pin the behaviour
+ * that matters without touching a GPU.
  */
-import { PostProcessing, type PerspectiveCamera, type Scene } from 'three/webgpu';
+import * as THREE from 'three/webgpu';
+import type {
+  Node as WGNode,
+  UniformNode,
+  Renderer,
+  Scene,
+  PerspectiveCamera,
+  DirectionalLight,
+  PointLight,
+} from 'three/webgpu';
+import { Color } from 'three';
 import {
   pass,
   mrt,
   output,
-  emissive,
-  transformedNormalView,
-  uniform,
-  mix,
-  luminance,
-  saturate,
-  clamp,
-  uv,
+  normalView,
+  diffuseColor,
+  velocity,
+  metalness,
+  roughness,
+  vec2,
   vec3,
   vec4,
-  dot,
+  float,
+  int,
+  uniform,
+  add,
+  mix,
+  smoothstep,
+  clamp,
+  min,
+  packNormalToRGB,
+  unpackRGBToNormal,
+  sample,
+  convertToTexture,
+  screenUV,
+  screenCoordinate,
+  time,
   renderOutput,
   interleavedGradientNoise,
+  luminance,
 } from 'three/tsl';
 import { ssgi } from 'three/addons/tsl/display/SSGINode.js';
 import { ssr } from 'three/addons/tsl/display/SSRNode.js';
-import { ao } from 'three/addons/tsl/display/GTAONode.js';
-import { godrays } from 'three/addons/tsl/display/GodraysNode.js';
+import { ao as gtao } from 'three/addons/tsl/display/GTAONode.js';
 import { traa } from 'three/addons/tsl/display/TRAANode.js';
 import { fxaa } from 'three/addons/tsl/display/FXAANode.js';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
 import { dof } from 'three/addons/tsl/display/DepthOfFieldNode.js';
+import { godrays } from 'three/addons/tsl/display/GodraysNode.js';
+import { bilateralBlur } from 'three/addons/tsl/display/BilateralBlurNode.js';
 import { depthAwareBlend } from 'three/addons/tsl/display/depthAwareBlend.js';
 
 /** One of the four fixed quality tiers from `docs/gpu.md` §3. */
@@ -48,100 +78,97 @@ export interface RendererCaps {
   maxQuality: QualityName;
 }
 
-/** Boolean/numeric flags a tier resolves to; consumed by `createPipeline`. */
+/**
+ * Per-tier switches, matching afterburn's inline table entries key-for-key.
+ * Optional fields are present only on the tiers that use them (matches
+ * `{ ...QUALITY[qName], ...override }` semantics — undefined stays undefined).
+ */
 export interface QualitySettings {
-  ssgi: boolean;
-  ssgiSlices: number;
-  ssgiSteps: number;
+  gi: 'none' | 'ao' | 'ssgi';
+  slices?: number;
+  steps?: number;
   ssr: boolean;
-  ssrFullRes: boolean;
-  godRays: boolean;
-  godRaySteps: number;
-  traa: boolean;
+  ssrQ?: number;
+  ssrScale?: number;
+  rays: boolean;
+  raySteps?: number;
+  aa: 'fxaa' | 'traa';
   dof: boolean;
   bloom: boolean;
-  gtao: boolean;
-  fxaa: boolean;
-  giScale: number;
-  maxRadiance: number;
+  shadow: number;
+  scale: number;
+  /** SSGI-only: run the SSGI target at `giScale` of the beauty size (1 = full). */
+  giScale?: number;
 }
 
 const RANK: Record<QualityName, number> = { low: 0, medium: 1, high: 2, ultra: 3 };
-const NAMES: readonly QualityName[] = ['low', 'medium', 'high', 'ultra'];
 
-/** The four tiers, kept verbatim from afterburn (docs/gpu-pipeline.md#quality). */
+/**
+ * The four tiers, ported one-for-one from
+ * `vendor/afterburn/src/render/pipeline.js` `QUALITY`. Do not renumber:
+ * the SSGI slice/step counts, SSR quality/scale, ray step counts and
+ * shadow-map sizes are load-bearing for the look budget.
+ */
 export const QUALITY: Readonly<Record<QualityName, QualitySettings>> = {
   low: {
-    ssgi: false,
-    ssgiSlices: 0,
-    ssgiSteps: 0,
+    gi: 'none',
     ssr: false,
-    ssrFullRes: false,
-    godRays: false,
-    godRaySteps: 0,
-    traa: false,
+    rays: false,
+    aa: 'fxaa',
     dof: false,
     bloom: true,
-    gtao: false,
-    fxaa: true,
-    giScale: 1.0,
-    maxRadiance: 8.0,
+    shadow: 2048,
+    scale: 1,
   },
   medium: {
-    ssgi: false,
-    ssgiSlices: 0,
-    ssgiSteps: 0,
+    gi: 'ao',
     ssr: true,
-    ssrFullRes: false,
-    godRays: false,
-    godRaySteps: 0,
-    traa: true,
+    ssrQ: 0.35,
+    ssrScale: 0.5,
+    rays: false,
+    aa: 'traa',
     dof: true,
     bloom: true,
-    gtao: true,
-    fxaa: false,
-    giScale: 1.0,
-    maxRadiance: 8.0,
+    shadow: 2048,
+    scale: 1,
   },
   high: {
-    ssgi: true,
-    ssgiSlices: 1,
-    ssgiSteps: 12,
+    gi: 'ssgi',
+    slices: 1,
+    steps: 12,
     ssr: true,
-    ssrFullRes: false,
-    godRays: true,
-    godRaySteps: 36,
-    traa: true,
+    ssrQ: 0.5,
+    ssrScale: 0.5,
+    rays: true,
+    raySteps: 40,
+    aa: 'traa',
     dof: true,
     bloom: true,
-    gtao: false,
-    fxaa: false,
-    giScale: 1.0,
-    maxRadiance: 8.0,
+    shadow: 4096,
+    scale: 1,
   },
   ultra: {
-    ssgi: true,
-    ssgiSlices: 2,
-    ssgiSteps: 16,
+    gi: 'ssgi',
+    slices: 2,
+    steps: 10,
     ssr: true,
-    ssrFullRes: true,
-    godRays: true,
-    godRaySteps: 72,
-    traa: true,
+    ssrQ: 0.75,
+    ssrScale: 1,
+    rays: true,
+    raySteps: 72,
+    aa: 'traa',
     dof: true,
     bloom: true,
-    gtao: false,
-    fxaa: false,
-    giScale: 1.0,
-    maxRadiance: 8.0,
+    shadow: 4096,
+    scale: 1,
   },
 };
 
 /**
- * Cap the requested tier by what the backend can run — the rule from
- * `docs/gpu.md` §3: a non-WebGPU backend, or a WebGPU adapter whose MRT
- * budget is under 64 bytes/sample, cannot run the full stack and is
- * clamped at `'medium'`.
+ * Cap the requested tier by what the backend can run: a non-WebGPU
+ * backend, or a WebGPU adapter whose MRT budget is under 64 bytes/sample,
+ * cannot run the full stack and is clamped at `'medium'` (docs/gpu.md §3).
+ * `caps.maxQuality` may cap tighter; the tighter of the two wins.
  */
 export function clampQuality(requested: QualityName, caps: RendererCaps): QualityName {
   const backendCap: QualityName = caps.webgpu && caps.mrtBytes >= 64 ? 'ultra' : 'medium';
@@ -151,245 +178,349 @@ export function clampQuality(requested: QualityName, caps: RendererCaps): Qualit
 }
 
 /**
- * Resolve a named tier plus an optional dev override into the flat flags
- * the graph builder consumes. Override wins field-by-field.
+ * Resolve a named tier plus an optional dev override into the flags
+ * `createPipeline` then consumes — afterburn's `{ ...tier, ...override }`.
  */
-export function qualityPlan(
-  name: QualityName,
-  override?: Partial<QualitySettings>,
-): QualitySettings {
+export function qualityPlan(name: QualityName, override?: Partial<QualitySettings>): QualitySettings {
   const base = QUALITY[name];
-  if (!override) return { ...base };
-  return { ...base, ...override };
+  return override ? { ...base, ...override } : { ...base };
 }
 
 /**
- * The grade-block uniforms (afterburn's split-tone → contrast → saturation
- * → vignette → grain → fade). Plain values so the tier + look are testable
- * in Node; the pipeline builder wraps each field in a `uniform()` node.
+ * Tunable look values (moods animate these at runtime). Plain numbers so
+ * `createLook` stays testable in Node; `createPipeline` wraps each field
+ * in a `uniform(...)` node internally. Tints are `0xRRGGBB` hex, matching
+ * afterburn's `uniform(color(0x...))` shorthand.
  */
 export interface Look {
+  giIntensity: number;
+  aoIntensity: number;
+  giRadius: number;
+  ssrIntensity: number;
+  rayDensity: number;
+  rayMax: number;
+  rayColor: number;
+  focus: number;
+  focusRange: number;
+  bokeh: number;
+  bloomStrength: number;
+  bloomRadius: number;
+  bloomThreshold: number;
   exposure: number;
-  shadowTint: [number, number, number];
-  highlightTint: [number, number, number];
-  tintBalance: number;
   contrast: number;
-  midGrey: number;
   saturation: number;
+  shadowTint: number;
+  highlightTint: number;
+  tintAmount: number;
   vignette: number;
-  vignetteFalloff: number;
   grain: number;
+  maxRadiance: number;
   fade: number;
 }
 
 const LOOK_DEFAULTS: Look = {
+  giIntensity: 9.0,
+  aoIntensity: 1.35,
+  giRadius: 7.0,
+  ssrIntensity: 0.85,
+  rayDensity: 0.0035,
+  rayMax: 0.3,
+  rayColor: 0xffd9ac,
+  focus: 30.0,
+  focusRange: 38.0,
+  bokeh: 1.0,
+  bloomStrength: 0.22,
+  bloomRadius: 0.55,
+  bloomThreshold: 1.0,
   exposure: 1.0,
-  shadowTint: [0.86, 1.00, 1.08],
-  highlightTint: [1.10, 1.04, 0.92],
-  tintBalance: 0.5,
-  contrast: 1.05,
-  midGrey: 0.18,
-  saturation: 1.08,
-  vignette: 0.35,
-  vignetteFalloff: 1.20,
-  grain: 0.03,
+  contrast: 1.06,
+  saturation: 1.02,
+  shadowTint: 0x0e2a33,
+  highlightTint: 0xfff1dc,
+  tintAmount: 0.16,
+  vignette: 0.42,
+  grain: 0.028,
+  maxRadiance: 8.0,
   fade: 1.0,
 };
 
-/** Returns a fresh Look object at the documented defaults. */
+/** Fresh Look at afterburn's defaults, with optional per-field overrides. */
 export function createLook(overrides?: Partial<Look>): Look {
-  const base: Look = {
-    ...LOOK_DEFAULTS,
-    shadowTint: [...LOOK_DEFAULTS.shadowTint] as [number, number, number],
-    highlightTint: [...LOOK_DEFAULTS.highlightTint] as [number, number, number],
+  if (!overrides) return { ...LOOK_DEFAULTS };
+  return { ...LOOK_DEFAULTS, ...overrides };
+}
+
+/**
+ * The uniform-wrapped look nodes moods.ts animates at runtime. Same field
+ * set as `Look`, but each value is a live `UniformNode` (mutate via
+ * `.value = ...`).
+ */
+export interface LookUniforms {
+  giIntensity: UniformNode<'float', number>;
+  aoIntensity: UniformNode<'float', number>;
+  giRadius: UniformNode<'float', number>;
+  ssrIntensity: UniformNode<'float', number>;
+  rayDensity: UniformNode<'float', number>;
+  rayMax: UniformNode<'float', number>;
+  rayColor: UniformNode<'color', Color>;
+  focus: UniformNode<'float', number>;
+  focusRange: UniformNode<'float', number>;
+  bokeh: UniformNode<'float', number>;
+  bloomStrength: UniformNode<'float', number>;
+  bloomRadius: UniformNode<'float', number>;
+  bloomThreshold: UniformNode<'float', number>;
+  exposure: UniformNode<'float', number>;
+  contrast: UniformNode<'float', number>;
+  saturation: UniformNode<'float', number>;
+  shadowTint: UniformNode<'color', Color>;
+  highlightTint: UniformNode<'color', Color>;
+  tintAmount: UniformNode<'float', number>;
+  vignette: UniformNode<'float', number>;
+  grain: UniformNode<'float', number>;
+  maxRadiance: UniformNode<'float', number>;
+  fade: UniformNode<'float', number>;
+}
+
+function wrapLook(l: Look): LookUniforms {
+  return {
+    giIntensity: uniform(l.giIntensity),
+    aoIntensity: uniform(l.aoIntensity),
+    giRadius: uniform(l.giRadius),
+    ssrIntensity: uniform(l.ssrIntensity),
+    rayDensity: uniform(l.rayDensity),
+    rayMax: uniform(l.rayMax),
+    rayColor: uniform(new Color(l.rayColor)),
+    focus: uniform(l.focus),
+    focusRange: uniform(l.focusRange),
+    bokeh: uniform(l.bokeh),
+    bloomStrength: uniform(l.bloomStrength),
+    bloomRadius: uniform(l.bloomRadius),
+    bloomThreshold: uniform(l.bloomThreshold),
+    exposure: uniform(l.exposure),
+    contrast: uniform(l.contrast),
+    saturation: uniform(l.saturation),
+    shadowTint: uniform(new Color(l.shadowTint)),
+    highlightTint: uniform(new Color(l.highlightTint)),
+    tintAmount: uniform(l.tintAmount),
+    vignette: uniform(l.vignette),
+    grain: uniform(l.grain),
+    maxRadiance: uniform(l.maxRadiance),
+    fade: uniform(l.fade),
   };
-  if (!overrides) return base;
-  const merged: Look = { ...base, ...overrides };
-  if (overrides.shadowTint) merged.shadowTint = [...overrides.shadowTint] as [number, number, number];
-  if (overrides.highlightTint) merged.highlightTint = [...overrides.highlightTint] as [number, number, number];
-  return merged;
+}
+
+/**
+ * Options for `createPipeline`; `sun` is only needed on tiers that turn god
+ * rays on. Callers are expected to have already called `clampQuality` with
+ * the probed `RendererCaps`, so `requested` is applied directly.
+ */
+export interface PipelineOptions {
+  renderer: Renderer;
+  scene: Scene;
+  camera: PerspectiveCamera;
+  requested?: QualityName;
+  override?: Partial<QualitySettings> | null;
+  sun?: DirectionalLight | PointLight | null;
+  look?: Partial<Look>;
+  /** Scene of additive unlit effects (rain, motes) composited after the lighting stack. */
+  overlay?: Scene | null;
 }
 
 /** Handle returned by `createPipeline` — owns the graph and the tier state. */
 export interface PipelineHandle {
-  readonly postProcessing: PostProcessing;
-  readonly look: Look;
-  quality(): { name: QualityName; settings: QualitySettings };
-  setQuality(name: QualityName, override?: Partial<QualitySettings>): void;
-  render(): void;
-  renderAsync(): Promise<void>;
-  dispose(): void;
+  pipeline: THREE.RenderPipeline;
+  look: LookUniforms;
+  state: PipelineState;
+  setQuality: (q: QualityName) => void;
+  render: () => void;
 }
 
-/** Options for `createPipeline`; the sun is only needed when god rays are enabled. */
-export interface PipelineOptions {
-  readonly renderer: import('three/webgpu').Renderer;
-  readonly scene: Scene;
-  readonly camera: PerspectiveCamera;
-  readonly caps: RendererCaps;
-  readonly requested?: QualityName;
-  readonly override?: Partial<QualitySettings>;
-  readonly sun?: import('three').DirectionalLight | import('three').PointLight;
-  readonly look?: Partial<Look>;
+/** Live tier state and the per-build node references (for moods / debugging). */
+export interface PipelineState {
+  quality: QualityName;
+  nodes: Record<string, WGNode>;
 }
-
-type Node4 = import('three/webgpu').Node<'vec4'>;
 
 /**
  * Build the post-processing graph and return a handle. Impure — needs a
- * `WebGPURenderer` and a live scene/camera. The pass order (MRT → SSGI/GTAO
- * → SSR → god rays → firefly-clamp → TRAA → DOF → bloom → AgX renderOutput
- * → split-tone/contrast/saturation grade → vignette → grain → fade) is the
- * whole reason this file exists; see `docs/gpu-pipeline.md`.
+ * live `Renderer` (WebGPURenderer or its WebGL2 fallback) plus scene and
+ * camera. The pass order **is** the look; see the file JSDoc and
+ * `docs/gpu-pipeline.md` before touching it.
  */
 export function createPipeline(opts: PipelineOptions): PipelineHandle {
-  const { renderer, scene, camera, caps, sun } = opts;
-  const look = createLook(opts.look);
+  const { renderer, scene, camera } = opts;
+  const sun = opts.sun ?? null;
+  const overlay = opts.overlay ?? null;
+  const override = opts.override ?? null;
+  const look = wrapLook(createLook(opts.look));
 
-  const postProcessing = new PostProcessing(renderer);
-  postProcessing.outputColorTransform = false;
+  const pipeline = new THREE.RenderPipeline(renderer);
+  pipeline.outputColorTransform = false; // we tone-map ourselves, then grade in display space
 
-  const state = {
-    name: clampQuality(opts.requested ?? 'ultra', caps),
-    settings: {} as QualitySettings,
+  // afterburn's default is `'high'`; the caller is expected to clamp with `clampQuality` first.
+  const state: PipelineState = {
+    quality: opts.requested ?? 'high',
+    nodes: {},
   };
-  state.settings = qualityPlan(state.name, opts.override);
 
-  const exposureU = uniform(look.exposure);
-  const shadowTintU = uniform(vec3(look.shadowTint[0], look.shadowTint[1], look.shadowTint[2]));
-  const highlightTintU = uniform(
-    vec3(look.highlightTint[0], look.highlightTint[1], look.highlightTint[2]),
-  );
-  const tintBalanceU = uniform(look.tintBalance);
-  const contrastU = uniform(look.contrast);
-  const midGreyU = uniform(look.midGrey);
-  const saturationU = uniform(look.saturation);
-  const vignetteU = uniform(look.vignette);
-  const vignetteFalloffU = uniform(look.vignetteFalloff);
-  const grainU = uniform(look.grain);
-  const fadeU = uniform(look.fade);
-
-  const rebuild = () => {
-    const s = state.settings;
+  const build = (qName: QualityName): void => {
+    const q: QualitySettings = qualityPlan(qName, override ?? undefined);
+    state.quality = qName;
+    state.nodes = {};
 
     const scenePass = pass(scene, camera);
-    scenePass.setMRT(
-      mrt({
-        output: output,
-        emissive: emissive,
-        normal: transformedNormalView,
-      }),
-    );
-
-    const beauty = scenePass.getTextureNode('output');
-    const depth = scenePass.getTextureNode('depth');
-    const normal = scenePass.getTextureNode('normal');
-    const viewZ = scenePass.getViewZNode();
-    const velocity = scenePass.getTextureNode('velocity');
-
-    let color: Node4 = beauty.mul(exposureU) as unknown as Node4;
-
-    if (s.ssgi) {
-      const gi = ssgi(beauty, depth, normal, camera);
-      gi.sliceCount.value = s.ssgiSlices;
-      gi.stepCount.value = s.ssgiSteps;
-      gi.giIntensity.value = s.giScale;
-      color = mix(color, gi as unknown as Node4, saturate(uniform(s.giScale))) as unknown as Node4;
-    } else if (s.gtao) {
-      const gtao = ao(depth, normal, camera);
-      color = color.mul(gtao as unknown as Node4) as unknown as Node4;
+    const needNormal = q.gi !== 'none' || q.ssr;
+    const targets: Record<string, WGNode> = { output };
+    if (q.gi === 'ssgi') targets['diffuseColor'] = diffuseColor;
+    if (needNormal) targets['normal'] = packNormalToRGB(normalView);
+    if (q.ssr) targets['metalrough'] = vec2(metalness, roughness);
+    if (q.aa === 'traa') targets['velocity'] = velocity;
+    scenePass.setMRT(mrt(targets));
+    for (const k of ['diffuseColor', 'normal', 'metalrough'] as const) {
+      if (targets[k] !== undefined) scenePass.getTexture(k).type = THREE.UnsignedByteType;
     }
 
-    if (s.ssr) {
-      const rough = uniform(s.ssrFullRes ? 0.15 : 0.35);
-      const metal = uniform(0.0);
-      const reflected = ssr(color, depth, normal as unknown as import('three/webgpu').Node<'vec3'>, {
-        roughness: rough,
-        metalness: metal,
+    const pColor: WGNode<'vec4'> = scenePass.getTextureNode('output');
+    const pDepth = scenePass.getTextureNode('depth');
+    // Unpack RG-encoded normals from the MRT slot back into a view-space direction.
+    const pNormal: WGNode<'vec3'> | null = needNormal
+      ? sample<'vec3'>((uv) =>
+          unpackRGBToNormal(scenePass.getTextureNode('normal').sample(uv)),
+        )
+      : null;
+
+    let node: WGNode<'vec4'> = pColor;
+
+    if (q.gi === 'ssgi' && pNormal !== null) {
+      const gi = ssgi(pColor, pDepth, pNormal, camera);
+      gi.sliceCount.value = q.slices ?? 1;
+      gi.stepCount.value = q.steps ?? 12;
+      gi.radius = look.giRadius;
+      gi.giIntensity = look.giIntensity;
+      gi.aoIntensity = look.aoIntensity;
+      gi.thickness.value = 0.6;
+      // SSGI has no resolution knob of its own and is the most expensive pass: run it on a smaller
+      // target when `q.giScale < 1`. GI/AO are low-frequency; bilinear upsample + TRAA hides it.
+      // (`setSize` isn't declared on SSGINode but exists at runtime — see the vendored source.)
+      const giScale = q.giScale ?? 1;
+      if (giScale !== 1) {
+        const sized = gi as unknown as { setSize(w: number, h: number): void };
+        const baseSetSize = sized.setSize.bind(sized);
+        sized.setSize = (w: number, h: number): void =>
+          baseSetSize(Math.max(1, Math.round(w * giScale)), Math.max(1, Math.round(h * giScale)));
+      }
+      const pDiffuse = scenePass.getTextureNode('diffuseColor');
+      node = vec4(
+        add(pColor.rgb.mul(gi.getAONode().r), pDiffuse.rgb.mul(gi.getGINode().rgb)),
+        pColor.a,
+      );
+      state.nodes['gi'] = gi;
+    } else if (q.gi === 'ao' && pNormal !== null) {
+      const aoPass = gtao(pDepth, pNormal, camera);
+      aoPass.resolutionScale = 0.5;
+      node = vec4(pColor.rgb.mul(aoPass.getTextureNode().r), pColor.a);
+      state.nodes['ao'] = aoPass;
+    }
+
+    if (q.ssr && pNormal !== null) {
+      const mr = scenePass.getTextureNode('metalrough');
+      // SSR reads the *base* color pass, not the GI-composited node; the composite is done below.
+      const r = ssr(pColor, pDepth, pNormal, {
+        metalnessNode: mr.r,
+        roughnessNode: mr.g,
+        reflectNonMetals: true,
+        camera,
       });
-      color = depthAwareBlend(color, reflected as unknown as Node4, depth, {}) as unknown as Node4;
+      r.maxDistance.value = 40;
+      r.thickness.value = 0.4;
+      r.quality.value = q.ssrQ ?? 0.5;
+      r.intensity = look.ssrIntensity;
+      r.resolutionScale = q.ssrScale ?? 1;
+      node = vec4(node.rgb.add(r.rgb), node.a);
+      state.nodes['ssr'] = r;
     }
 
-    if (s.godRays && sun !== undefined) {
-      const rays = godrays(depth, camera, sun);
-      rays.raymarchSteps.value = s.godRaySteps;
-      color = (color.add(rays as unknown as Node4)) as unknown as Node4;
+    if (q.rays && sun !== null) {
+      const g = godrays(pDepth, camera, sun);
+      g.density = look.rayDensity;
+      g.maxDensity = look.rayMax;
+      g.distanceAttenuation.value = 0.02;
+      g.raymarchSteps.value = q.raySteps ?? 40;
+      const blur = bilateralBlur(g.getTextureNode());
+      node = depthAwareBlend(convertToTexture(node), blur.getTextureNode(), pDepth, camera, {
+        blendColor: look.rayColor,
+        edgeRadius: uniform(int(2)),
+        edgeStrength: uniform(float(2)),
+      });
+      state.nodes['rays'] = g;
     }
 
-    // Firefly clamp before TRAA — keep highlights inside the stable range.
-    const maxRadU = uniform(s.maxRadiance);
-    color = clamp(color, vec4(0.0, 0.0, 0.0, 0.0), vec4(maxRadU, maxRadU, maxRadU, 1.0)) as unknown as Node4;
-
-    if (s.traa) {
-      color = traa(color, depth, velocity, camera) as unknown as Node4;
+    // Weather overlay (rain, motes) gets its own pass so transparent quads never touch the
+    // G-buffer that SSGI/SSR read from.
+    if (overlay !== null) {
+      const op = pass(overlay, camera);
+      node = vec4(node.rgb.add(op.getTextureNode('output').rgb), node.a);
+      state.nodes['overlay'] = op;
     }
 
-    if (s.dof) {
-      color = dof(color, viewZ) as unknown as Node4;
+    // Tame fireflies (sun/moon glints on mirror puddles) before TRAA history, DOF bokeh and bloom.
+    node = vec4(min(node.rgb, vec3(look.maxRadiance)), node.a);
+
+    if (q.aa === 'traa') {
+      node = traa(node, pDepth, scenePass.getTextureNode('velocity'), camera);
     }
 
-    if (s.bloom) {
-      color = color.add(bloom(color) as unknown as Node4) as unknown as Node4;
+    if (q.dof) {
+      // DepthOfFieldNode's addon .d.ts extends TempNode without <'vec4'>; cast to preserve the vec4 chain.
+      node = dof(node, scenePass.getViewZNode(), look.focus, look.focusRange, look.bokeh) as unknown as WGNode<'vec4'>;
     }
 
-    // AgX tone map + sRGB write; pipeline.outputColorTransform stays false.
-    color = renderOutput(color) as unknown as Node4;
-
-    // Split-tone grade: shadowTint → highlightTint by (luma/tintBalance).
-    const lum = luminance(color);
-    const tintMix = saturate(lum.div(tintBalanceU));
-    const tint = mix(shadowTintU, highlightTintU, tintMix);
-    color = color.mul(vec4(tint, 1.0)) as unknown as Node4;
-
-    // Contrast around mid grey.
-    color = mix(vec4(midGreyU, midGreyU, midGreyU, 1.0), color, contrastU) as unknown as Node4;
-
-    // Saturation around luminance.
-    const gray = luminance(color);
-    color = mix(vec4(gray, gray, gray, 1.0), color, saturationU) as unknown as Node4;
-
-    // Radial vignette.
-    const centred = uv().sub(0.5);
-    const d = saturate(dot(centred, centred).mul(vignetteFalloffU));
-    const v = saturate(uniform(1.0).sub(d.mul(vignetteU)));
-    color = color.mul(vec4(v, v, v, 1.0)) as unknown as Node4;
-
-    // Grain via interleavedGradientNoise, then final fade multiply.
-    const noise = interleavedGradientNoise().sub(0.5).mul(grainU);
-    color = color.add(vec4(noise, noise, noise, 0.0)) as unknown as Node4;
-    color = color.mul(vec4(fadeU, fadeU, fadeU, 1.0)) as unknown as Node4;
-
-    if (s.fxaa) {
-      color = fxaa(color) as unknown as Node4;
+    if (q.bloom) {
+      const b = bloom(node, 1, 0.5, 1);
+      b.strength = look.bloomStrength;
+      b.radius = look.bloomRadius;
+      b.threshold = look.bloomThreshold;
+      node = node.add(b);
+      state.nodes['bloom'] = b;
     }
 
-    postProcessing.outputNode = color;
-    postProcessing.needsUpdate = true;
+    // ---- display-space finishing ----
+    // renderOutput → Node<'vec4'>; fxaa → FXAANode (untyped TempNode → cast).
+    let o: WGNode<'vec4'> = renderOutput(vec4(node.rgb.mul(look.exposure), 1.0));
+    if (q.aa === 'fxaa') o = fxaa(convertToTexture(o)) as unknown as WGNode<'vec4'>;
+    let c: WGNode<'vec3'> = o.rgb;
+    // Split-tone: shadows toward teal, highlights toward warm; the ×1.9 keeps mid-tones bright.
+    const l = luminance(c);
+    const tint = mix(look.shadowTint, look.highlightTint, smoothstep(0.0, 0.75, l));
+    c = mix(c, c.mul(tint).mul(1.9), look.tintAmount);
+    // Contrast around mid grey, then saturation around luminance.
+    c = c.sub(0.5).mul(look.contrast).add(0.5);
+    c = mix(vec3(luminance(c)), c, look.saturation);
+    // Vignette: elliptical (0.85 vertical squash) fading between 0.85 (edge) and 0.2 (centre).
+    const d = screenUV.sub(0.5).mul(vec2(1.0, 0.85)).length();
+    c = c.mul(mix(float(1.0), smoothstep(0.85, 0.2, d), look.vignette));
+    // Grain: animated `interleavedGradientNoise`, luminance-weighted so blacks stay clean.
+    const n = interleavedGradientNoise(
+      screenCoordinate.xy.add(time.mul(61.0).floor().mul(vec2(37.0, 17.0))),
+    ).sub(0.5);
+    c = c.add(n.mul(look.grain).mul(mix(1.0, 0.35, l)));
+    c = clamp(c, 0.0, 1.0).mul(look.fade);
+    pipeline.outputNode = vec4(c, 1.0);
+    pipeline.needsUpdate = true;
+    state.nodes['scenePass'] = scenePass;
   };
 
-  rebuild();
+  build(state.quality);
 
   return {
-    postProcessing,
+    pipeline,
     look,
-    quality() {
-      return { name: state.name, settings: { ...state.settings } };
+    state,
+    setQuality(q: QualityName): void {
+      if (q !== state.quality) build(q);
     },
-    setQuality(name: QualityName, override?: Partial<QualitySettings>) {
-      const next = clampQuality(name, caps);
-      if (next === state.name && override === undefined) return;
-      state.name = next;
-      state.settings = qualityPlan(next, override);
-      rebuild();
-    },
-    render() {
-      postProcessing.render();
-    },
-    async renderAsync() {
-      await postProcessing.renderAsync();
-    },
-    dispose() {
-      postProcessing.dispose();
+    render(): void {
+      pipeline.render();
     },
   };
 }
