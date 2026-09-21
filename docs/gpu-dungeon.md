@@ -42,7 +42,7 @@ later ticket ports the cutaway.
 | kind                       | treatment                                                                                                     |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------- |
 | `wall`, `stone`, `tree`, `bars` and any other solid | stacked stone blocks filling the cell, one corner-cap dropped for a chipped silhouette, optional slate chip band and moss crumb, `stone` flag set (~4–7 boxes) |
-| `floor`                    | four 4×1×4 flagstone tiles at y = 0 (each 10 % chance of missing), occasional mud pebble, `ground` flag set (~3–5 boxes) |
+| `floor`                    | four 4×1×4 flagstone tiles — always present; on the seeded 10 % "worn" roll, a `basalt0` tile recessed by one voxel (y = -0.125 m, height 1) instead of a hole (T-0055); occasional mud pebble; `ground` flag set (4–5 boxes) |
 | `corridor`                 | single rough basalt slab, no seams, `ground` flag set (~1–2 boxes)                                             |
 | `doorway`, `door_open`     | floor + two vertical posts + a lintel across the top; axis inferred from the neighbouring walls (~7–9 boxes)   |
 | `door_closed`              | posts + lintel + plank door slab + two brass hinges + a brass handle, axis inferred from the neighbouring walls (~10–13 boxes) |
@@ -235,26 +235,51 @@ appearing/disappearing exactly on a shared chunk boundary — and the extra
 the player can occupy. The full-bake path (`bakeChunks`, called by every
 `_reshape`) is unaffected; the "byte-identical" test still passes end to end.
 
+## No completely black floor tiles (T-0055)
+
+`buildFloor` used to skip a 4×1×4 flagstone quadrant at 10 % probability so
+the missing tile could read as wear. In practice a lit floor with a black
+square in the middle reads as *a bug* — a hole in the geometry, not a worn
+flagstone — so the user asked for the treatment expressed the way the rest
+of the kit does it: vary the colour and height, not the presence.
+
+Every quadrant is now placed unconditionally. On the same seeded 10 % roll
+that used to drop the tile, the quadrant becomes a **`basalt0` tile recessed
+by one voxel** (`y = -1`, height 1 in kit units → `y ∈ [-0.125, 0] m`
+in world coords) — a sunken darker flagstone reads as wear from any angle.
+The seeded RNG stream is preserved: the same `b.chance(0.9)` decides normal
+vs. worn, so different seeds still produce different worn patterns and the
+byte-identity tests hold. The cracked mud pebble is unchanged.
+
+Consequences on the box budget: the two `bakeChunk...` writers gain roughly
+`+0.4` boxes per floor cell (0.1 quadrants × 4 quadrants that previously
+skipped, now placed). For a fully-known 80×21 room the delta is about `+600`
+boxes on the main writer; see the updated numbers under "Box budget" below.
+
 ## Box budget
 
 `docs/gpu.md` §8 asks for ≤ 12 boxes per cell on average, ≤ 40 000 boxes
 for a fully-known 80 × 21 level, and a rebuild under 50 ms. Measured on this
-worker container (2026-09-21, `bakeLevel` on an 80 × 21 room where every
-floor cell is lit — the busiest case in the fleet's fixtures):
+worker container (T-0055, `bakeLevel` on an 80 × 21 room where every floor
+cell is lit — the busiest case in the fleet's fixtures):
 
 | bake                          | boxes  | boxes / cell | full rebuild |
 | ----------------------------- | -----: | -----------: | -----------: |
-| main (walls, floors, doorway, torches) | **6 802** | **4.05** | **≈ 38 ms** |
+| main (walls, floors, doorway, torches) | **7 398** | **4.40** | **≈ 22 ms** |
 | ceiling                                | **1 482** | 0.88 (one per passable cell) | ≈ 6 ms |
-| total                                  | **8 284** | 4.93 | ≈ 44 ms |
+| total                                  | **8 880** | 5.29 | ≈ 28 ms |
 
-Well under the 40 000-box cap. `hiddenFaces` culls the shared face between
-touching wall/floor/wall neighbours; the chunked geometry is 24 `Mesh`es
-each with its own `BufferGeometry` in the writer's 24-B vertex format
-(instead of one per level pre-T-0046) so the JS-side rebuild can touch
-only the changed chunks. The chunked concatenation is byte-identical to
-the single-writer output (see `bakeChunks` / `bakeLevel` in
-`web/src/gpu/dungeon.ts` and the byte-identity test).
+The main writer gained ~600 boxes over T-0046's 6 802 because worn quadrants
+are now placed instead of skipped (T-0055). Still well under the 40 000-box
+cap and inside the 50 ms rebuild gate.
+
+`hiddenFaces` culls the shared face between touching wall/floor/wall
+neighbours; the chunked geometry is 24 `Mesh`es each with its own
+`BufferGeometry` in the writer's 24-B vertex format (instead of one per level
+pre-T-0046) so the JS-side rebuild can touch only the changed chunks. The
+chunked concatenation is byte-identical to the single-writer output (see
+`bakeChunks` / `bakeLevel` in `web/src/gpu/dungeon.ts` and the byte-identity
+test).
 
 ### Single-cell reveal (T-0046)
 

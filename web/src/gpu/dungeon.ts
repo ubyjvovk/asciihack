@@ -290,17 +290,22 @@ function buildWall(b: VoxelBuilder): void {
 }
 
 function buildFloor(b: VoxelBuilder): void {
-  // Four 4×1×4 flagstone tiles; each has a small chance of being missing.
+  // Four 4×1×4 flagstone tiles — every quadrant is placed. On the seeded
+  // 10 % "worn" roll (T-0055) the quadrant becomes a `basalt0` tile recessed
+  // by one voxel (y = -1, height 1) instead of being omitted: a sunken
+  // flagstone reads as wear; a hole reads as a bug.
   for (let tz = 0; tz < 8; tz += 4) {
     for (let tx = 0; tx < 8; tx += 4) {
       if (b.chance(0.9)) {
         const col = b.chance(0.5) ? 'basalt0' : 'basalt1';
         b.box(tx, 0, tz, 4, 1, 4, col, 'rock');
-        markGround(b);
+      } else {
+        b.box(tx, -1, tz, 4, 1, 4, 'basalt0', 'rock');
       }
+      markGround(b);
     }
   }
-  // A cracked mud pebble sometimes fills the gap.
+  // A cracked mud pebble sometimes sits on the flagstones.
   if (b.chance(0.25)) {
     b.voxel(b.int(0, 7), 0, b.int(0, 7), 'mud', 'mud');
     markGround(b);

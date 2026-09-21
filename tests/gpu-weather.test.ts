@@ -91,8 +91,10 @@ describe('gpu weather — dungeon air overlay', () => {
     W.rain.value = 0;
     W.glow.value = 1;
     W.wind.value = 0.5;
-    const h = createWeather(W);
-    // One InstancedMesh per emitter, sized at construction from the exported counts.
+    // T-0055 defaults every emitter to zero instances; this test is about the
+    // buffer identity across updates, so opt in to the afterburn-scale counts.
+    const h = createWeather(W, { drips: DRIP_COUNT, motes: MOTE_COUNT, embers: EMBER_COUNT });
+    // One InstancedMesh per emitter, sized at construction from the requested counts.
     expect(h.drips.count).toBe(DRIP_COUNT);
     expect(h.motes.count).toBe(MOTE_COUNT);
     expect(h.embers.count).toBe(EMBER_COUNT);
@@ -152,6 +154,43 @@ describe('gpu weather — dungeon air overlay', () => {
       }
     }
 
+    h.dispose();
+  });
+
+  it('no emitter produces particles by default', () => {
+    // T-0055: a sealed stone dungeon has no drifting motes and no ceiling
+    // drips; afterburn's overlay was tuned for an open valley in the rain, so
+    // its motes read as "particles all over" underground. `createWeather()`
+    // now allocates zero instances on every emitter unless the caller asks
+    // for them by passing counts. The mood plumbing, the tint uniforms and
+    // the overlay pass wiring all still exist so a later ticket (embers over
+    // a lava pool) is a single-number change, not a rebuild.
+    const h = createWeather();
+    expect(h.drips.count).toBe(0);
+    expect(h.motes.count).toBe(0);
+    expect(h.embers.count).toBe(0);
+    // A full ease-in on a mood that would normally drip hard does not
+    // reallocate instances — the buffers stay at zero.
+    W.wetness.value = 1;
+    W.rain.value = 0;
+    W.glow.value = 1;
+    W.wind.value = 0;
+    h.update(1.0, new Vector3(0, 0, 0), 'flooded');
+    expect(h.drips.count).toBe(0);
+    expect(h.motes.count).toBe(0);
+    expect(h.embers.count).toBe(0);
+    // The mood plumbing survives — the pure `emitterTargets` mapping is
+    // unchanged, so a caller passing `{ embers: EMBER_COUNT }` for a lava
+    // level still gets the 0.9 ember baseline that mood is tuned for.
+    expect(emitterTargets('lava', { wetness: 0, rain: 0, glow: 1, wind: 0 }).embers).toBeCloseTo(0.9, 5);
+    // Explicit opt-in still works: pass just `embers` and the drips/motes
+    // buffers stay empty while the ember buffer gets its afterburn-scale
+    // count.
+    const lava = createWeather(W, { embers: EMBER_COUNT });
+    expect(lava.drips.count).toBe(0);
+    expect(lava.motes.count).toBe(0);
+    expect(lava.embers.count).toBe(EMBER_COUNT);
+    lava.dispose();
     h.dispose();
   });
 });

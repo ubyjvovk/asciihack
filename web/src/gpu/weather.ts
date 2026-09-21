@@ -6,7 +6,11 @@
  * lighting stack (`pass(overlay, camera)` in `pipeline.ts`), so its
  * transparent quads never touch the G-buffer that SSGI/SSR read.
  *
- * Three emitters, one InstancedMesh each, allocated once:
+ * Three emitters, one InstancedMesh each, allocated once. **All three
+ * default to zero instances** (T-0055): the sealed-stone dungeon has no
+ * open-air weather; a caller opts an emitter back on for a specific level
+ * via `createWeather(W, { embers: EMBER_COUNT })` etc. The mood table below
+ * is the tuned intensity per mood a caller who does opt in inherits:
  *
  * - **drips** — small vertical droplets falling from the ceiling in wet
  *   rooms. Runs on wetness (`W.wetness`) + rain (`W.rain`); dry moods emit
@@ -62,11 +66,18 @@ import {
 import { W, type Weather } from './materials.js';
 import type { MoodId } from './moods.js';
 
-/** Instance count per emitter — allocated once at construction (docs/gpu-weather.md "budget"). */
+/**
+ * Afterburn-scale instance count per emitter — the number the original
+ * outdoor weather overlay used, kept as a named constant so a caller
+ * opting a specific emitter back on can spell the intent
+ * (`createWeather(W, { drips: DRIP_COUNT })`). The dungeon default is
+ * **zero** on every emitter (see `createWeather`); nothing runs unless
+ * something asks for it (T-0055, docs/gpu-weather.md "Emit nothing by default").
+ */
 export const DRIP_COUNT = 400;
-/** Instance count for the drifting dust motes. */
+/** Afterburn-scale instance count for the drifting dust motes. See `DRIP_COUNT`. */
 export const MOTE_COUNT = 560;
-/** Instance count for the rising torch/lava embers. */
+/** Afterburn-scale instance count for the rising torch/lava embers. See `DRIP_COUNT`. */
 export const EMBER_COUNT = 300;
 
 /** Horizontal half-extent (cells) of the wrap volume centred on `focus` for drips. */
@@ -176,6 +187,21 @@ function clamp01(x: number): number {
   return x < 0 ? 0 : x > 1 ? 1 : x;
 }
 
+/**
+ * Options for `createWeather`. Every field defaults to **zero** — a plain
+ * `createWeather(W)` allocates no particle instances, so the overlay pass
+ * runs but nothing emits. Pass `{ embers: EMBER_COUNT }` (or a smaller
+ * number) to turn one emitter back on for, say, a lava-pool level.
+ */
+export interface CreateWeatherOptions {
+  /** Instance count allocated for the falling-drip emitter. Default `0`. */
+  drips?: number;
+  /** Instance count allocated for the drifting-mote emitter. Default `0`. */
+  motes?: number;
+  /** Instance count allocated for the rising-ember emitter. Default `0`. */
+  embers?: number;
+}
+
 /** Live handle returned by `createWeather()` — pure data plus the update hook. */
 export interface WeatherHandle {
   /** The overlay `THREE.Scene` — hand this to `createPipeline({ overlay })`. */
@@ -202,8 +228,19 @@ export interface WeatherHandle {
  * Build the overlay scene. Reads the shared `W` block by reference so a
  * mood/atmosphere change is picked up automatically (the shader samples W
  * every frame). One buffer is allocated per emitter and never reallocated.
+ *
+ * Every emitter's instance count is **zero by default** (T-0055): the
+ * dungeon is sealed stone, not an open valley in the rain, so no motes,
+ * drips or embers unless the caller explicitly turns them on via
+ * `opts.drips`/`opts.motes`/`opts.embers`. The mood plumbing, the tint
+ * uniforms and the overlay pass wiring all still exist so a later ticket
+ * (e.g. embers over a lava pool) is a single-number change.
  */
-export function createWeather(weather: Weather = W): WeatherHandle {
+export function createWeather(weather: Weather = W, opts: CreateWeatherOptions = {}): WeatherHandle {
+  const dripCount = Math.max(0, opts.drips ?? 0);
+  const moteCount = Math.max(0, opts.motes ?? 0);
+  const emberCount = Math.max(0, opts.embers ?? 0);
+
   const scene = new Scene();
   scene.name = 'dungeon-air';
 
@@ -223,9 +260,9 @@ export function createWeather(weather: Weather = W): WeatherHandle {
     tint: uniform(new Color(TINT_PER_MOOD.torchlit.ember)),
   };
 
-  const dripsBuilt = buildDrips(focus, wind, drip.intensity, drip.tint);
-  const motesBuilt = buildMotes(focus, wind, mote.intensity, mote.tint, weather);
-  const embersBuilt = buildEmbers(focus, ember.intensity, ember.tint, weather);
+  const dripsBuilt = buildDrips(focus, wind, drip.intensity, drip.tint, dripCount);
+  const motesBuilt = buildMotes(focus, wind, mote.intensity, mote.tint, weather, moteCount);
+  const embersBuilt = buildEmbers(focus, ember.intensity, ember.tint, weather, emberCount);
   const drips = dripsBuilt.mesh;
   const motes = motesBuilt.mesh;
   const embers = embersBuilt.mesh;
@@ -291,6 +328,7 @@ function buildDrips(
   windNode: UniformNode<'vec2', Vector2>,
   intensity: UniformNode<'float', number>,
   tint: UniformNode<'color', Color>,
+  count: number,
 ): BuiltEmitter {
   const mat = new MeshBasicNodeMaterial({
     transparent: true,
@@ -332,7 +370,7 @@ function buildDrips(
   const a = edge.mul(near).mul(alive).mul(intensity).mul(mix(0.5, 1.1, r2));
   mat.colorNode = vec4(color(tint).mul(a), 1.0);
 
-  const mesh = new InstancedMesh(new PlaneGeometry(1, 1), mat, DRIP_COUNT);
+  const mesh = new InstancedMesh(new PlaneGeometry(1, 1), mat, count);
   mesh.frustumCulled = false;
   mesh.castShadow = false;
   mesh.receiveShadow = false;
@@ -348,6 +386,7 @@ function buildMotes(
   intensity: UniformNode<'float', number>,
   tint: UniformNode<'color', Color>,
   weather: Weather,
+  count: number,
 ): BuiltEmitter {
   const mat = new MeshBasicNodeMaterial({
     transparent: true,
@@ -392,7 +431,7 @@ function buildMotes(
   const a = disc.mul(tw).mul(fadeY).mul(intensity).mul(gain);
   mat.colorNode = vec4(color(tint).mul(2.0).mul(a), 1.0);
 
-  const mesh = new InstancedMesh(new PlaneGeometry(1, 1), mat, MOTE_COUNT);
+  const mesh = new InstancedMesh(new PlaneGeometry(1, 1), mat, count);
   mesh.frustumCulled = false;
   mesh.castShadow = false;
   mesh.receiveShadow = false;
@@ -407,6 +446,7 @@ function buildEmbers(
   intensity: UniformNode<'float', number>,
   tint: UniformNode<'color', Color>,
   weather: Weather,
+  count: number,
 ): BuiltEmitter {
   const mat = new MeshBasicNodeMaterial({
     transparent: true,
@@ -449,7 +489,7 @@ function buildEmbers(
   const a = disc.mul(disc).mul(flicker).mul(fadeY).mul(intensity).mul(glowBoost).mul(mix(0.8, 1.2, r2));
   mat.colorNode = vec4(color(tint).mul(3.0).mul(a), 1.0);
 
-  const mesh = new InstancedMesh(new PlaneGeometry(1, 1), mat, EMBER_COUNT);
+  const mesh = new InstancedMesh(new PlaneGeometry(1, 1), mat, count);
   mesh.frustumCulled = false;
   mesh.castShadow = false;
   mesh.receiveShadow = false;
