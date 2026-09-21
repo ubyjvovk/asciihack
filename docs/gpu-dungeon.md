@@ -44,7 +44,7 @@ later ticket ports the cutaway.
 | `wall`, `stone`, `tree`, `bars` and any other solid | stacked stone blocks filling the cell, one corner-cap dropped for a chipped silhouette, optional slate chip band and moss crumb, `stone` flag set (~4–7 boxes) |
 | `floor`                    | four 4×1×4 flagstone tiles — always present; on the seeded 10 % "worn" roll, a `basalt0` tile recessed by one voxel (y = -0.125 m, height 1) instead of a hole (T-0055); occasional mud pebble; `ground` flag set (4–5 boxes) |
 | `corridor`                 | single rough basalt slab, no seams, `ground` flag set (~1–2 boxes)                                             |
-| `doorway`, `door_open`     | floor + two vertical posts + a lintel across the top; axis inferred from the neighbouring walls (~7–9 boxes)   |
+| `doorway`, `door_open`     | floor only — a plain hole in the wall (see below) |
 | `door_closed`              | posts + lintel + plank door slab + two brass hinges + a brass handle, axis inferred from the neighbouring walls (~10–13 boxes) |
 | `stairs_up`, `ladder_up`   | four stepped slate boxes climbing toward +z + a faint emissive nosing (5 boxes)                                |
 | `stairs_down`, `ladder_down` | four stepped slate boxes descending into the floor + a faint emissive nosing (5 boxes)                       |
@@ -341,3 +341,12 @@ but they cannot pin **the look**.
   boxes and uses distinctive palette + material choices, but "does this
   read as a throne from the doorway" is a subjective test the PM makes on
   the frame, not something a worker can pin.
+
+### Open doorways are a hole, not a frame
+
+`doorway` and `door_open` bake **floor and nothing else**. They used to get
+two vertical posts and a lintel, which from the third-person camera read as a
+pole standing in the gap (user, 2026-09-21). The neighbouring wall cells
+already draw the sides of the opening, so a frame on the doorway cell is a
+second frame inside the first. `door_closed` keeps its posts and lintel —
+that frame is what the door slab hangs in.

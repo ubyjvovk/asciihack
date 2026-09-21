@@ -322,6 +322,17 @@ function buildCorridor(b: VoxelBuilder): void {
   }
 }
 
+/**
+ * An open doorway is **just a hole in the wall**: floor, nothing else. The
+ * posts-and-lintel frame read as a pole standing in the gap (user,
+ * 2026-09-21) — the neighbouring wall cells already draw the opening's sides,
+ * so anything added here is a second frame inside the first.
+ */
+function buildOpenDoorway(b: VoxelBuilder): void {
+  buildFloor(b);
+}
+
+/** Frame for a *closed* door: two posts and a lintel the door slab hangs in. */
 function buildDoorFrame(b: VoxelBuilder, axis: 'ew' | 'ns'): void {
   buildFloor(b);
   // Two vertical posts, one lintel across the top.
@@ -759,7 +770,7 @@ function bakeCell(builder: VoxelBuilder, level: LevelView, x: number, y: number,
       return;
     case 'door_open':
     case 'doorway':
-      buildDoorFrame(builder, doorAxis(level, x, y));
+      buildOpenDoorway(builder);
       return;
     case 'floor':
       buildFloor(builder);
