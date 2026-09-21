@@ -170,6 +170,22 @@ divides by the style exposure, so the number the quantiser sees is ≈ 54.
 > is a real frame from the real voxel material, but bloom + AgX only. Fixed;
 > the numbers above are from the full stack.
 
+### 3.2 The port, landed
+
+T-0040 wired the path in; all three routes verified from the bench at
+1280×720, hero in the lit room facing the doorway
+(`.tigerteam/shots/before-after.png`):
+
+| `?gpu=` | path taken | black | mean | p95 | levels |
+|---|---|---|---|---|---|
+| `off` | legacy WebGL | 93.3 % | 2.4 | 18 | 105 |
+| `auto` | **styled through the ported stack** | **81.4 %** | **8.3** | **54** | **148** |
+| `raw` | ported stack, no ASCII pass | 13.8 % | 39.4 | — | — |
+
+The ASCII frame is 3.5× brighter in the mean, reaches three times further up
+the tone curve (p95 18 → 54) and spends 40 % more distinct levels — which is
+the whole point: the quantiser finally has an image with structure in it.
+
 ## 4. Scene conventions (unchanged from `docs/web.md`)
 
 Map `x` grows east, map `y` grows south; three's `x` = east, `z` = south,
