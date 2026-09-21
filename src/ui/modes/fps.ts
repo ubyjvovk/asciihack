@@ -45,6 +45,32 @@ export function hFovRad(vFovDeg: number, cols: number, rows: number, cellAspect 
   return 2 * Math.atan(Math.tan(vFovRad / 2) * (cols / (rows * cellAspect)));
 }
 
+/**
+ * Movement scheme for the arrow-key handlers. `'facing'` is the raycaster's
+ * native scheme — `Left`/`Right` turn on the spot, `Up`/`Down` walk along or
+ * against the facing (fps camera). `'absolute'` sends every direction key
+ * unchanged (arrows, vi-keys and numpad all mean their usual compass
+ * direction) and swings the avatar's facing to follow the movement — the
+ * scheme the third-person / ortho views want.
+ */
+export type MovementScheme = 'facing' | 'absolute';
+
+/** Facing index for each arrow key in `'absolute'` mode (N/E/S/W). */
+const ARROW_FACING: Record<string, number> = {
+  Up: 0,
+  Right: 2,
+  Down: 4,
+  Left: 6,
+};
+
+/** Vi-key char for each `ARROW_FACING` entry — the key we actually send. */
+const ARROW_KEY: Record<string, string> = {
+  Up: 'k',
+  Right: 'l',
+  Down: 'j',
+  Left: 'h',
+};
+
 /** Facing index after a digit/arrow key that also moves (vi-keys + numpad). */
 const DIGIT_FACING: Record<string, number> = {
   h: 6,
@@ -105,14 +131,24 @@ export class FpsMode implements Mode {
    * through; the minimap and compass still paint on top.
    */
   externalViewport = false;
+  private movement: MovementScheme;
 
-  /** @param session - the session whose map and hero this mode renders. */
-  constructor(session: NethackSession, now: () => number = () => Date.now()) {
+  /** @param session - the session whose map and hero this mode renders.
+   *  @param now - injectable clock for the turn animation (tests only).
+   *  @param movement - arrow-key scheme; `'facing'` (default) turns/walks
+   *    relative to the current facing, `'absolute'` treats every direction
+   *    key as its compass direction and swings the avatar to face the move. */
+  constructor(
+    session: NethackSession,
+    now: () => number = () => Date.now(),
+    movement: MovementScheme = 'facing',
+  ) {
     this.session = session;
     this.now = now;
     this.yaw = FACINGS[0]!.yaw;
     this.yawFrom = this.yaw;
     this.yawTo = this.yaw;
+    this.movement = movement;
   }
 
   onEnter(): void {}
@@ -132,6 +168,17 @@ export class FpsMode implements Mode {
   /** Whether a turn animation is still running. */
   get isTurning(): boolean {
     return this.turning;
+  }
+
+  /** The active movement scheme (see `MovementScheme`). */
+  get currentMovement(): MovementScheme {
+    return this.movement;
+  }
+
+  /** Switch the arrow-key scheme at runtime (web/src/main.ts flips this on
+   *  F2/F3/F9, one per 3D view). */
+  setMovement(scheme: MovementScheme): void {
+    this.movement = scheme;
   }
 
   paintViewport(grid: ScreenGrid, rect: Rect): void {
@@ -189,6 +236,26 @@ export class FpsMode implements Mode {
   }
 
   handleKey(e: KeyEvent, queueKey: (ev: KeyEvent) => void): void {
+    if (this.movement === 'absolute') {
+      const arrowIdx = ARROW_FACING[e.key];
+      if (arrowIdx !== undefined) {
+        // Arrows carry no NetHack char code on the browser side, so send the
+        // compass vi-key that means the same direction and swing the avatar.
+        this.startTurn(FACINGS[arrowIdx]!);
+        sendKey(this.session, queueKey, charKey(ARROW_KEY[e.key]!));
+        return;
+      }
+      const digitIdx = DIGIT_FACING[e.key];
+      if (digitIdx !== undefined) {
+        // Vi-keys and numpad digits already carry a compass direction — send
+        // them unchanged and swing the avatar to that facing.
+        this.startTurn(FACINGS[digitIdx]!);
+        sendKey(this.session, queueKey, e);
+        return;
+      }
+      sendKey(this.session, queueKey, e);
+      return;
+    }
     if (e.key === 'Left' || e.key === 'Right') {
       const dir = e.key === 'Right' ? 1 : -1;
       if (!e.shift) {

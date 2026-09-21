@@ -295,6 +295,101 @@ describe('fps mode key routing', () => {
   });
 });
 
+describe('fps mode absolute movement (T-0057)', () => {
+  it('absolute movement sends every direction key through unchanged', () => {
+    const replies: RetMsg[] = [];
+    const session = freshSessionWithHero(replies);
+    const mode = new FpsMode(session, () => 0, 'absolute');
+    // Table: [key pressed] → [char code NetHack should receive].
+    const table: Array<[string, string]> = [
+      ['Up', 'k'], ['Right', 'l'], ['Down', 'j'], ['Left', 'h'], // arrows → compass
+      ['h', 'h'], ['j', 'j'], ['k', 'k'], ['l', 'l'],             // vi-keys pass through
+      ['y', 'y'], ['u', 'u'], ['b', 'b'], ['n', 'n'],
+      ['H', 'H'], ['L', 'L'],                                     // capital vi-keys (run)
+      ['4', '4'], ['8', '8'], ['6', '6'], ['2', '2'], ['7', '7'], // numpad
+      ['9', '9'], ['1', '1'], ['3', '3'],
+    ];
+    let id = 100;
+    for (const [pressed, expected] of table) {
+      session.handle({ t: 'call', name: 'nhgetch', args: [], id } as unknown as BridgeMsg);
+      mode.handleKey(ev(pressed), () => {});
+      expect(replies.at(-1)).toEqual({ id, ret: expected.charCodeAt(0) });
+      id++;
+    }
+    // Non-direction keys are unaffected in both schemes.
+    session.handle({ t: 'call', name: 'nhgetch', args: [], id } as unknown as BridgeMsg);
+    mode.handleKey(ev('s'), () => {});
+    expect(replies.at(-1)).toEqual({ id, ret: 's'.charCodeAt(0) });
+  });
+
+  it('absolute movement turns the avatar to face the direction it moved', () => {
+    const replies: RetMsg[] = [];
+    const session = freshSessionWithHero(replies);
+    let clock = 1000;
+    const mode = new FpsMode(session, () => clock, 'absolute');
+    session.handle({ t: 'call', name: 'nhgetch', args: [], id: 200 } as unknown as BridgeMsg);
+    // Down = south: send 'j' and swing the avatar 180° from N to S.
+    mode.handleKey(ev('Down'), () => {});
+    expect(replies.at(-1)).toEqual({ id: 200, ret: 'j'.charCodeAt(0) });
+    expect(mode.currentFacing.name).toBe('S');
+    expect(mode.isTurning).toBe(true);
+    clock += 200; // past TURN_MS
+    mode.tick(clock);
+    expect(mode.isTurning).toBe(false);
+    expect(mode.currentYaw).toBeCloseTo(Math.PI);
+    // A diagonal vi-key ('y' = NW) swings again, this time to the vi-key facing.
+    session.handle({ t: 'call', name: 'nhgetch', args: [], id: 201 } as unknown as BridgeMsg);
+    mode.handleKey(ev('y'), () => {});
+    expect(replies.at(-1)).toEqual({ id: 201, ret: 'y'.charCodeAt(0) });
+    expect(mode.currentFacing.name).toBe('NW');
+    expect(mode.isTurning).toBe(true);
+  });
+
+  it('facing movement is unchanged and stays the default', () => {
+    const replies: RetMsg[] = [];
+    const session = freshSessionWithHero(replies);
+    const mode = new FpsMode(session, () => 0);
+    expect(mode.currentMovement).toBe('facing');
+    // Right rotates the facing (never sent to NetHack) — that's fps mode's
+    // signature behaviour and the proof the raycaster is untouched.
+    session.handle({ t: 'call', name: 'nhgetch', args: [], id: 300 } as unknown as BridgeMsg);
+    const before = replies.length;
+    mode.handleKey(ev('Right'), () => {});
+    expect(replies.length).toBe(before);
+    expect(session.pending?.kind).toBe('key');
+    expect(mode.currentFacing.name).toBe('NE');
+    // Up walks along the facing (now NE, so 'u').
+    mode.handleKey(ev('Up'), () => {});
+    expect(replies.at(-1)).toEqual({ id: 300, ret: 'u'.charCodeAt(0) });
+  });
+
+  it('setMovement switches scheme at runtime', () => {
+    const replies: RetMsg[] = [];
+    const session = freshSessionWithHero(replies);
+    const mode = new FpsMode(session, () => 0);
+    expect(mode.currentMovement).toBe('facing');
+    // Facing mode: Left rotates, no key sent.
+    session.handle({ t: 'call', name: 'nhgetch', args: [], id: 400 } as unknown as BridgeMsg);
+    const before = replies.length;
+    mode.handleKey(ev('Left'), () => {});
+    expect(replies.length).toBe(before);
+    expect(session.pending?.kind).toBe('key');
+    // Flip: absolute mode. Left now sends 'h' and swings to face W.
+    mode.setMovement('absolute');
+    expect(mode.currentMovement).toBe('absolute');
+    mode.handleKey(ev('Left'), () => {});
+    expect(replies.at(-1)).toEqual({ id: 400, ret: 'h'.charCodeAt(0) });
+    expect(mode.currentFacing.name).toBe('W');
+    // Flip back: facing mode again.
+    mode.setMovement('facing');
+    session.handle({ t: 'call', name: 'nhgetch', args: [], id: 401 } as unknown as BridgeMsg);
+    const before2 = replies.length;
+    mode.handleKey(ev('Right'), () => {});
+    expect(replies.length).toBe(before2);
+    expect(session.pending?.kind).toBe('key');
+  });
+});
+
 describe('ortho mode key routing', () => {
   it('ortho Up sends k', () => {
     const replies: RetMsg[] = [];
