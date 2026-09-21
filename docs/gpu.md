@@ -84,6 +84,29 @@ AgX → vignette) in ~80 ms at 640×360 under SwiftShader. Consequences:
 - `pipeline.renderAsync()` is deprecated in r185 — use `pipeline.render()`
   after `await renderer.init()` (afterburn already does).
 
+**SSR does not compile on the WebGL2 backend (three r185 bug).** Isolated
+with `/gpu-probe.html?stack=ssr&stochastic=0|1`. `SSRNode.js` builds its step
+count as
+
+```js
+trunc( max( abs( xLen ), abs( yLen ) ).mul( quality.clamp() ) ).max( int( 1 ) )
+```
+
+which the GLSL backend emits as `max( int( trunc( … ) ), 1.0 )` — an
+`int`/`float` mismatch GLSL ES 3.0 rejects, so the fragment shader never
+links and the pass silently contributes nothing while spewing
+`INVALID_OPERATION`. WGSL coerces it, so WebGPU is unaffected. The same node
+with **`stochastic: true`** takes the other branch (`quality.clamp().mul(
+MAX_STEPS ).max( float( 1 ) )`, all floats) and compiles and renders fine
+(37.5 ms at 640×360 under SwiftShader).
+
+**The rule:** SSR uses afterburn's `stochastic: false` on a **WebGPU**
+backend and `stochastic: true` on the **WebGL2** backend. Stochastic SSR is
+noisier by design and expects a temporal denoiser downstream — which every
+tier that enables SSR already has (TRAA). Revisit when three fixes
+`SSRNode.js` (one character: `.max( int( 1 ) )` → `.max( 1 )`); the gate is
+deliberately one line so it can be deleted.
+
 ## 4. Scene conventions (unchanged from `docs/web.md`)
 
 Map `x` grows east, map `y` grows south; three's `x` = east, `z` = south,

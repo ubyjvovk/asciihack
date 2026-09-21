@@ -9,9 +9,11 @@
  * screenshot is readable on its own.
  */
 import * as THREE from 'three/webgpu';
-import { pass, mrt, output, normalView, packNormalToRGB, vec4, uniform, renderOutput, convertToTexture, screenUV, mix, float, smoothstep, vec2 } from 'three/tsl';
+import { pass, mrt, output, normalView, packNormalToRGB, unpackRGBToNormal, sample, metalness, roughness, vec4, uniform, renderOutput, convertToTexture, screenUV, mix, float, smoothstep, vec2 } from 'three/tsl';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
 import { fxaa } from 'three/addons/tsl/display/FXAANode.js';
+import { ssr } from 'three/addons/tsl/display/SSRNode.js';
+import { clampQuality, createPipeline, type QualityName } from './gpu/pipeline.js';
 
 interface ProbeResult {
   step: string;
@@ -80,6 +82,60 @@ async function probe(): Promise<void> {
 
     result.step = 'graph';
     const { scene, camera } = makeScene();
+
+    // `?stack=ported` builds OUR ported pipeline (web/src/gpu/pipeline.ts) at
+    // `?q=<tier>` instead of the hand-rolled minimal graph — this is the only
+    // way anyone on this project finds out whether the SSGI/SSR/god-ray graph
+    // actually compiles, since no worker has a GPU.
+    const q = new URLSearchParams(window.location.search);
+
+    // `?stack=ssr&stochastic=0|1` isolates three r185's SSRNode: the
+    // non-stochastic path emits `max(int(...), 1.0)` which GLSL ES 3.0
+    // rejects, so it cannot link on the WebGL2 backend. This tells us whether
+    // the stochastic path is a usable substitute there.
+    if (q.get('stack') === 'ssr') {
+      const stochastic = q.get('stochastic') === '1';
+      result.nodes.push(`ssr:stochastic=${String(stochastic)}`);
+      const pipeline = new THREE.RenderPipeline(renderer);
+      const sp = pass(scene, camera);
+      sp.setMRT(mrt({ output, normal: packNormalToRGB(normalView), metalrough: vec2(metalness, roughness) }));
+      const pColor = sp.getTextureNode('output');
+      const pDepth = sp.getTextureNode('depth');
+      const pNormal = sample((uv) => unpackRGBToNormal(sp.getTextureNode('normal').sample(uv)));
+      const mr = sp.getTextureNode('metalrough');
+      const r = ssr(pColor, pDepth, pNormal, { metalnessNode: mr.r, roughnessNode: mr.g, reflectNonMetals: true, stochastic, camera });
+      pipeline.outputNode = vec4(pColor.rgb.add(r.rgb), 1.0);
+      pipeline.needsUpdate = true;
+      result.step = 'render';
+      const ts = performance.now();
+      pipeline.render();
+      result.frameMs = Math.round((performance.now() - ts) * 10) / 10;
+      result.step = 'done';
+      result.ok = true;
+      finish();
+      return;
+    }
+
+    if (q.get('stack') === 'ported') {
+      const caps = { webgpu: result.backend === 'webgpu', mrtBytes: result.mrtBytes, maxQuality: 'ultra' as QualityName };
+      const requested = (q.get('q') ?? 'high') as QualityName;
+      const tier = q.get('noclamp') === '1' ? requested : clampQuality(requested, caps);
+      result.nodes.push(`ported:${tier}`);
+      const sun = new THREE.DirectionalLight(0xffd0a0, 2);
+      sun.position.set(3, 5, 2);
+      scene.add(sun);
+      const handle = createPipeline({ renderer, scene, camera, requested: tier, sun });
+      result.step = 'render';
+      const tp = performance.now();
+      handle.render();
+      result.frameMs = Math.round((performance.now() - tp) * 10) / 10;
+      result.nodes.push(...Object.keys(handle.state.nodes));
+      result.step = 'done';
+      result.ok = true;
+      finish();
+      return;
+    }
+
     const pipeline = new THREE.RenderPipeline(renderer);
     pipeline.outputColorTransform = false;
     const scenePass = pass(scene, camera);
@@ -107,6 +163,11 @@ async function probe(): Promise<void> {
   } catch (err) {
     result.error = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
   }
+  finish();
+}
+
+/** Publish the result to the page and to the automation handles. */
+function finish(): void {
   const out = document.getElementById('out');
   if (out !== null) out.textContent = JSON.stringify(result, null, 2);
   window.__probe = result;
