@@ -146,6 +146,20 @@ starts fresh, again matching afterburn's rig.
   alone so the sharp slab is only a few cells wide — ART_BIBLE §6
   "gentle, diorama, not mush".
 
+## Camera azimuth — which side the camera sits on
+
+Azimuth 0 puts the camera **due south of the hero, looking north**, matching
+afterburn's rig ("0 = camera south of the subject looking north"). South is
+`+z` here (`docs/gpu.md` §4), so the placement is
+`z = target.z + dist·cos(pitch)`.
+
+This is not cosmetic. Put the camera *north* instead and the world is
+mirrored on screen: map-east renders to the left, map-north renders down, and
+every movement key appears reversed even though the key handling is correct.
+That shipped briefly and the user caught it immediately — the original code
+reasoned that `Pose.yaw = 0` means facing north so "behind" must be north,
+but behind a north-facing hero is *south*.
+
 ## Fog
 
 *Rewritten by T-0054. T-0052's "34 % survival is atmospheric" call was made

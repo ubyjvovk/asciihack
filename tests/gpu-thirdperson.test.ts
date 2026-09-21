@@ -35,13 +35,13 @@ describe('gpu third-person — afterburn long-lens diorama follow', () => {
     const pose = thirdPersonPose(hero, 0, THIRD_DIST_DEFAULT_CELLS);
 
     // Pitch 42° with yawSteps 0 (behind the target, azimuth 0). Camera sits
-    // north of the target at (0, +sin·d, −cos·d), lifted `THIRD_LOOK_HEIGHT`
+    // *south* of the target at (0, +sin·d, +cos·d), lifted `THIRD_LOOK_HEIGHT`
     // above the floor so it looks at the hero's chest (0.39 cells up).
     const target = { x: hero.x + 0.5, y: THIRD_LOOK_HEIGHT_CELLS, z: hero.y + 0.5 };
     const cosP = Math.cos(THIRD_PITCH_RAD);
     const sinP = Math.sin(THIRD_PITCH_RAD);
     const expectedY = target.y + THIRD_DIST_DEFAULT_CELLS * sinP;
-    const expectedZ = target.z - THIRD_DIST_DEFAULT_CELLS * cosP;
+    const expectedZ = target.z + THIRD_DIST_DEFAULT_CELLS * cosP;
     expect(pose.position.x).toBeCloseTo(target.x);
     expect(pose.position.y).toBeCloseTo(expectedY);
     expect(pose.position.z).toBeCloseTo(expectedZ);
@@ -76,14 +76,15 @@ describe('gpu third-person — afterburn long-lens diorama follow', () => {
     // `wrapYawSteps`; `thirdPersonPose` then multiplies by π/4.
     const hero = { x: 5, y: 5 };
     const dist = THIRD_DIST_DEFAULT_CELLS;
-    // Two 45° steps put the camera east of north (azimuth 90°).
+    // Two 45° steps swing the camera a quarter turn from due south.
     const p0 = thirdPersonPose(hero, 0, dist);
     const p2 = thirdPersonPose(hero, 2, dist);
-    // Azimuth 0: camera at (target.x, +y, target.z − d·cosP). Azimuth 90°:
-    // camera at (target.x + d·cosP, +y, target.z). Same magnitude, rotated.
+    // Azimuth 0 puts the camera due **south** of the target — screen-up is
+    // map north, so movement keys are not mirrored (see `thirdPersonPose`).
+    // Azimuth 90° swings it a quarter turn to the west side. Same magnitude.
     const cosP = Math.cos(THIRD_PITCH_RAD);
-    expect(p0.position.z - p0.target.z).toBeCloseTo(-dist * cosP);
-    expect(p2.position.x - p2.target.x).toBeCloseTo(dist * cosP);
+    expect(p0.position.z - p0.target.z).toBeCloseTo(dist * cosP);
+    expect(p2.position.x - p2.target.x).toBeCloseTo(-dist * cosP);
     // Wrap: 8 steps is a full turn (8 · 45° = 360°) — the pose returns to
     // where it started. If wrapping is broken, `yawSteps = 8` would not land
     // back on the origin.

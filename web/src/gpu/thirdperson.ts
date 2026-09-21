@@ -103,12 +103,15 @@ export function thirdPersonPose(
   const sinP = Math.sin(pitch);
   const cosY = Math.cos(yaw);
   const sinY = Math.sin(yaw);
-  // Azimuth 0 puts the camera *north* of the target (behind, in
-  // `Pose.yaw = 0` terms); `Q`/`E` walk yawSteps and the camera swings.
+  // Azimuth 0 puts the camera **south** of the target, looking north — the
+  // same convention afterburn's rig uses ("0 = camera south of the subject
+  // looking north"). South is +z here (docs/gpu.md §4), so screen-up reads as
+  // map north and screen-right as map east; placing it north instead mirrors
+  // the world and makes every movement key look reversed.
   const position = {
-    x: target.x + dist * cosP * sinY,
+    x: target.x - dist * cosP * sinY,
     y: target.y + dist * sinP,
-    z: target.z - dist * cosP * cosY,
+    z: target.z + dist * cosP * cosY,
   };
   return { position, target, fov, focus: dist };
 }
