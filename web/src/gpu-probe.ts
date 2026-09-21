@@ -121,6 +121,16 @@ async function probe(): Promise<void> {
       const requested = (q.get('q') ?? 'high') as QualityName;
       const tier = q.get('noclamp') === '1' ? requested : clampQuality(requested, caps);
       result.nodes.push(`ported:${tier}`);
+      // `?off=gi,ssr,rays,traa,dof,bloom` disables passes one at a time, to
+      // find which one blacks the frame on a given backend.
+      const off = (q.get('off') ?? '').split(',').filter((k) => k.length > 0);
+      const override: Record<string, unknown> = {};
+      for (const k of off) {
+        if (k === 'gi') override['gi'] = 'none';
+        else if (k === 'traa') override['aa'] = 'fxaa';
+        else override[k] = false;
+      }
+      if (off.length > 0) result.nodes.push(`off:${off.join('+')}`);
       // GodraysNode reads the light's shadow map, so a god-ray tier needs a
       // shadow-casting light — without castShadow it throws on a null
       // `shadow.map`. `?noshadow=1` reproduces that.
@@ -134,11 +144,40 @@ async function probe(): Promise<void> {
         scene.traverse((o) => { if ((o as THREE.Mesh).isMesh === true) { o.castShadow = true; o.receiveShadow = true; } });
       }
       scene.add(sun);
-      const handle = createPipeline({ renderer, scene, camera, requested: tier, sun });
+      // `?focus=N` retunes DOF for this tiny scene (afterburn's default focus
+      // is 30 m, which is nowhere near a 4 m test box).
+      const lookOverride: Record<string, number> = {};
+      const focus = q.get('focus');
+      if (focus !== null) { lookOverride['focus'] = Number(focus); lookOverride['focusRange'] = Number(q.get('focusRange') ?? '6'); }
+      const handle = createPipeline({
+        renderer, scene, camera, requested: tier, sun,
+        override: off.length > 0 ? (override as Parameters<typeof createPipeline>[0]['override']) : null,
+        look: lookOverride as Parameters<typeof createPipeline>[0]['look'],
+      });
       result.step = 'render';
+      // TRAA accumulates history, so a single frame comes back black on every
+      // tier that enables it. `?frames=N` (default 8) renders a short burst,
+      // which is what a real render loop does anyway.
+      const frames = Math.max(1, Number(q.get('frames') ?? '8'));
       const tp = performance.now();
-      handle.render();
-      result.frameMs = Math.round((performance.now() - tp) * 10) / 10;
+      if (q.get('raf') !== '0') {
+        // Render across real animation frames — the default, and the only way
+        // TRAA and DOF produce anything on the WebGL2 backend. `?raf=0` uses a
+        // synchronous loop and reproduces the all-black frame.
+        await new Promise<void>((resolve) => {
+          let n = 0;
+          const tick = (): void => {
+            handle.render();
+            n += 1;
+            if (n >= frames) { resolve(); return; }
+            requestAnimationFrame(tick);
+          };
+          requestAnimationFrame(tick);
+        });
+      } else {
+        for (let i = 0; i < frames; i++) handle.render();
+      }
+      result.frameMs = Math.round(((performance.now() - tp) / frames) * 10) / 10;
       result.nodes.push(...Object.keys(handle.state.nodes));
       result.step = 'done';
       result.ok = true;

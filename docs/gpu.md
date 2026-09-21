@@ -111,9 +111,20 @@ is the normal case here. Verified with
 `/gpu-probe.html?stack=ported&q=high` (throws with `&noshadow=1`, clean
 without it).
 
-**SSGI builds and runs on the WebGL2 backend** — `gi`, `bloom`, `traa`,
-`dof`, `fxaa` and the whole grade block are all fine there. SSR is the only
-pass that needs a gate.
+**The whole ported stack runs on the WebGL2 backend** — verified after the
+SSR gate landed, with `/gpu-probe.html?backend=webgl2&stack=ported&q=<tier>`:
+`medium`, `high` and `ultra` all build (`gi`, `ssr`, `rays`, `bloom`,
+`scenePass`), link without a single shader error, and draw the probe scene
+through AgX and the grade. SSR was the only pass needing a gate.
+
+**But it must be driven from `requestAnimationFrame`.** Calling
+`pipeline.render()` in a synchronous loop returns an **all-black frame** on
+that backend once TRAA or DOF is in the graph — the passes need the
+compositor to tick between frames. `?raf=0` on the probe reproduces it.
+This costs nothing in the app (`GlViewport` already renders from the rAF
+loop) but it is exactly the symptom that reads as "the GPU path is broken",
+so: **a black GPU frame in a test harness means the harness, not the
+pipeline.**
 
 **The rule:** SSR uses afterburn's `stochastic: false` on a **WebGPU**
 backend and `stochastic: true` on the **WebGL2** backend. Stochastic SSR is
