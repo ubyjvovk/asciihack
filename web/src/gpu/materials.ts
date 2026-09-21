@@ -9,20 +9,31 @@
  *   afterburn's world, not ours) along with the `hollowAO` uniform.
  * - The pure helpers `fxByte`, `FLAG_*` and `FX_*` live in `./moods.ts` so
  *   the mood tests can import them without pulling in three/webgpu.
+ * - Adds the T-0058 hero cutout: a per-fragment `discard` driven by the
+ *   `CUTOUT` uniform block that the render loop writes each frame in the
+ *   third-person and ortho views (fps disables it — the camera *is* the
+ *   hero there). Rule and constants live in `./cutout.ts`; see
+ *   `docs/gpu-cutout.md`. Kept opaque on purpose: alpha blending would pull
+ *   these surfaces out of the opaque pass and corrupt the G-buffer that
+ *   SSGI and SSR read from, so this uses `discard` + screen-door dither.
+ *   Pass `cutout: false` to build the avatar variant, which shares this
+ *   material family but skips the discard so the hero and pet are never
+ *   cut along with the walls (`docs/gpu-cutout.md` §"What is exempt").
  *
  * Wetness/puddles darkening + roughness, the stone water film, the blocky
  * puddle noise, the emissive fx (`flicker`/`pulse`/`twinkle`), `lampGain`,
  * `glow` and the vertex `sway` option are all kept.
  */
 
-import { MeshStandardNodeMaterial } from 'three/webgpu';
+import { MeshStandardNodeMaterial, Vector3 } from 'three/webgpu';
 import type { Node } from 'three/webgpu';
 import {
-  attribute, clamp, cos, float, floor, max, mix, modelWorldMatrix, mx_noise_float,
-  normalWorld, positionGeometry, positionWorld, pow, round, sRGBTransferEOTF, sin,
-  smoothstep, step, time, uniform, varying, vec3, vec4,
+  attribute, clamp, cos, float, floor, interleavedGradientNoise, length, max, mix,
+  modelWorldMatrix, mx_noise_float, normalWorld, positionGeometry, positionWorld, pow, round,
+  screenCoordinate, sRGBTransferEOTF, sin, smoothstep, step, time, uniform, varying, vec2, vec3, vec4,
 } from 'three/tsl';
 import { EMISSIVE_RANGE } from '../voxel/mesh.js';
+import { CUTOUT_FADE_CELLS, CUTOUT_FLOOR_EPSILON, CUTOUT_RADIUS_CELLS } from './cutout.js';
 import { FX_FLICKER, FX_PULSE, FX_SWAY, FX_TWINKLE } from './moods.js';
 
 /** Shared weather / mood uniforms, written by `Atmosphere` in `./moods.ts`. Every voxel material samples these. */
@@ -44,12 +55,59 @@ export const W = {
 /** Structural type describing the shared uniform block above. */
 export type Weather = typeof W;
 
+/**
+ * Inner keep-radius (cells) — fragments closer than this to `CUTOUT.center`
+ * are never cut, so the hero voxel avatar (which shares this material and
+ * sits at the cutout centre) stays intact. Half the hero's sprite height
+ * comfortably covers its own horizontal extent (~0.15 cells), and it is
+ * strictly less than the minimum wall-cell distance from the hero cell
+ * centre (0.5 cells), so adjacent walls are still cut at full strength.
+ * See `docs/gpu-cutout.md` §"Why an inner keep-radius" for the arithmetic.
+ */
+const CUTOUT_INNER_KEEP_CELLS = 0.35;
+
+/**
+ * Shared hero-cutout uniforms — the "Diablo cutout" (T-0058, `docs/gpu-cutout.md`).
+ * Every voxel material samples these; the render loop writes them each frame
+ * in `web/src/gl/gl-viewport.ts::GpuPath.render` (enabled in `third`/`ortho`,
+ * disabled in `fps`). The rule pinned in `./cutout.ts` at cell resolution is
+ * evaluated per fragment here with a screen-door dither for a soft edge.
+ */
+export const CUTOUT = {
+  /** 1 = the discard rule fires; 0 = disabled (fps). Keeps the material opaque
+   *  in every view — this is a hard switch, not a shader recompile. */
+  enabled: uniform(0.0),
+  /** Hero's world position (cell coordinates; y-component is unused for the
+   *  horizontal-disk rule). Written from `pose` every frame. */
+  center: uniform(new Vector3(0, 0, 0)),
+  /** Horizontal unit vector pointing from the hero toward the camera —
+   *  `cutoutForwardFor(cameraPos, heroPos)` in `./cutout.ts`. `y` is always
+   *  zero so the cutout is indifferent to camera pitch. */
+  forward: uniform(new Vector3(0, 0, 0)),
+  /** Cutout radius in cells (default `CUTOUT_RADIUS_CELLS = 2.5`). */
+  radius: uniform(CUTOUT_RADIUS_CELLS),
+  /** Screen-door dither band width in cells past `radius` (default
+   *  `CUTOUT_FADE_CELLS = 0.8`). Zero would give a hard circular edge. */
+  fade: uniform(CUTOUT_FADE_CELLS),
+};
+
+/** Structural type for the shared cutout uniform block above. */
+export type Cutout = typeof CUTOUT;
+
 /** Options for `createVoxelMaterial`. */
 export interface VoxelMaterialOptions {
   /** React to wetness/puddles (off for UI / portrait renders). */
   weather?: boolean;
   /** Enable vertex sway for `FX_SWAY` boxes. */
   sway?: boolean;
+  /**
+   * Include the T-0058 hero-cutout `discard` branch (default `true` — the
+   * dungeon material). Set to `false` for the hero/pet avatar material: the
+   * avatars share this material and sit at `CUTOUT.center`, so the same
+   * per-fragment rule that clears the wall in front of the hero would also
+   * discard the hero itself. See `docs/gpu-cutout.md` §"What is exempt".
+   */
+  cutout?: boolean;
 }
 
 /**
@@ -57,9 +115,9 @@ export interface VoxelMaterialOptions {
  * (rgb + per-box rnd) and `aMat` (roughness, metalness, emissive,
  * fx|flags) and the shared `W` block.
  */
-export function createVoxelMaterial({ weather = true, sway = true }: VoxelMaterialOptions = {}): MeshStandardNodeMaterial {
+export function createVoxelMaterial({ weather = true, sway = true, cutout = true }: VoxelMaterialOptions = {}): MeshStandardNodeMaterial {
   const m = new MeshStandardNodeMaterial();
-  m.name = 'voxel';
+  m.name = cutout ? 'voxel' : 'voxel-nocut';
 
   const aColor = attribute<'vec4'>('aColor', 'vec4');
   const aMat = attribute<'vec4'>('aMat', 'vec4');
@@ -123,6 +181,47 @@ export function createVoxelMaterial({ weather = true, sway = true }: VoxelMateri
   m.roughnessNode = rough;
   m.metalnessNode = mix(metal0, float(0.82), puddleMask); // still water mirrors the sky even from a steep camera
   m.emissiveNode = albedo.mul(emis0).mul(gain).mul(W.lampGain);
+
+  // --- hero cutout (T-0058) ---
+  // Per-fragment discard driven by the shared `CUTOUT` uniforms. Kept in the
+  // opaque pass on purpose (see the module JSDoc): a screen-door dither +
+  // `NodeMaterial.maskNode` gives us a soft-edged hole without pulling the
+  // wall out of the G-buffer that SSGI/SSR read. Rule mirrors `isCutCell` in
+  // `./cutout.ts` at cell resolution — same three conditions, plus an
+  // inner keep-radius that protects the hero avatar (which sits at the
+  // cutout centre and shares this material). Skipped for the avatar
+  // material (`cutout: false`) — see `docs/gpu-cutout.md` §"What is exempt".
+  if (cutout) {
+    const rel = positionWorld.sub(CUTOUT.center);
+    const dHoriz = length(vec2(rel.x, rel.z));
+    const dotFwd = rel.x.mul(CUTOUT.forward.x).add(rel.z.mul(CUTOUT.forward.z));
+    // Outer ramp: 1 inside `radius`, 0 at `radius + fade`, smoothstep between.
+    const outerRamp = float(1.0).sub(smoothstep(CUTOUT.radius, CUTOUT.radius.add(CUTOUT.fade), dHoriz));
+    // Inner keep-zone: no cut too close to the hero (protects the voxel
+    // avatar's own fragments — see `CUTOUT_INNER_KEEP_CELLS`). Hard step so
+    // adjacent walls at exactly 0.5 cells still receive the full cut.
+    const innerKeep = step(float(CUTOUT_INNER_KEEP_CELLS), dHoriz);
+    // Camera-side test — `dot > 0` because `cutoutForwardFor` returns the
+    // hero → camera direction. The small epsilon keeps the boundary line
+    // through the hero (dot = 0) from flickering.
+    const cameraSide = step(float(0.0001), dotFwd);
+    // Above the floor: never cut the ground plane out from under the hero.
+    const aboveFloor = step(float(CUTOUT_FLOOR_EPSILON), positionWorld.y);
+    // Combined discard strength ∈ [0, 1]. `enabled` is 0 (fps) or 1 (third/ortho).
+    const cutStrength = CUTOUT.enabled.mul(cameraSide).mul(aboveFloor).mul(outerRamp).mul(innerKeep);
+    // Screen-door dither: `interleavedGradientNoise(screenCoordinate.xy)` gives
+    // a 0..1 per-pixel value; `keep = step(cutStrength, dither)` returns 1
+    // (keep) when `dither >= cutStrength` — so a fraction `cutStrength` of
+    // the pixels in the fade band are discarded, and the shape stays opaque.
+    const dither = interleavedGradientNoise(screenCoordinate.xy);
+    const keep = step(cutStrength, dither);
+    // `MeshStandardNodeMaterial.maskNode` discards when the mask is false;
+    // `NodeMaterial.setup()` wraps this in `bool(maskNode).not().discard()`,
+    // so any non-zero value keeps the fragment and 0 discards it. Sole path
+    // used here — `Discard()` outside an `Fn()` scope has no stack to push
+    // onto, so it is not safe to call from module setup code.
+    m.maskNode = keep;
+  }
 
   if (sway) {
     const wp = modelWorldMatrix.mul(vec4(positionGeometry, 1.0)).xyz;

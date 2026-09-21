@@ -38,7 +38,8 @@ import {
 import { cutawayCellsFor, orthoPlacement, placeOrthoCamera, type OrthoPlacement } from './ortho-camera.js';
 import { GpuCompositor } from '../gpu/compose.js';
 import { DungeonScene } from '../gpu/dungeon.js';
-import { createVoxelMaterial, W } from '../gpu/materials.js';
+import { CUTOUT, createVoxelMaterial, W } from '../gpu/materials.js';
+import { cutoutForwardFor } from '../gpu/cutout.js';
 import { Atmosphere, type MoodId } from '../gpu/moods.js';
 import {
   applyOrthoPlacementTo,
@@ -1178,9 +1179,13 @@ class GpuPath {
 
     // Sprite billboards for monsters/items — camera-facing quads carrying
     // tile art, lit by the ported stack rather than pasted on top (T-0042).
-    // The hero and pet are routed to voxel avatars sharing the same voxel
-    // material as the dungeon (T-0056, docs/gpu-avatar.md).
-    const sprites = new SpriteLayer({ voxelMaterial: voxelMat });
+    // The hero and pet are routed to voxel avatars sharing the voxel
+    // material family (T-0056, docs/gpu-avatar.md), but with the cutout
+    // discard disabled — the avatars sit at `CUTOUT.center`, so the same
+    // per-fragment rule that clears the wall in front of the hero would
+    // otherwise discard the hero itself (`docs/gpu-cutout.md` §"What is exempt").
+    const avatarMat = createVoxelMaterial({ weather: true, sway: true, cutout: false });
+    const sprites = new SpriteLayer({ voxelMaterial: avatarMat });
     scene.add(sprites.root);
 
     // Ghost mesh scaffolding for the ortho cutaway (T-0043, docs/gpu-ortho.md).
@@ -1350,6 +1355,31 @@ class GpuPath {
     // a camera child, so the ortho camera moving 40 cells out does not drag
     // the light with it (T-0043).
     this.lantern.position.set(pose.x, EYE_HEIGHT, pose.y);
+
+    // 1c. Hero cutout (T-0058, docs/gpu-cutout.md). Third and ortho enable
+    //     the material-side discard so any wall between the camera and the
+    //     hero clears; fps disables it — the camera IS the hero there, so
+    //     nothing is ever between them. `cutoutCenter` uses the hero cell
+    //     centre (matches `sprites.ts::update` for the hero avatar), and
+    //     `cutoutForward` is the horizontal hero → camera direction, from
+    //     whichever camera drew the last frame.
+    const cutoutOn = view === 'third' || view === 'ortho';
+    CUTOUT.enabled.value = cutoutOn ? 1.0 : 0.0;
+    if (cutoutOn) {
+      const heroWorldX = heroCell.x + 0.5;
+      const heroWorldZ = heroCell.y + 0.5;
+      CUTOUT.center.value.set(heroWorldX, 0, heroWorldZ);
+      const camPos = view === 'ortho' && orthoPlace !== null
+        ? orthoPlace.position
+        : view === 'third' && thirdFrame !== null
+          ? thirdFrame.position
+          : { x: heroWorldX, y: EYE_HEIGHT, z: heroWorldZ };
+      const fwd = cutoutForwardFor(
+        { x: camPos.x, y: 0, z: camPos.z },
+        { x: heroWorldX, y: 0, z: heroWorldZ },
+      );
+      CUTOUT.forward.value.set(fwd.x, fwd.y, fwd.z);
+    }
 
     // 1b. View-change side effects: rebuild the pipeline graph against the
     //     view's real camera (T-0050), hide the ceiling for the overhead
