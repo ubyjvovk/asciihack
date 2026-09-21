@@ -22,6 +22,7 @@
  * lives in `ortho-camera.ts` (both unit-tested in node).
  */
 import * as THREE from 'three';
+import * as WG from 'three/webgpu';
 import { isSolid, type LevelView, type Pose, type Sprite, type Tile } from '../../../src/model/types.js';
 import { makeCamera, makeRenderer, makeScene } from '../asciicity/render/scene.js';
 import { StyleRenderer } from '../asciicity/render/post.js';
@@ -32,6 +33,29 @@ import {
   type SceneMaterials,
 } from './scene-builder.js';
 import { cutawayCellsFor, placeOrthoCamera } from './ortho-camera.js';
+import { GpuCompositor } from '../gpu/compose.js';
+import { DungeonScene } from '../gpu/dungeon.js';
+import { createVoxelMaterial, W } from '../gpu/materials.js';
+import { Atmosphere, type MoodId } from '../gpu/moods.js';
+import {
+  clampQuality,
+  createPipeline,
+  type PipelineHandle,
+  type QualityName,
+  type RendererCaps,
+} from '../gpu/pipeline.js';
+import {
+  backendFor,
+  choosePath,
+  gpuCanvasSize,
+  moodFor,
+  parseGpuQueryOptions,
+  rawLook,
+  styledLook,
+  type BackendChoice,
+  type GpuParam,
+  type ViewportPath,
+} from '../gpu/path.js';
 
 /** Distance in cells the hero's lantern reaches before falling to black. */
 export const LANTERN_DISTANCE = 14;
@@ -51,17 +75,38 @@ export const FPS_FOG_DENSITY = 0.10;
  *  bug. A small density keeps a faint depth cue without occluding the room. */
 export const ORTHO_FOG_DENSITY = 0.01;
 
+/** Style-pass exposure the styled path compensates for (docs/gpu.md §6.1). */
+export const STYLE_EXPOSURE = 1.7;
+/** Seconds a mood change fades over (docs/gpu.md §5 — a doorway is a blend). */
+export const MOOD_BLEND_SECONDS = 1.5;
+/** Base emissive tint of the hero's lantern on the GPU path (docs/gpu.md §5). */
+const GPU_LANTERN_COLOR = 0xffe0a8;
+/** Assumed device pixel ratio when `window.devicePixelRatio` is not visible. */
+const DEFAULT_DPR = 1;
+
 /** Options accepted by `GlViewport`. */
 export interface GlViewportOptions {
   /** Element the canvas is appended to (default `document.body`). */
   parent?: HTMLElement;
   /** Style id activated on start (default `amber`; unknown → `ascii`). */
   initialStyle?: string;
+  /** `?gpu=auto|off|raw` — default parsed from `window.location.search`. */
+  gpu?: GpuParam;
+  /** `?q=low|medium|high|ultra` — default `caps.maxQuality`. */
+  quality?: QualityName | 'auto';
+  /** `?backend=webgpu|webgl2` — default `auto` (let three probe). */
+  backend?: BackendChoice | 'auto';
+  /** Pin a mood (`?mood=<id>`), bypassing `moodFor`; `null` = drive from level. */
+  mood?: MoodId | null;
 }
 
 /**
  * The AsciiCity-shaded WebGL viewport for the browser fps/ortho modes.
  * Only `render` runs per frame; `resize` and `setStyle` are event-driven.
+ * A second, GPU-backed path (T-0040) renders through the ported afterburn
+ * stack when `?gpu=auto|raw` is set; it composes back through this same
+ * `StyleRenderer` in styled mode. `GlViewport` owns both paths and
+ * decides per frame via `choosePath` (docs/gpu.md §6, docs/gpu-compose.md).
  */
 export class GlViewport {
   readonly canvas: HTMLCanvasElement;
@@ -87,9 +132,33 @@ export class GlViewport {
   private rows = 24;
   private cellW = 9;
   private cellH = 18;
+  private readonly opts: GlViewportOptions;
+  private readonly gpuParam: GpuParam;
+  private readonly requestedQuality: QualityName | 'auto';
+  private readonly requestedBackend: BackendChoice | 'auto';
+  private readonly pinnedMood: MoodId | null;
+  private readonly parentEl: HTMLElement;
+  private gpu: GpuPath | null = null;
+  private gpuReady = false;
+  private lastPath: ViewportPath = 'legacy';
+  private forcedRaw = false;
+  private readonly initialStyle: string;
 
   constructor(opts: GlViewportOptions = {}) {
+    this.opts = opts;
+    // Defaults come from `window.location.search` so the bench (`/scene.html`)
+    // and any other consumer inherit the same knobs as `main.ts` without an
+    // explicit override — the ticket rule for T-0040.
+    const query = parseGpuQueryOptions(
+      typeof window !== 'undefined' ? window.location.search : '',
+    );
+    this.gpuParam = opts.gpu ?? query.gpu;
+    this.requestedQuality = opts.quality ?? query.quality;
+    this.requestedBackend = opts.backend ?? query.backend;
+    this.pinnedMood = opts.mood ?? query.mood;
+    this.initialStyle = opts.initialStyle ?? 'amber';
     const parent = opts.parent ?? document.body;
+    this.parentEl = parent;
     this.canvas = document.createElement('canvas');
     this.canvas.className = 'gl-viewport';
     parent.appendChild(this.canvas);
@@ -141,8 +210,14 @@ export class GlViewport {
     this.scene.add(this.orthoCamera);
 
     this.style = new StyleRenderer(this.renderer, STYLES, {
-      initial: opts.initialStyle ?? 'amber',
+      initial: this.initialStyle,
+      exposure: STYLE_EXPOSURE,
     });
+
+    // Kick off the GPU path if not forced off. Fire-and-forget so the legacy
+    // path serves frames while the GPU renderer boots; every `render()` after
+    // that consults `choosePath` and picks the ready one.
+    if (this.gpuParam !== 'off') void this.initGpu();
   }
 
   /** Move the canvas under the DOM terminal's viewport rectangle, in CSS pixels. */
@@ -173,6 +248,7 @@ export class GlViewport {
     this.style.setSize(w, h);
     this.camera.aspect = w / Math.max(1, h);
     this.camera.updateProjectionMatrix();
+    this.gpu?.notifyResize();
   }
 
   /** Activate a style by id (returns `false` when unknown). */
@@ -244,7 +320,25 @@ export class GlViewport {
         sprites: this.builder.spriteGroup.children.length,
       },
       styleId: this.style.style.id,
+      path: this.lastPath,
+      gpuReady: this.gpuReady,
+      backend: this.gpu?.backend ?? null,
+      quality: this.gpu?.quality ?? null,
+      mood: this.gpu?.mood ?? null,
     };
+  }
+
+  /** F8 flips between the raw GPU frame and the styled path. No-op when the
+   *  GPU path never initialised — the toggle only makes sense while the
+   *  ported pipeline can draw. */
+  toggleRaw(): void {
+    this.forcedRaw = !this.forcedRaw;
+  }
+
+  /** Effective `?gpu=` after any F8 toggle. */
+  private effectiveGpuParam(): GpuParam {
+    if (this.gpuParam === 'off') return 'off';
+    return this.forcedRaw ? 'raw' : this.gpuParam;
   }
 
   /**
@@ -256,16 +350,9 @@ export class GlViewport {
    * unused in ortho — the frustum is derived from the viewport rectangle).
    */
   render(level: LevelView, pose: Pose, sprites: readonly Sprite[], vFovDeg: number): void {
-    if (this.builder.refresh(level)) {
-      this.wallCellOrder = collectWallCells(level);
-      // Wall mesh was reallocated: invalidate the cutaway memo so we re-hide
-      // the right instances on this frame.
-      this.lastCutawayKey = '';
-    }
-    this.builder.updateSprites(sprites, (s) => this.spriteMaterialFor(s));
-    // Keep the perspective camera at the hero cell in both views so the
-    // lantern light (child of `camera`) stays anchored to the hero even
-    // when the ortho camera is doing the rendering.
+    // Keep the legacy perspective camera at the hero cell in every view so the
+    // lantern light (child of `camera`) stays anchored to the hero even when
+    // the ortho camera is doing the rendering.
     this.camera.position.set(pose.x, EYE_HEIGHT, pose.y);
     this.camera.rotation.set(CAMERA_PITCH, -pose.yaw, 0, 'YXZ');
     if (this.camera.fov !== vFovDeg) {
@@ -274,14 +361,106 @@ export class GlViewport {
     }
     const heroCell = { x: Math.floor(pose.x), y: Math.floor(pose.y) };
     this.lastHeroCell = heroCell;
-    if (this.view === 'ortho') {
-      this.applyCutaway(heroCell);
-      placeOrthoCamera(this.orthoCamera, heroCell, this.cols, this.rows, 2);
-      this.style.render(this.scene, this.orthoCamera);
-    } else {
-      this.applyCutaway(null);
-      this.style.render(this.scene, this.camera);
+
+    // Per-frame decision: only the fps view goes through the GPU path — the
+    // ortho camera + cutaway still ride the legacy scene (docs/gpu.md §7).
+    const styleNeedsDepth = this.style.style.needsDepth === true;
+    const path: ViewportPath = this.view === 'ortho'
+      ? 'legacy'
+      : choosePath({
+          gpuParam: this.effectiveGpuParam(),
+          gpuReady: this.gpuReady && this.gpu !== null,
+          styleNeedsDepth,
+        });
+    this.lastPath = path;
+
+    if (path === 'legacy') {
+      if (this.builder.refresh(level)) {
+        this.wallCellOrder = collectWallCells(level);
+        this.lastCutawayKey = '';
+      }
+      this.builder.updateSprites(sprites, (s) => this.spriteMaterialFor(s));
+      if (this.view === 'ortho') {
+        this.applyCutaway(heroCell);
+        placeOrthoCamera(this.orthoCamera, heroCell, this.cols, this.rows, 2);
+        this.style.render(this.scene, this.orthoCamera);
+      } else {
+        this.applyCutaway(null);
+        this.style.render(this.scene, this.camera);
+      }
+      return;
     }
+
+    // GPU path (styled or raw). Render into the GPU-owned canvas via the
+    // ported pipeline, then either blit through the style pass (styled) or
+    // display the GPU canvas directly (raw).
+    const gpu = this.gpu;
+    if (gpu === null) return;
+    const cols = this.style.cols;
+    const rows = this.style.rows;
+    const viewportPx: { cssW: number; cssH: number; dpr: number } = {
+      cssW: this.cols * this.cellW,
+      cssH: this.rows * this.cellH,
+      dpr: typeof window !== 'undefined' ? window.devicePixelRatio || DEFAULT_DPR : DEFAULT_DPR,
+    };
+    const size = gpuCanvasSize(
+      path,
+      { subX: this.style.style.subX, subY: this.style.style.subY },
+      cols,
+      rows,
+      viewportPx,
+    );
+    try {
+      gpu.render(level, pose, vFovDeg, path, size, viewportPx, this.pinnedMood);
+    } catch (err) {
+      this.fallbackToLegacy(err);
+      // Re-run this frame on the legacy path so the user gets something.
+      this.render(level, pose, sprites, vFovDeg);
+      return;
+    }
+    if (path === 'styled') {
+      gpu.compositor.render(this.style, this.camera);
+    } else {
+      this.blitRawToCanvas(gpu.getCanvas(), viewportPx);
+    }
+  }
+
+  /** Copy the GPU canvas into the visible legacy canvas via 2D drawImage. This
+   *  keeps a single visible `<canvas>` in the DOM (the legacy one) and avoids
+   *  a second element under the terminal grid. */
+  private blitRawToCanvas(source: HTMLCanvasElement, viewportPx: { cssW: number; cssH: number; dpr: number }): void {
+    const dpr = Math.min(Math.max(viewportPx.dpr, 1), 1.5);
+    const w = Math.max(1, Math.round(viewportPx.cssW * dpr));
+    const h = Math.max(1, Math.round(viewportPx.cssH * dpr));
+    if (this.canvas.width !== w || this.canvas.height !== h) {
+      this.renderer.setSize(w, h, false);
+    }
+    const gl = this.renderer.getContext();
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    // Simple full-screen quad through the style renderer would round-trip
+    // through it again; use a tiny direct draw instead. Attaching a plain
+    // texture-uploaded WebGLTexture and blitting is heavier than 2D drawImage
+    // on a canvas — but we only get one context per canvas. Simplest robust
+    // path: render the source through the compositor to `null` target (i.e.
+    // the canvas). We reuse the compositor scene the styled path built.
+    if (this.gpu === null) return;
+    this.renderer.setRenderTarget(null);
+    // The compositor.texture holds `source`; make sure it uploads this frame.
+    this.gpu.compositor.texture.needsUpdate = true;
+    this.renderer.render(this.gpu.compositor.scene, RAW_BLIT_CAMERA);
+  }
+
+  /** Latch onto the legacy path and log once. Called on the first GPU frame
+   *  that throws, on `device.lost`, or on `uncapturederror`. */
+  private fallbackToLegacy(reason: unknown): void {
+    if (!this.gpuReady && this.gpu === null) return;
+    this.gpuReady = false;
+    const msg = reason instanceof Error ? reason.message : String(reason);
+    // eslint-disable-next-line no-console
+    console.warn(`[gl-viewport] GPU path failed, falling back to legacy: ${msg}`);
+    try { this.gpu?.dispose(); } catch { /* ignore */ }
+    this.gpu = null;
   }
 
   /** Free every GPU resource the viewport owns. */
@@ -298,8 +477,60 @@ export class GlViewport {
     if (this.atGlyphTexture !== null) this.atGlyphTexture.dispose();
     for (const tex of this.textureCache.values()) tex.dispose();
     for (const mat of this.spriteMatCache.values()) mat.dispose();
+    try { this.gpu?.dispose(); } catch { /* ignore */ }
+    this.gpu = null;
     this.renderer.dispose();
     this.canvas.remove();
+  }
+
+  /**
+   * Boot the GPU path. Constructs a `WebGPURenderer` with the requested
+   * backend, builds the ported scene + pipeline + compositor, then runs one
+   * frame to detect the first-frame throw (docs/gpu.md §3). On a WebGPU-side
+   * throw the whole path is rebuilt once on the WebGL2 fallback; any further
+   * failure lands on `legacy` permanently.
+   */
+  private async initGpu(): Promise<void> {
+    const forceWebGL = this.requestedBackend === 'webgl2';
+    try {
+      this.gpu = await GpuPath.create({
+        parent: this.parentEl,
+        cols: this.cols,
+        rows: this.rows,
+        cellW: this.cellW,
+        cellH: this.cellH,
+        requestedQuality: this.requestedQuality,
+        forceWebGL,
+        onLost: (r) => this.fallbackToLegacy(r),
+      });
+      this.gpuReady = true;
+    } catch (err) {
+      // Try the WebGL2 fallback if we started on WebGPU — measured pattern.
+      if (!forceWebGL) {
+        // eslint-disable-next-line no-console
+        console.warn('[gl-viewport] WebGPU init failed, retrying on WebGL2:', err);
+        try { this.gpu?.dispose(); } catch { /* ignore */ }
+        this.gpu = null;
+        try {
+          this.gpu = await GpuPath.create({
+            parent: this.parentEl,
+            cols: this.cols,
+            rows: this.rows,
+            cellW: this.cellW,
+            cellH: this.cellH,
+            requestedQuality: this.requestedQuality,
+            forceWebGL: true,
+            onLost: (r) => this.fallbackToLegacy(r),
+          });
+          this.gpuReady = true;
+          return;
+        } catch (err2) {
+          this.fallbackToLegacy(err2);
+          return;
+        }
+      }
+      this.fallbackToLegacy(err);
+    }
   }
 
   /** Locate the SceneBuilder's wall `InstancedMesh` inside `builder.root`. */
@@ -443,7 +674,21 @@ export interface DebugInfo {
   };
   meshes: { walls: number; floors: number; sprites: number };
   styleId: string;
+  /** Which of the three paths the last frame went through (T-0040). */
+  path: ViewportPath;
+  /** Whether the GPU renderer initialised and has not fallen back. */
+  gpuReady: boolean;
+  /** Backend actually reached (`webgpu` or `webgl2`), or null on legacy-only. */
+  backend: BackendChoice | null;
+  /** Quality tier the GPU pipeline is running, or null on legacy-only. */
+  quality: QualityName | null;
+  /** Current mood id being applied by the GPU path, or null. */
+  mood: MoodId | null;
 }
+
+/** Camera used by `blitRawToCanvas` — the compose shader ignores it, but
+ *  three needs a Camera reference to render. */
+const RAW_BLIT_CAMERA = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
 /** Collect wall cells in the same row-major order `SceneBuilder` uses so we
  *  can address individual instances of its wall `InstancedMesh` (non-door
@@ -580,4 +825,287 @@ function proceduralTexture(w: number, h: number, paint: (ctx: CanvasRenderingCon
   tex.minFilter = THREE.NearestFilter;
   tex.generateMipmaps = false;
   return tex;
+}
+
+interface GpuPathOptions {
+  parent: HTMLElement;
+  cols: number;
+  rows: number;
+  cellW: number;
+  cellH: number;
+  requestedQuality: QualityName | 'auto';
+  forceWebGL: boolean;
+  onLost: (reason: unknown) => void;
+}
+
+/**
+ * The ported afterburn stack owned by `GlViewport` on the GPU path.
+ * Owns its own detached canvas (so a `CanvasTexture` can read it into the
+ * legacy renderer for the styled and raw composites), a `WebGPURenderer`
+ * (WebGPU or three's WebGL2 fallback), a `DungeonScene`, an `Atmosphere`
+ * (blends the mood table, docs/gpu.md §5), a `RenderPipeline` and a
+ * `GpuCompositor`. `render(...)` does everything a GPU frame needs; the
+ * viewport composites its output afterwards.
+ */
+class GpuPath {
+  readonly canvas: HTMLCanvasElement;
+  readonly renderer: WG.WebGPURenderer;
+  readonly caps: RendererCaps;
+  readonly scene: WG.Scene;
+  readonly camera: WG.PerspectiveCamera;
+  readonly lantern: WG.PointLight;
+  readonly dungeon: DungeonScene;
+  readonly atmosphere: Atmosphere;
+  readonly handle: PipelineHandle;
+  readonly compositor: GpuCompositor;
+  readonly backend: BackendChoice;
+  quality: QualityName;
+  mood: MoodId;
+  private lastTime = 0;
+  private lastMoodDecision: MoodId | null = null;
+
+  private constructor(init: {
+    canvas: HTMLCanvasElement;
+    renderer: WG.WebGPURenderer;
+    caps: RendererCaps;
+    scene: WG.Scene;
+    camera: WG.PerspectiveCamera;
+    lantern: WG.PointLight;
+    dungeon: DungeonScene;
+    atmosphere: Atmosphere;
+    handle: PipelineHandle;
+    compositor: GpuCompositor;
+    backend: BackendChoice;
+    quality: QualityName;
+    mood: MoodId;
+  }) {
+    this.canvas = init.canvas;
+    this.renderer = init.renderer;
+    this.caps = init.caps;
+    this.scene = init.scene;
+    this.camera = init.camera;
+    this.lantern = init.lantern;
+    this.dungeon = init.dungeon;
+    this.atmosphere = init.atmosphere;
+    this.handle = init.handle;
+    this.compositor = init.compositor;
+    this.backend = init.backend;
+    this.quality = init.quality;
+    this.mood = init.mood;
+  }
+
+  /**
+   * Async factory: constructs the WebGPU renderer, awaits `init()`, builds
+   * the scene + pipeline, and attaches loss listeners. Throws on any step
+   * so the caller can decide whether to retry on WebGL2 or fall back.
+   */
+  static async create(opts: GpuPathOptions): Promise<GpuPath> {
+    const canvas = document.createElement('canvas');
+    canvas.className = 'gpu-source';
+    // Detached (not appended): the styled path reads it as a `CanvasTexture`
+    // and raw mode blits it through the legacy `WebGLRenderer`, so this
+    // canvas never needs to be in the DOM.
+    const params: Record<string, unknown> = {
+      canvas,
+      antialias: false,
+      powerPreference: 'high-performance',
+    };
+    if (opts.forceWebGL) params['forceWebGL'] = true;
+    // Probe the adapter's MRT budget so we do not request 64 bytes when the
+    // device only offers 32 (would fail requestAdapter under the new limit).
+    let mrtBytes = 32;
+    let hasNavGpu = false;
+    try {
+      const nav = typeof navigator !== 'undefined'
+        ? (navigator as unknown as { gpu?: { requestAdapter(o: unknown): Promise<{ limits: Record<string, number> } | null> } })
+        : undefined;
+      if (nav?.gpu !== undefined) {
+        hasNavGpu = true;
+        const ad = await nav.gpu.requestAdapter({ powerPreference: 'high-performance' });
+        if (ad !== null) {
+          const raw = ad.limits['maxColorAttachmentBytesPerSample'];
+          mrtBytes = typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? raw : 32;
+        }
+      }
+    } catch { /* fall through */ }
+    if (!opts.forceWebGL && hasNavGpu && mrtBytes >= 64) {
+      params['requiredLimits'] = { maxColorAttachmentBytesPerSample: 64 };
+    }
+    const renderer = new WG.WebGPURenderer(params as ConstructorParameters<typeof WG.WebGPURenderer>[0]);
+    const dpr = typeof window !== 'undefined' ? Math.min(window.devicePixelRatio || 1, 1.5) : 1;
+    renderer.setPixelRatio(dpr);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = WG.PCFSoftShadowMap;
+    renderer.toneMapping = WG.AgXToneMapping;
+    renderer.toneMappingExposure = 1.0;
+    await renderer.init();
+    const isWebGPU = (renderer.backend as unknown as { isWebGPUBackend?: boolean } | undefined)?.isWebGPUBackend === true;
+    const backend: BackendChoice = isWebGPU ? 'webgpu' : 'webgl2';
+    const caps: RendererCaps = {
+      webgpu: isWebGPU,
+      mrtBytes,
+      maxQuality: isWebGPU && mrtBytes >= 64 ? 'ultra' : 'medium',
+    };
+    const requested: QualityName = opts.requestedQuality === 'auto'
+      ? caps.maxQuality
+      : opts.requestedQuality;
+    const quality: QualityName = clampQuality(requested, caps);
+
+    const scene = new WG.Scene();
+    scene.background = new WG.Color(0x000000);
+
+    const aspect = (opts.cols * opts.cellW) / Math.max(1, opts.rows * opts.cellH);
+    const camera = new WG.PerspectiveCamera(70, aspect, 0.05, 60);
+    camera.position.set(0, EYE_HEIGHT, 0);
+    scene.add(camera);
+    // The hero's lantern — reuses the same constants as the legacy path so
+    // one number lives in one place (`docs/gpu.md` §5).
+    const lantern = new WG.PointLight(GPU_LANTERN_COLOR, LANTERN_INTENSITY, LANTERN_DISTANCE, 1);
+    camera.add(lantern);
+
+    const voxelMat = createVoxelMaterial({ weather: true, sway: true });
+    const dungeon = new DungeonScene({ material: voxelMat, ceilingMaterial: voxelMat });
+    scene.add(dungeon.root);
+
+    // `sun` is null on purpose: dungeons have no shaft light and
+    // `GodraysNode` throws on a light with no shadow map (docs/gpu.md §3).
+    const handle = createPipeline({
+      renderer, scene, camera, requested: quality, sun: null,
+    });
+    const compositor = new GpuCompositor(canvas);
+
+    // Give the pipeline canvas its initial size (styled mode will resize on
+    // the first `render`; this just keeps early frames from being 1×1).
+    renderer.setSize(Math.max(1, opts.cols * opts.cellW), Math.max(1, opts.rows * opts.cellH), false);
+
+    // `handle.look` is `LookUniforms` (every field a live TSL uniform with a
+    // mutable `.value`); `Atmosphere` structurally takes a subset via
+    // `moods.ts::Look`. Cast because the TSL uniform type is not literally
+    // `{ value: number }` in TS, but the runtime shape matches.
+    const atmosphere = new Atmosphere({
+      scene,
+      look: handle.look as unknown as ConstructorParameters<typeof Atmosphere>[0]['look'],
+      weather: W,
+    });
+    atmosphere.set('torchlit');
+    // Run one update so uniforms are populated before the first frame.
+    atmosphere.update(0.016);
+
+    const path = new GpuPath({
+      canvas, renderer, caps, scene, camera, lantern, dungeon, atmosphere,
+      handle, compositor, backend, quality, mood: 'torchlit',
+    });
+
+    // Attach loss listeners for backends that surface them. Both are best-
+    // effort; the try/catch handles the WebGL2 fallback where neither exists.
+    try {
+      const backendObj = renderer.backend as unknown as {
+        device?: { lost?: Promise<unknown> };
+        addEventListener?: (t: string, l: (e: unknown) => void) => void;
+      };
+      const device = backendObj.device;
+      if (device !== undefined && device.lost !== undefined) {
+        void device.lost.then((reason) => opts.onLost(reason));
+      }
+      if (typeof backendObj.addEventListener === 'function') {
+        backendObj.addEventListener('uncapturederror', (e) => opts.onLost(e));
+      }
+    } catch { /* neither exists on WebGL2 — ignore */ }
+
+    // First frame: detect the WebGPU createView swizzle throw so the caller
+    // can retry once on WebGL2 (measured pattern from docs/gpu.md §3).
+    handle.render();
+    return path;
+  }
+
+  /** Access the GPU canvas so the compositor / raw blitter can sample it. */
+  getCanvas(): HTMLCanvasElement { return this.canvas; }
+
+  /** Resize the GPU canvas + pipeline to a target pixel size (styled or raw). */
+  private resizeTo(w: number, h: number): void {
+    if (this.canvas.width === w && this.canvas.height === h) return;
+    this.renderer.setSize(w, h, false);
+    // The compositor's texture already tracks the canvas, but a dimension
+    // change invalidates any cached upload — mark it dirty here so the next
+    // `render` uploads the fresh contents.
+    this.compositor.texture.needsUpdate = true;
+  }
+
+  /** Render one GPU frame. Throws to the viewport on backend failure. */
+  render(
+    level: LevelView,
+    pose: Pose,
+    vFovDeg: number,
+    mode: 'styled' | 'raw',
+    size: { w: number; h: number },
+    viewportPx: { cssW: number; cssH: number; dpr: number },
+    pinnedMood: MoodId | null,
+  ): void {
+    // 1. Sync camera to hero pose (docs/gpu.md §5; same numbers the legacy
+    //    camera uses, on purpose).
+    this.camera.position.set(pose.x, EYE_HEIGHT, pose.y);
+    this.camera.rotation.set(CAMERA_PITCH, -pose.yaw, 0, 'YXZ');
+    const aspect = viewportPx.cssW / Math.max(1, viewportPx.cssH);
+    if (this.camera.fov !== vFovDeg || this.camera.aspect !== aspect) {
+      this.camera.fov = vFovDeg;
+      this.camera.aspect = aspect;
+      this.camera.updateProjectionMatrix();
+    }
+
+    // 2. Refresh the dungeon geometry if the level changed.
+    this.dungeon.refresh(level);
+    this.dungeon.updateLights(Math.floor(pose.x), Math.floor(pose.y));
+
+    // 3. Mood: pinned via `?mood=` or derived from the hero's cell.
+    const cellX = Math.floor(pose.x);
+    const cellY = Math.floor(pose.y);
+    const target: MoodId = pinnedMood ?? moodFor(level, cellX, cellY);
+    if (target !== this.lastMoodDecision) {
+      // A doorway is a fade, not a cut (`MOOD_BLEND_SECONDS`).
+      if (this.lastMoodDecision === null) {
+        this.atmosphere.set(target);
+      } else {
+        this.atmosphere.blendTo(target, MOOD_BLEND_SECONDS);
+      }
+      this.lastMoodDecision = target;
+      this.mood = target;
+    }
+
+    // 4. Advance the atmosphere blend. `dt` clamped so a paused tab does not
+    //    fast-forward a mood on resume.
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const dt = this.lastTime === 0 ? 0.016 : Math.min(0.1, (now - this.lastTime) / 1000);
+    this.lastTime = now;
+    this.atmosphere.update(dt);
+
+    // 5. Apply the styled/raw grade overrides *after* the mood writes so the
+    //    mood's vignette/grain don't leak into styled mode (docs/gpu.md §6.1).
+    if (mode === 'styled') {
+      const grade = styledLook(STYLE_EXPOSURE);
+      this.handle.look.vignette.value = grade.vignette;
+      this.handle.look.grain.value = grade.grain;
+      this.handle.look.outputScale.value = grade.outputScale;
+    } else {
+      const grade = rawLook();
+      if (grade.outputScale === undefined) this.handle.look.outputScale.value = 1;
+      // vignette and grain are left alone: whatever the mood wrote applies.
+    }
+
+    // 6. Size and render.
+    this.resizeTo(size.w, size.h);
+    this.handle.render();
+  }
+
+  /** Called when viewport cells resize; the next `render` recomputes size. */
+  notifyResize(): void {
+    // The pipeline's `renderer.setSize` is called every frame from `render`
+    // with the fresh target size, so we do not need to do anything here.
+  }
+
+  /** Free every GPU-side resource the path owns. */
+  dispose(): void {
+    try { this.compositor.dispose(); } catch { /* ignore */ }
+    try { this.dungeon.dispose(); } catch { /* ignore */ }
+    try { this.renderer.dispose(); } catch { /* ignore */ }
+  }
 }
