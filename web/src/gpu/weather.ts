@@ -65,7 +65,7 @@ import type { MoodId } from './moods.js';
 /** Instance count per emitter — allocated once at construction (docs/gpu-weather.md "budget"). */
 export const DRIP_COUNT = 400;
 /** Instance count for the drifting dust motes. */
-export const MOTE_COUNT = 800;
+export const MOTE_COUNT = 560;
 /** Instance count for the rising torch/lava embers. */
 export const EMBER_COUNT = 300;
 

@@ -85,8 +85,8 @@ Torch placement is a pure row-major scan:
 1. Every `wall`/`stone` cell whose neighbouring cell (n → s → w → e
    priority) is a `passable` kind with `MapCell.lit === true` is a torch
    candidate on that side.
-2. A global Chebyshev spacing of 6 cells is then applied — the first
-   candidate wins, later candidates within 5 cells of any chosen torch are
+2. A global Chebyshev spacing of 4 cells is then applied — the first
+   candidate wins, later candidates within 3 cells of any chosen torch are
    dropped.
 
 Each accepted torch produces one emissive flame voxel (`fire`, `emissive 12`,
@@ -168,9 +168,9 @@ floor cell is lit — the busiest case in the fleet's fixtures):
 
 | bake                          | boxes  | boxes / cell | full rebuild |
 | ----------------------------- | -----: | -----------: | -----------: |
-| main (walls, floors, doorway, torches) | **6 770** | **4.03** | **≈ 38 ms** |
+| main (walls, floors, doorway, torches) | **6 802** | **4.05** | **≈ 38 ms** |
 | ceiling                                | **1 482** | 0.88 (one per passable cell) | ≈ 6 ms |
-| total                                  | **8 252** | 4.91 | ≈ 44 ms |
+| total                                  | **8 284** | 4.93 | ≈ 44 ms |
 
 Well under the 40 000-box cap. `hiddenFaces` culls the shared face between
 touching wall/floor/wall neighbours; the chunked geometry is 24 `Mesh`es
