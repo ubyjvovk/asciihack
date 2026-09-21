@@ -15,6 +15,8 @@
     "src/dom-term.ts",
     "src/ws-bridge.ts",
     "src/gl/**/*.ts",
+    "src/voxel/**/*.ts",
+    "src/gpu/**/*.ts",
     "../src/engine/session.ts",
     "../src/engine/transport.ts",
     "../src/engine/protocol.ts",
