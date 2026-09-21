@@ -15,17 +15,26 @@
 import { type CellKind, type LevelView, type MapCell, type Pose } from '../../src/model/types.js';
 import { GlViewport } from './gl/gl-viewport.js';
 
-/** The bench level: a lit room, a dark corridor east through a doorway, stairs. */
+/**
+ * The bench level: a lit room with both staircases, a dark corridor east
+ * through a doorway, then a closed door into a second chamber holding water,
+ * ice, lava and a fountain — so every cell kind a renderer special-cases is
+ * visible from one or two poses.
+ */
 const MAP = [
   '###############',
   '#.............#',
   '#............>#',
   '#.............#',
-  '#......<......D%%%%%#',
-  '#.............#    #',
-  '#.............#    #',
-  '###############    #',
-  '                   #',
+  '#......<......D%%%%%+.........#',
+  '#.............#     #...~~~~..#',
+  '#.............#     #...~~~~..#',
+  '###############     #....{....#',
+  '                    #.........#',
+  '                    #..III....#',
+  '                    #..III.LL.#',
+  '                    #......LL.#',
+  '                    ###########',
 ] as const;
 
 const GLYPH_KIND: Readonly<Record<string, CellKind>> = {
@@ -38,6 +47,9 @@ const GLYPH_KIND: Readonly<Record<string, CellKind>> = {
   '<': 'stairs_up',
   '>': 'stairs_down',
   '{': 'fountain',
+  '~': 'water',
+  L: 'lava',
+  I: 'ice',
   ' ': 'unexplored',
 };
 
