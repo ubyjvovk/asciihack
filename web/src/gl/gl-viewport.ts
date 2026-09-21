@@ -50,6 +50,7 @@ import {
   gpuCanvasSize,
   moodFor,
   parseGpuQueryOptions,
+  pipelineOptionsWithEnv,
   rawLook,
   styledLook,
   type BackendChoice,
@@ -967,28 +968,43 @@ class GpuPath {
     const dungeon = new DungeonScene({ material: voxelMat, ceilingMaterial: voxelMat });
     scene.add(dungeon.root);
 
+    // Build `Atmosphere` *before* the pipeline so its per-mood env map is
+    // available at SSR construction (T-0048/T-0049; stochastic SSR throws on
+    // `sampleEnvironmentBRDF` when `environmentNode` is null). The rig needs
+    // a `look` bag it can write mood-driven grade values into, but the
+    // pipeline's real `LookUniforms` don't exist yet — so hand it a shared
+    // proxy object and pour the pipeline's uniforms into it once the
+    // pipeline is built. `Atmosphere` holds the reference (not a snapshot),
+    // so `Object.assign` is enough; no private-field surgery on `moods.ts`.
+    type AtmosphereLook = ConstructorParameters<typeof Atmosphere>[0]['look'];
+    const lookProxy: AtmosphereLook = {};
+    const atmosphere = new Atmosphere({ scene, look: lookProxy, weather: W });
+
     // `sun` is null on purpose: dungeons have no shaft light and
     // `GodraysNode` throws on a light with no shadow map (docs/gpu.md §3).
-    const handle = createPipeline({
-      renderer, scene, camera, requested: quality, sun: null,
-    });
+    // `environment` closes the T-0048 hole — see `docs/gpu-compose.md`.
+    const handle = createPipeline(pipelineOptionsWithEnv(
+      { renderer, scene, camera, requested: quality, sun: null },
+      atmosphere,
+    ));
     const compositor = new GpuCompositor(canvas);
 
     // Give the pipeline canvas its initial size (styled mode will resize on
     // the first `render`; this just keeps early frames from being 1×1).
     renderer.setSize(Math.max(1, opts.cols * opts.cellW), Math.max(1, opts.rows * opts.cellH), false);
 
-    // `handle.look` is `LookUniforms` (every field a live TSL uniform with a
-    // mutable `.value`); `Atmosphere` structurally takes a subset via
-    // `moods.ts::Look`. Cast because the TSL uniform type is not literally
-    // `{ value: number }` in TS, but the runtime shape matches.
-    const atmosphere = new Atmosphere({
-      scene,
-      look: handle.look as unknown as ConstructorParameters<typeof Atmosphere>[0]['look'],
-      weather: W,
-    });
+    // Now that the pipeline exists, wire its `LookUniforms` into the proxy
+    // the atmosphere already writes to. Cast because `UniformNode<'float',
+    // number>` isn't literally `{ value: number }` in TS, but the runtime
+    // shape matches (`moods.ts::Look`).
+    Object.assign(
+      lookProxy as Record<string, unknown>,
+      handle.look as unknown as Record<string, unknown>,
+    );
+    // Re-apply the initial mood so torchlit's grade values (exposure,
+    // vignette, etc.) land in the pipeline's real uniforms; the atmosphere
+    // constructor's own `_apply()` ran against the empty proxy and no-op'd.
     atmosphere.set('torchlit');
-    // Run one update so uniforms are populated before the first frame.
     atmosphere.update(0.016);
 
     const path = new GpuPath({
@@ -1066,6 +1082,15 @@ class GpuPath {
         this.atmosphere.set(target);
       } else {
         this.atmosphere.blendTo(target, MOOD_BLEND_SECONDS);
+      }
+      // `SSRNode` reads `environmentNode` at construction, so it keeps the
+      // old texture (which the atmosphere just disposed inside `_rebuildEnv`)
+      // until we swap it. Guarded because `nodes.ssr` is absent on the `low`
+      // tier and `setEnvMap` is a newer three addition. Never throws — a
+      // failure here must not take down the render loop.
+      const ssr = this.handle.state.nodes['ssr'] as { setEnvMap?: (t: unknown) => void } | undefined;
+      if (ssr !== undefined && typeof ssr.setEnvMap === 'function') {
+        try { ssr.setEnvMap(this.atmosphere.environment); } catch { /* swallow */ }
       }
       this.lastMoodDecision = target;
       this.mood = target;
