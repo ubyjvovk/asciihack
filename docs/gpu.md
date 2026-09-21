@@ -133,27 +133,42 @@ tier that enables SSR already has (TRAA). Revisit when three fixes
 `SSRNode.js` (one character: `.max( int( 1 ) )` → `.max( 1 )`); the gate is
 deliberately one line so it can be deleted.
 
-### 3.1 Proof that the ported stack looks right
+### 3.1 First light — the ported stack rendering the real dungeon
 
-`/gpu-probe.html?stack=voxel` builds a scrap of dungeon with the **real**
-pieces — `VoxelBuilder` geometry (T-0036), `createVoxelMaterial()` (T-0038),
-an `Atmosphere` mood, and the ported pipeline (T-0037) — so the three ports
-are exercised together before the dungeon builder depends on them. Result on
-the WebGL2 backend, `q=high`, mood `torchlit`: **zero shader errors**, and the
-frame in `.tigerteam/shots/reference-torch.png` — warm light pooling on wet
-stone, the wall catching the bounce, the floor falling into darkness, bloom on
-the torch head, AgX rolling the highlight. That is the target.
+`/gpu-probe.html` can build three scenes, each through the **real ported
+pipeline** (`?q=` picks the tier, `?mood=` the mood, `?pose=x,y,yawDeg` the
+camera):
 
-Two numbers came out of it that the dungeon builder should start from:
+| `?stack=` | what it builds |
+|---|---|
+| *(absent)* | a hand-rolled minimal graph (`pass` + bloom + FXAA + AgX) — the backend smoke test |
+| `voxel` | a scrap of dungeon from `VoxelBuilder` + `createVoxelMaterial()` |
+| `dungeon` | **the real `DungeonScene`** over the bench level, with its baked torches and the hero's lantern |
 
-- **An emissive box does not light a room.** With only the emissive torch
-  head, the stone stays black (mean luminance 2/255). Real `PointLight`s are
-  what make the look.
-- **`PointLight(PAL.lamp, 8, 6, 2)`** — intensity 8, distance 6 cells,
-  decay 2 — gives the reference frame: mean luminance **52**, only **22.6 %**
-  of pixels under the black point. At intensity 2 it is mean 35 / 36 % black,
-  which is already usable but dimmer. Compare with the legacy path's
-  `before-amber.png`: mean **1.5**, **94.8 %** black.
+`?stack=dungeon&q=high` on the WebGL2 backend renders
+`.tigerteam/shots/first-light-dungeon.png` — torch sconces pooling warm light
+on flagstones, the ceiling catching the bounce, SSR putting the torches back
+in the wet floor and the ice, the corridor falling away into black. Zero
+shader errors, all of `gi`, `ssr`, `rays`, `bloom` live in the graph.
+
+Measured, 640×360, mood `torchlit`, hero in the lit room:
+
+| | black | mean | 
+|---|---|---|
+| legacy path (`before-amber.png`) | 94.8 % | 1.5 |
+| ported stack, first light | **5.2 %** | **92.6** |
+
+The frame is, if anything, now **too bright**: dark basalt stone renders as
+pale grey plaster, and the ice slab blows out to white. That is the tuning
+ticket's job (T-0045), not a defect in the port — and it is a far better
+problem than the one we started with. Styled mode's `outputScale` (§6.1)
+divides by the style exposure, so the number the quantiser sees is ≈ 54.
+
+> A caveat worth keeping: an earlier version of this section credited
+> `.tigerteam/shots/reference-torch.png` to the ported pipeline. It was not —
+> the probe fell through to the minimal graph for `?stack=voxel`. That image
+> is a real frame from the real voxel material, but bloom + AgX only. Fixed;
+> the numbers above are from the full stack.
 
 ## 4. Scene conventions (unchanged from `docs/web.md`)
 

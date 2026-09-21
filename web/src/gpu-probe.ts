@@ -18,6 +18,8 @@ import { createVoxelMaterial, W } from './gpu/materials.js';
 import { Atmosphere, MOODS, type MoodId } from './gpu/moods.js';
 import { VoxelBuilder } from './voxel/kit.js';
 import { buildModelObject } from './voxel/mesh.js';
+import { DungeonScene } from './gpu/dungeon.js';
+import type { CellKind, LevelView, MapCell } from '../../src/model/types.js';
 
 interface ProbeResult {
   step: string;
@@ -40,6 +42,70 @@ const result: ProbeResult = {
   frameMs: 0,
   forced: '',
 };
+
+const BENCH_MAP = [
+  '###############',
+  '#.............#',
+  '#............>#',
+  '#.............#',
+  '#......<......D%%%%%+.........#',
+  '#.............#     #...~~~~..#',
+  '#.............#     #...~~~~..#',
+  '###############     #....{....#',
+  '                    #.........#',
+  '                    #..III....#',
+  '                    #..III.LL.#',
+  '                    #......LL.#',
+  '                    ###########',
+];
+
+const BENCH_KIND: Readonly<Record<string, CellKind>> = {
+  '#': 'wall', '.': 'floor', '%': 'corridor', D: 'doorway', '+': 'door_closed',
+  '<': 'stairs_up', '>': 'stairs_down', '{': 'fountain', '~': 'water',
+  L: 'lava', I: 'ice', ' ': 'unexplored',
+};
+
+/** The same level `/scene.html` uses, as a `LevelView`, with rooms lit. */
+function benchLevel(): LevelView {
+  const height = BENCH_MAP.length;
+  const width = Math.max(...BENCH_MAP.map((r) => r.length));
+  const kindAt = (x: number, y: number): CellKind => {
+    if (x < 0 || y < 0 || y >= height) return 'unexplored';
+    return BENCH_KIND[BENCH_MAP[y]?.[x] ?? ' '] ?? 'unexplored';
+  };
+  return {
+    width, height, kindAt,
+    cellAt(x: number, y: number): MapCell | null {
+      const kind = kindAt(x, y);
+      if (kind === 'unexplored') return null;
+      return { x, y, kind, terrain: null, top: null, lit: kind !== 'corridor' };
+    },
+  };
+}
+
+/** The real dungeon: `DungeonScene` over the bench level, lit by real torches. */
+function makeDungeonScene(): { scene: THREE.Scene; camera: THREE.PerspectiveCamera } {
+  const q = new URLSearchParams(window.location.search);
+  const scene = new THREE.Scene();
+  const material = createVoxelMaterial({ weather: true, sway: false });
+  const dungeon = new DungeonScene({ material, seed: 7 });
+  const level = benchLevel();
+  dungeon.refresh(level);
+  const [px, py, pdeg] = (q.get('pose') ?? '7.5,4.5,90').split(',').map(Number);
+  const hx = px ?? 7.5;
+  const hy = py ?? 4.5;
+  dungeon.updateLights(hx, hy);
+  if (q.get('ceiling') === '0') dungeon.ceiling.visible = false;
+  scene.add(dungeon.root);
+  const camera = new THREE.PerspectiveCamera(Number(q.get('fov') ?? '70'), 16 / 9, 0.05, 60);
+  camera.position.set(hx, 0.5, hy);
+  camera.rotation.set(-0.08, -(((pdeg ?? 90) * Math.PI) / 180), 0, 'YXZ');
+  // the hero's lantern, same constants the legacy viewport uses
+  const lantern = new THREE.PointLight(0xffe0a8, Number(q.get('lantern') ?? '12'), 14, 1);
+  camera.add(lantern);
+  scene.add(camera);
+  return { scene, camera };
+}
 
 /**
  * A scrap of dungeon built with the real voxel kit and lit with the real
@@ -121,8 +187,9 @@ async function probe(): Promise<void> {
     result.backend = backend.isWebGPUBackend === true ? 'webgpu' : 'webgl2';
 
     result.step = 'graph';
-    const voxelMode = new URLSearchParams(window.location.search).get('stack') === 'voxel';
-    const built = voxelMode ? makeVoxelScene() : makeScene();
+    const stack = new URLSearchParams(window.location.search).get('stack');
+    const voxelMode = stack === 'voxel' || stack === 'dungeon';
+    const built = stack === 'dungeon' ? makeDungeonScene() : stack === 'voxel' ? makeVoxelScene() : makeScene();
     const { scene, camera } = built;
 
     // `?stack=ported` builds OUR ported pipeline (web/src/gpu/pipeline.ts) at
@@ -158,7 +225,7 @@ async function probe(): Promise<void> {
       return;
     }
 
-    if (q.get('stack') === 'ported') {
+    if (stack === 'ported' || voxelMode) {
       const caps = { webgpu: result.backend === 'webgpu', mrtBytes: result.mrtBytes, maxQuality: 'ultra' as QualityName };
       const requested = (q.get('q') ?? 'high') as QualityName;
       const tier = q.get('noclamp') === '1' ? requested : clampQuality(requested, caps);
