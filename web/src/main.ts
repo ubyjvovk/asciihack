@@ -131,7 +131,13 @@ function boot(): void {
     syncMovement(app, gl.currentView);
     const traveler = createTraveler({
       session,
-      sendStep: (viKey) => sendKey(session, () => {}, charKey(viKey)),
+      // Route the step through `App.handleKey`, the *same* path a real
+      // keypress takes. The earlier `sendKey(session, () => {}, …)` passed a
+      // no-op queue, so any step sent while `session.pending` was momentarily
+      // null was dropped on the floor and the traveler waited for a move that
+      // could never arrive (PM, live-game diagnosis). The App owns the real
+      // queue and drains it when the next request lands.
+      sendStep: (viKey) => app.handleKey(charKey(viKey)),
     });
     const loop = createRenderLoop(gl, session, app, traveler);
     // Debug handle so the PM can diagnose the viewport from the page console:
