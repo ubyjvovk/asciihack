@@ -18,7 +18,8 @@
 import { NethackSession, runSession } from '../../src/engine/session.js';
 import { App } from '../../src/ui/app.js';
 import { FpsMode, type MovementScheme } from '../../src/ui/modes/fps.js';
-import { poseFor, spritesFromMap } from '../../src/ui/view3d.js';
+import { poseFor, spritesFromMap, charKey, sendKey } from '../../src/ui/view3d.js';
+import { findPath, stepKey, type PathCell } from '../../src/ui/travel.js';
 import type { Theme } from '../../src/render/themes.js';
 import { DEFAULT_SETTINGS, type Settings } from '../../src/ui/settings.js';
 import { DomTerm } from './dom-term.js';
@@ -125,12 +126,32 @@ function boot(): void {
     // face the direction (T-0057). Applied once at boot and again below on
     // every F2/F3/F9 view switch.
     syncMovement(app, gl.currentView);
-    const loop = createRenderLoop(gl, session, app);
+    const traveler = createTraveler(session, app);
+    const loop = createRenderLoop(gl, session, app, traveler);
+    // Click-to-move (T-0061). The GL canvas is `pointer-events: none` so the
+    // DOM terminal keeps focus (docs/web.md); the terminal <pre> is where
+    // clicks land, and `gl.pickCell` unprojects the event onto the floor plane
+    // through the live camera.
+    host.addEventListener('click', (ev) => {
+      const cell = gl.pickCell(ev);
+      if (cell === null) return;
+      const hero = session.hero;
+      if (hero === null) return;
+      const path = findPath(session.map, hero, cell);
+      if (path === null || path.length === 0) return;
+      traveler.start(path);
+      loop.mark();
+    });
     // Capture F5 (style cycle) and F2/F3 (view switch) at the document level
     // so the WebGL viewport reacts before the App consumes them, and mark the
     // loop dirty so the next rAF repaints without waiting for a session event
     // (T-0032 fix for the T-0031 nit).
     document.addEventListener('keydown', (ev) => {
+      // Any key press stops an in-flight travel — a queued burst that ignored
+      // the interrupt would walk the hero into whatever the player just
+      // reacted to (T-0061). Modifier-only presses (Shift, Ctrl, …) do not
+      // count as an override.
+      if (!isModifierOnly(ev)) traveler.abort();
       if (ev.key === 'F5') {
         const step = ev.shiftKey ? -1 : 1;
         gl.cycleStyle(step);
@@ -250,13 +271,17 @@ interface RenderLoop {
  * is animating a turn, or a caller `mark()`s the loop dirty (view/style
  * switch). `requestAnimationFrame` is throttled to the browser's refresh
  * rate; when nothing changes we skip the GL call entirely.
+ *
+ * The click-to-move traveler (T-0061) also ticks here: at most one vi-key
+ * per rAF, so a queued walk cannot outrun the game or the browser.
  */
-function createRenderLoop(gl: GlViewport, session: NethackSession, app: App): RenderLoop {
+function createRenderLoop(gl: GlViewport, session: NethackSession, app: App, traveler: Traveler): RenderLoop {
   let dirty = true;
   const mark = (): void => { dirty = true; };
   session.on('change', mark);
   session.on('request', mark);
   const raf = (): void => {
+    traveler.tick();
     const fps = getFps(app);
     const animating = fps !== null && fps.isTurning;
     if (dirty || animating) {
@@ -267,6 +292,101 @@ function createRenderLoop(gl: GlViewport, session: NethackSession, app: App): Re
   };
   requestAnimationFrame(raf);
   return { mark };
+}
+
+/** Modifier-only keydown events don't count as a travel-abort trigger. */
+function isModifierOnly(ev: KeyboardEvent): boolean {
+  return ev.key === 'Shift' || ev.key === 'Control' || ev.key === 'Alt' || ev.key === 'Meta';
+}
+
+/** Click-to-move state machine (T-0061, docs/gpu-pick.md). */
+interface Traveler {
+  /** Begin walking a fresh path; replaces any in-flight walk. */
+  start(path: readonly PathCell[]): void;
+  /** Abandon the current walk (called on interrupt). No-op when idle. */
+  abort(): void;
+  /** Send at most one vi-key toward the next path cell, subject to the
+   *  interrupt rules. Called once per rAF. */
+  tick(): void;
+}
+
+/**
+ * Build the click-to-move state machine (T-0061, docs/gpu-pick.md).
+ *
+ * The walker owns three pieces of state: the remaining path, the cell the
+ * hero is expected to occupy after the last step we sent, and the message
+ * count at the moment we sent it. On each rAF `tick`, if the game is asking
+ * for a key and none of the interrupt conditions fires, one vi-key is sent
+ * and the state advances; otherwise the path is dropped in silence — the
+ * ticket asks for no beep, no message on failure.
+ *
+ * Interrupts (any one aborts the walk):
+ *   1. The hero did not arrive at `expectedNext` — something blocked or
+ *      turned us aside on the previous step.
+ *   2. `session.messages.length` grew since we sent the previous step — the
+ *      message line changed, so NetHack wants the player to notice something.
+ *   3. Any non-modifier key was pressed — the player is taking over.
+ *   4. Pending request is anything other than a key ask (menu, yn, getlin,
+ *      display, pos, …) — driving those with vi-keys would be user hostile.
+ */
+function createTraveler(session: NethackSession, _app: App): Traveler {
+  let path: PathCell[] = [];
+  let expectedNext: PathCell | null = null;
+  let msgSnapshot = 0;
+  // Gate below guarantees we only call `sendKey` while a `key` request is
+  // pending, so `sendKey`'s queue fallback never fires and this stays a no-op.
+  const queueKey = (): void => {};
+  const abort = (): void => {
+    path = [];
+    expectedNext = null;
+  };
+  const start = (fresh: readonly PathCell[]): void => {
+    path = [...fresh];
+    expectedNext = null;
+    msgSnapshot = session.messages.length;
+  };
+  const tick = (): void => {
+    if (path.length === 0) return;
+    const pending = session.pending;
+    // Wait: the bridge is still processing the last turn. Anything other than
+    // a key ask (a menu, yn, display, pos cursor, …) is an interrupt.
+    if (pending === null) return;
+    if (pending.kind !== 'key') {
+      abort();
+      return;
+    }
+    // Interrupt: a new message means NetHack wants the player to see it.
+    if (session.messages.length > msgSnapshot) {
+      abort();
+      return;
+    }
+    const hero = session.hero;
+    if (hero === null) {
+      abort();
+      return;
+    }
+    // Interrupt: the previous step did not land where we expected — something
+    // blocked, staggered or otherwise interrupted the move.
+    if (expectedNext !== null && (hero.x !== expectedNext.x || hero.y !== expectedNext.y)) {
+      abort();
+      return;
+    }
+    const next = path[0]!;
+    const dx = next.x - hero.x;
+    const dy = next.y - hero.y;
+    const key = stepKey(dx, dy);
+    if (key === null) {
+      abort();
+      return;
+    }
+    // Advance state *before* the answer: `session.answer` fires listeners
+    // synchronously, and one of them (`repaint`) may indirectly re-enter tick.
+    path.shift();
+    expectedNext = next;
+    msgSnapshot = session.messages.length;
+    sendKey(session, queueKey, charKey(key));
+  };
+  return { start, abort, tick };
 }
 
 /** Read the active fps mode (if the App is in fps), or null. */

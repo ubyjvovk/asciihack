@@ -82,6 +82,7 @@ import {
   type DampState,
 } from '../gpu/thirdperson.js';
 import { createWeather, type WeatherHandle } from '../gpu/weather.js';
+import { pickCellFromEvent, type Cell } from '../gpu/pick.js';
 
 /** Distance in cells the hero's lantern reaches before falling to black. */
 export const LANTERN_DISTANCE = 14;
@@ -324,6 +325,32 @@ export class GlViewport {
    */
   zoomThird(delta: number): void {
     this.thirdDist = clampThirdDist(this.thirdDist + delta);
+  }
+
+  /**
+   * Click-to-move (T-0061, docs/gpu-pick.md). Turn a `MouseEvent` on the
+   * DOM terminal into the map cell under the cursor, using whichever camera
+   * the active view renders through. Refreshes `orthoCamera`/`camera` for the
+   * current view so the pick uses a live pose even if the last `render` used
+   * the GPU path (which leaves the legacy cameras untouched for `ortho` and
+   * `third`). Does not advance the third-view spring damper — read-only.
+   */
+  pickCell(ev: MouseEvent): Cell | null {
+    if (this.view === 'ortho') {
+      placeOrthoCamera(this.orthoCamera, this.lastHeroCell, this.cols, this.rows, 2);
+      return pickCellFromEvent(ev, this.canvas, this.orthoCamera);
+    }
+    if (this.view === 'third') {
+      const wanted = thirdPersonPose(this.lastHeroCell, this.thirdYawSteps, this.thirdDist);
+      const damped = this.thirdDamped ?? { position: wanted.position, target: wanted.target };
+      this.camera.position.set(damped.position.x, damped.position.y, damped.position.z);
+      this.camera.lookAt(damped.target.x, damped.target.y, damped.target.z);
+      if (this.camera.fov !== wanted.fov) {
+        this.camera.fov = wanted.fov;
+        this.camera.updateProjectionMatrix();
+      }
+    }
+    return pickCellFromEvent(ev, this.canvas, this.camera);
   }
 
   /** Cycle through `STYLE_ORDER` (positive = next, negative = previous). */
