@@ -297,13 +297,57 @@ export class GlViewport {
    * Plain-number snapshot of the viewport for on-page debugging
    * (`window.__asciihack.gl.debugInfo()`). No three.js objects — the PM pastes
    * this into a console to diagnose camera/frustum issues without digging into
-   * the scene graph. `left/right/top/bottom` are 0 for the fps perspective
-   * camera (its frustum is FOV-derived, not a box).
+   * the scene graph.
+   *
+   * The report describes **the path that drew the last frame** (T-0050): on
+   * the GPU path it reads the camera the pipeline is bound to (position,
+   * near/far and — for ortho — the frustum sides `applyOrthoPlacementTo`
+   * wrote), plus the GPU scene's own counts (chunk meshes, live torch
+   * lights, sprite quads). On the legacy path it keeps the pre-T-0050
+   * shape: the `THREE.*Camera` the `StyleRenderer` was handed and the
+   * `SceneBuilder` instance counts. Before T-0050 the ortho GPU path always
+   * returned the untouched legacy `orthoCamera` (a ±1 frustum at the
+   * origin) and zero meshes, which hid the actual bound-camera state and
+   * made the black-frame bug undiagnosable from the console.
+   *
+   * `left/right/top/bottom` are 0 for whichever perspective camera is
+   * active (its frustum is FOV-derived, not a box).
    */
   debugInfo(): DebugInfo {
+    const usingGpu = this.lastPath !== 'legacy' && this.gpu !== null;
+    const h = this.lastHeroCell;
+    if (usingGpu) {
+      const gpu = this.gpu!;
+      const cam = this.view === 'ortho' ? gpu.orthoCamera : gpu.camera;
+      const isOrtho = this.view === 'ortho';
+      return {
+        view: this.view,
+        camera: {
+          type: this.view,
+          position: { x: cam.position.x, y: cam.position.y, z: cam.position.z },
+          target: { x: h.x + 0.5, y: 0.5, z: h.y + 0.5 },
+          near: cam.near,
+          far: cam.far,
+          left: isOrtho ? gpu.orthoCamera.left : 0,
+          right: isOrtho ? gpu.orthoCamera.right : 0,
+          top: isOrtho ? gpu.orthoCamera.top : 0,
+          bottom: isOrtho ? gpu.orthoCamera.bottom : 0,
+        },
+        meshes: {
+          walls: gpu.dungeon.mainMeshes().filter((m) => m !== null).length,
+          floors: gpu.dungeon.pointLights.length,
+          sprites: gpu.sprites.root.children.length,
+        },
+        styleId: this.style.style.id,
+        path: this.lastPath,
+        gpuReady: this.gpuReady,
+        backend: this.gpu?.backend ?? null,
+        quality: this.gpu?.quality ?? null,
+        mood: this.gpu?.mood ?? null,
+      };
+    }
     const cam = this.view === 'ortho' ? this.orthoCamera : this.camera;
     const isOrtho = cam instanceof THREE.OrthographicCamera;
-    const h = this.lastHeroCell;
     return {
       view: this.view,
       camera: {
@@ -661,7 +705,26 @@ export class GlViewport {
 /** An empty string set, reused as the "no cutaway" sentinel in `applyCutaway`. */
 const EMPTY_STRING_SET: ReadonlySet<string> = new Set();
 
-/** Plain-number snapshot returned by `GlViewport.debugInfo()` (T-0032 rework). */
+/**
+ * Plain-number snapshot returned by `GlViewport.debugInfo()` (T-0032 rework,
+ * T-0050 made per-path).
+ *
+ * The `camera` and `meshes` fields describe **the path that drew the last
+ * frame**, keyed by `path`:
+ *
+ * - `path === 'legacy'` (or before the GPU path is `gpuReady`):
+ *   `camera` reports the `THREE.*Camera` the `StyleRenderer` was handed, and
+ *   `meshes.{walls,floors,sprites}` are the `SceneBuilder`'s instance counts.
+ * - `path === 'raw'` / `path === 'styled'` (GPU path live):
+ *   `camera` reports the `WG.*Camera` the pipeline is bound to — the very
+ *   reference `applyOrthoPlacementTo` writes to on an ortho frame — and
+ *   `meshes.walls` is the chunk mesh count from `DungeonScene`, `meshes.floors`
+ *   is the number of live `PointLight`s (torches), `meshes.sprites` is the
+ *   `SpriteLayer` quad count.
+ *
+ * `left/right/top/bottom` are 0 for whichever perspective camera is active
+ * (its frustum is FOV-derived, not a box).
+ */
 export interface DebugInfo {
   view: 'fps' | 'ortho';
   camera: {

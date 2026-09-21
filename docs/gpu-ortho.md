@@ -226,15 +226,63 @@ GPU-not-ready. `debugInfo().path` therefore reads `styled` on an ortho
 frame under `?gpu=auto`, not `legacy`, which is a change that any harness
 watching that field will see.
 
+## `debugInfo()` reports the path that drew the last frame
+
+*T-0050 rework 2.* Before this ticket, `GlViewport.debugInfo()` always
+returned the *legacy* `THREE.OrthographicCamera` in ortho mode and the
+`SceneBuilder`'s per-instance counts, regardless of which path had actually
+rendered the last frame. On an `?gpu=raw&view=ortho` bench run it reported
+the constructor-default frustum sitting untouched at the origin:
+
+```json
+"camera": { "type": "ortho", "position": { "x": 0, "y": 0, "z": 0 },
+            "near": 0.1, "far": 100,
+            "left": -1, "right": 1, "top": 1, "bottom": -1 },
+"meshes": { "walls": 0, "floors": 0, "sprites": 0 }
+```
+
+Zero information about what the GPU pipeline was bound to. The
+black-frame regression that shipped with the T-0050 attempt-1 fix was
+invisible from that snapshot — the console read the same whether the
+render worked or not.
+
+The updated `debugInfo()` **describes the path that drew the last
+frame** (`docs/gpu.md` §9 keeps the eyeball review with the PM; this
+snapshot is what the PM pastes into the terminal to reason about the
+frame *before* asking for a re-shoot):
+
+- `path === 'legacy'` (or `gpuReady === false`) keeps the pre-T-0050
+  shape: the legacy `THREE.*Camera` handed to the `StyleRenderer` and
+  the `SceneBuilder`'s instance counts.
+- `path === 'raw' | 'styled'` reads the camera the pipeline is bound to —
+  the exact `WG.PerspectiveCamera` / `WG.OrthographicCamera` reference
+  `PipelineHandle.setCamera` last received — and its post-placement
+  fields (`position`, `near/far`, and for ortho the frustum sides
+  `applyOrthoPlacementTo` wrote). `meshes.walls` is the live chunk mesh
+  count from `DungeonScene`, `meshes.floors` is the number of live
+  `PointLight`s (torches), `meshes.sprites` is the `SpriteLayer` quad
+  count.
+
+The camera fields land byte-for-byte on the same reference the graph
+holds, so a `debugInfo()` that still reads a ±1 frustum at the origin
+after F3 into ortho means the placement is not reaching the graph — a
+concrete signal, not "it's black" (which every stage in the pipeline
+also produces from any upstream failure).
+
+`tests/gpu-ortho.test.ts`'s "the camera bound to the graph carries the
+ortho placement" (below) pins the same invariant at the pure boundary,
+independent of a renderer.
+
 ## Verification
 
 Everything in this ticket that runs in node is exercised by
-`tests/gpu-ortho.test.ts` (four cases):
+`tests/gpu-ortho.test.ts` (five cases):
 
 1. `the ortho frustum from placeOrthoCamera is applied unchanged to the GPU camera`
 2. `the cutaway set changes only when the hero cell changes`
-3. `switching to the ortho view rebuilds the graph against an orthographic camera` (T-0050)
-4. `DOF focus follows the ortho camera distance`
+3. `switching to the ortho view rebuilds the graph against an orthographic camera` (T-0050 attempt 1)
+4. `the camera bound to the graph carries the ortho placement` (T-0050 rework 2)
+5. `DOF focus follows the ortho camera distance`
 
 ## What I could not verify
 
@@ -242,12 +290,16 @@ The rules `docs/gpu.md` §9 sets on this whole wave apply here too. The
 worker container has no GPU and cannot look at a rendered frame, so:
 
 - **No visual verification.** The ceiling-hide, ghost overlay, F3 pipeline
-  rebuild against the real `OrthographicCamera`, and the DOF override
-  running through the full afterburn stack are written to specification and
-  unit-tested at their pure boundaries; the actual frame — including
-  whether `?gpu=raw&view=ortho` now renders anything at all — is the PM's
+  rebuild against the real `OrthographicCamera`, the DOF override running
+  through the full afterburn stack, and the T-0050 rework-2 `debugInfo()`
+  fix are written to specification and unit-tested at their pure
+  boundaries; the actual frame — including whether `?gpu=raw&view=ortho`
+  now renders anything at all, at `q=low` and `q=high` — is the PM's
   eyeball review, through `/scene.html?view=ortho` and `scripts/web-shot.mjs`
-  (`docs/gpu.md` §9).
+  (`docs/gpu.md` §9). The updated `debugInfo()` is the diagnostic surface
+  that turns the follow-up (if any) from "it is black" into "the bound
+  camera reads XYZ" — a concrete input for a targeted rework rather than
+  another round of guessing.
 - **No timing.** `docs/gpu.md` §8's 16 ms/frame budget still stands
   unverified. The F3 rebuild is one `build()` call — a full graph
   reconstruction, on par with a quality change — which is fine as a one-off

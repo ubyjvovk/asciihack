@@ -131,6 +131,81 @@ describe('gpu ortho — the ported afterburn view over the ortho camera', () => 
     expect(received).toBe(perspective);
   });
 
+  it('the camera bound to the graph carries the ortho placement', () => {
+    // T-0050 rework 2: T-0043's first test (case 1 above) pins the placement
+    // math on a *bare* camera-like — it never proves the reference that
+    // reaches `PipelineHandle.setCamera` is the same one the placement was
+    // written to. This case drives the exact sequence `GpuPath.render` runs
+    // on an ortho frame (place → setCamera), through a stub pipeline factory
+    // that records the received camera, and asserts every field
+    // `orthoPlacement` returns — position, frustum bounds, near/far — lands
+    // on that recorded reference. Before this, a `debugInfo()` report of
+    // "position (0,0,0), frustum ±1, near 0.1, far 100" (the untouched
+    // legacy default) could pass every existing case: nothing pinned that
+    // the camera bound to the graph is the placement target.
+    const perspective = { isPerspectiveCamera: true as const };
+    const fake = fakeOrthoCamera();
+    const orthographic = {
+      isOrthographicCamera: true as const,
+      position: fake.positionSetter,
+      up: fake.upSetter,
+      lookAt: fake.lookAt,
+      left: fake.left, right: fake.right, top: fake.top, bottom: fake.bottom,
+      near: fake.near, far: fake.far,
+      updateProjectionMatrix: fake.updateProjectionMatrix,
+    };
+
+    // Stub pipeline handle: same shape as `PipelineHandle.setCamera`. Records
+    // every received reference so the assertion can pin down reference
+    // identity, not just field values.
+    const bound: unknown[] = [];
+    const handle = { setCamera: (cam: unknown): void => { bound.push(cam); } };
+
+    // Mirror `GpuPath.render(...)` in ortho — the per-frame branch:
+    //   1) compute the placement for the hero cell + viewport grid,
+    //   2) write it to the ortho camera the class holds a reference to,
+    //   3) on a view change, hand `pipelineCameraForView(view, cams)` to
+    //      `handle.setCamera` (see `web/src/gl/gl-viewport.ts::GpuPath.render`).
+    const hero = { x: 40, y: 10 };
+    const cols = 80, rows = 21;
+    const p = orthoPlacement(hero, cols, rows, 2);
+    applyOrthoPlacementTo(orthographic, p);
+    handle.setCamera(pipelineCameraForView('ortho', { perspective, orthographic }));
+
+    // The reference the graph is now bound to is the ortho camera we wrote
+    // the placement to — same object identity. This is the invariant
+    // T-0043's first test never pinned.
+    expect(bound).toHaveLength(1);
+    expect(bound[0]).toBe(orthographic);
+
+    // Every field `orthoPlacement` returns is present on that same reference.
+    // Position: `applyOrthoPlacementTo` calls `cam.position.set(...)`; the
+    // fake camera's `positionSetter.set` mutates `fake.position` in place,
+    // so reading it back verifies the placement landed on the bound camera.
+    expect(fake.position.x).toBe(p.position.x);
+    expect(fake.position.y).toBe(p.position.y);
+    expect(fake.position.z).toBe(p.position.z);
+    // Look target — same story via `cam.lookAt(...)` → `fake.target`.
+    expect(fake.target.x).toBe(p.target.x);
+    expect(fake.target.y).toBe(p.target.y);
+    expect(fake.target.z).toBe(p.target.z);
+    // Frustum bounds land byte-for-byte from `orthoPlacement` on the very
+    // reference `handle.setCamera` received (this is the important part).
+    const boundOrtho = bound[0] as {
+      left: number; right: number; top: number; bottom: number;
+      near: number; far: number;
+    };
+    expect(boundOrtho.left).toBe(p.left);
+    expect(boundOrtho.right).toBe(p.right);
+    expect(boundOrtho.top).toBe(p.top);
+    expect(boundOrtho.bottom).toBe(p.bottom);
+    expect(boundOrtho.near).toBe(p.near);
+    expect(boundOrtho.far).toBe(p.far);
+    // And `updateProjectionMatrix` fired once — so downstream projection
+    // maths on the graph read the fresh matrix, not the constructor default.
+    expect(fake.updateCalls).toBe(1);
+  });
+
   it('DOF focus follows the ortho camera distance', () => {
     // The ortho camera sits `ORTHO_DISTANCE_CELLS` metres out along the
     // camera-to-target line, so `orthoDofFocus` returns that same distance —
