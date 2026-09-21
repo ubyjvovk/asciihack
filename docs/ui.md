@@ -277,3 +277,12 @@ build dir stays clean. `main` errors helpfully if the bridge binary is missing,
 spawns the bridge, wires the session to it, enters the alternate screen, and
 runs `runSession` until the bridge closes stdout (restoring the terminal in a
 `finally`).
+
+### The compass ribbon
+
+The heading ribbon along the top of the viewport is painted only in the
+`'facing'` movement scheme — that is, the terminal's first-person view and
+the browser's `?view=fps`. It reads the *camera's* heading, which only means
+something when the camera is the hero's eyes. In the third-person and ortho
+views the camera is a free orbit (`Q`/`E`) and the movement keys are plain
+compass directions, so the ribbon carries no information and is hidden.

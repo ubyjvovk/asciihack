@@ -203,8 +203,15 @@ export class FpsMode implements Mode {
       blitGrid(sub, grid, rect);
     }
     if (this.showMinimap) paintMinimap(grid, rect, this.session, this.facing);
-    const hFov = hFovRad(vFovDeg, Math.max(1, rect.width), Math.max(1, rect.height));
-    paintCompass(grid, rect, this.yaw, hFov);
+    // The compass ribbon reads the *camera's* heading, which only means
+    // something when the camera is the hero's eyes. In `'absolute'` movement
+    // (the third-person and ortho views) the camera is a free orbit and the
+    // keys are plain compass directions, so the ribbon is noise — the user
+    // asked for it gone there. The first-person terminal view keeps it.
+    if (this.movement === 'facing') {
+      const hFov = hFovRad(vFovDeg, Math.max(1, rect.width), Math.max(1, rect.height));
+      paintCompass(grid, rect, this.yaw, hFov);
+    }
   }
 
   /**
