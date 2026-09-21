@@ -1,22 +1,28 @@
 /**
- * Behaviour tests for the pure parts of the dungeon voxel scene (T-0039,
- * docs/gpu-dungeon.md). Every case exercises rules through the pure
- * `bakeLevel`, `bakeCeiling`, `ceilingCells`, `doorAxis` and
+ * Behaviour tests for the pure parts of the dungeon voxel scene (T-0039 /
+ * T-0046, docs/gpu-dungeon.md). Every case exercises rules through the pure
+ * `bakeLevel`, `bakeChunks`, `bakeCeiling`, `ceilingCells`, `doorAxis` and
  * `selectActiveTorches` helpers, or through `DungeonScene` with a plain
  * `MeshBasicMaterial` — none of this needs a renderer.
  *
- * Expected shape: `bakeLevel` returns `{ writer, lights, boxCount }` and
- * `writer.pos`/`writer.col`/`writer.mat` are the same typed arrays across
- * two calls on the same level (docs/gpu-dungeon.md "Rebuild gate").
+ * `bakeLevel` returns `{ writer, lights, boxCount }` and `bakeChunks` returns
+ * one `ChunkBake` per chunk; the two share ordering (chunk-major, cells then
+ * torches inside each chunk) and hidden-face masks (halo-culled), so the
+ * chunked bake's per-chunk writer bytes concatenate to `bakeLevel`'s single
+ * writer bytes — the "byte-identical" case below pins that contract.
  */
 import { describe, expect, it } from 'vitest';
 import { MeshBasicMaterial } from 'three/webgpu';
 import { isSolid, type CellKind, type LevelView } from '../src/model/types.js';
 import {
+  CHUNK_H,
+  CHUNK_W,
   DungeonScene,
   bakeCeiling,
+  bakeChunks,
   bakeLevel,
   ceilingCells,
+  chunksOf,
   doorAxis,
   selectActiveTorches,
 } from '../web/src/gpu/dungeon.js';
@@ -65,6 +71,23 @@ const TORCH_ROOM: LevelView = levelFromAscii(
   ],
   { lit: (k) => (k === 'floor' ? true : undefined) },
 );
+
+/** Build the golden fully-known 80×21 room used by the perf + byte-identity cases. */
+function buildBigRoomRows(): string[] {
+  const rows: string[] = [];
+  rows.push('#'.repeat(80));
+  for (let y = 1; y < 20; y++) rows.push('#' + '.'.repeat(78) + '#');
+  rows.push('#'.repeat(80));
+  return rows;
+}
+
+/** `buildBigRoomRows` with `(x, y)` swapped to `swap` (a legend char). */
+function bigRoomWith(x: number, y: number, swap: string): LevelView {
+  const rows = buildBigRoomRows();
+  const row = rows[y]!;
+  rows[y] = row.substring(0, x) + swap + row.substring(x + 1);
+  return levelFromAscii(rows, { lit: (k) => (k === 'floor' ? true : undefined) });
+}
 
 describe('gpu/dungeon — bakeLevel + DungeonScene', () => {
   it('a one-room level bakes walls, floor and a door and leaves unexplored cells empty', () => {
@@ -137,7 +160,9 @@ describe('gpu/dungeon — bakeLevel + DungeonScene', () => {
     expect(ceiling.boxCount).toBe(expected.length);
 
     // DungeonScene attaches the ceiling as a separable child group named
-    // 'ceiling' — the ortho path (a later ticket) hides that group.
+    // 'ceiling' — the ortho path (a later ticket) hides that group. The
+    // one-room level fits entirely inside one 10 × 7 chunk, so the ceiling
+    // group has exactly one Mesh under it.
     const scene = new DungeonScene({ material: new MeshBasicMaterial() });
     scene.refresh(ONE_ROOM);
     expect(scene.ceiling.name).toBe('ceiling');
@@ -248,11 +273,7 @@ describe('gpu/dungeon — bakeLevel + DungeonScene', () => {
   });
 
   it('a fully known 80x21 level stays under the box budget and bakes in under 50 ms', () => {
-    const rows: string[] = [];
-    rows.push('#'.repeat(80));
-    for (let y = 1; y < 20; y++) rows.push('#' + '.'.repeat(78) + '#');
-    rows.push('#'.repeat(80));
-    const big: LevelView = levelFromAscii(rows, { lit: (k) => (k === 'floor' ? true : undefined) });
+    const big: LevelView = levelFromAscii(buildBigRoomRows(), { lit: (k) => (k === 'floor' ? true : undefined) });
 
     // Warm any cache/JIT — the first pass includes optimisation, the second
     // is representative of a steady-state rebuild.
@@ -267,5 +288,128 @@ describe('gpu/dungeon — bakeLevel + DungeonScene', () => {
     expect(result.boxCount).toBeLessThanOrEqual(12 * 80 * 21);
     // docs/gpu-dungeon.md "Rebuild gate": full rebuild under 50 ms.
     expect(dt).toBeLessThan(50);
+  });
+
+  it('revealing one cell rebakes one chunk and leaves the others untouched', () => {
+    // Level A: fully known 80×21 room except one interior cell (33, 10) which
+    // is still `unexplored`. Cell (33, 10) sits well inside chunk (cx=3, cy=1)
+    // (which covers x∈[30,40), y∈[7,14)), so revealing it cannot flip a hidden
+    // face on the four axial neighbour chunks — their `mainMesh` refs must
+    // therefore stay identical.
+    const levelA = bigRoomWith(33, 10, ' ');
+    const levelB = bigRoomWith(33, 10, '.');
+
+    const scene = new DungeonScene({ material: new MeshBasicMaterial(), seed: 7 });
+    scene.refresh(levelA);
+    const { chunksX, chunksY } = chunksOf(levelA);
+    const changedIdx = 1 * chunksX + 3; // (cx=3, cy=1) in an 8×3 chunk grid
+    expect(chunksX).toBe(8);
+    expect(chunksY).toBe(3);
+
+    const mainBefore = scene.mainMeshes();
+    const ceilingBefore = scene.ceilingMeshes();
+    expect(mainBefore).toHaveLength(chunksX * chunksY);
+
+    const changed = scene.refresh(levelB);
+    expect(changed).toBe(true);
+
+    const mainAfter = scene.mainMeshes();
+    const ceilingAfter = scene.ceilingMeshes();
+
+    for (let i = 0; i < mainAfter.length; i++) {
+      if (i === changedIdx) {
+        expect(mainAfter[i]).not.toBe(mainBefore[i]);
+      } else {
+        expect(mainAfter[i]).toBe(mainBefore[i]);
+      }
+    }
+    // (33, 10) went from unexplored to floor, so the ceiling for that chunk
+    // must be replaced too and every other ceiling chunk must be preserved.
+    for (let i = 0; i < ceilingAfter.length; i++) {
+      if (i === changedIdx) {
+        expect(ceilingAfter[i]).not.toBe(ceilingBefore[i]);
+      } else {
+        expect(ceilingAfter[i]).toBe(ceilingBefore[i]);
+      }
+    }
+
+    // Refreshing with the same level again is a full early-out — no mesh moves.
+    const stable = scene.refresh(levelB);
+    expect(stable).toBe(false);
+    const mainSame = scene.mainMeshes();
+    for (let i = 0; i < mainSame.length; i++) expect(mainSame[i]).toBe(mainAfter[i]);
+    scene.dispose();
+  });
+
+  it('a chunked bake of a fully known level is byte-identical to an unchunked one', () => {
+    const big: LevelView = levelFromAscii(buildBigRoomRows(), { lit: (k) => (k === 'floor' ? true : undefined) });
+
+    const unchunked = bakeLevel(big);
+    const chunked = bakeChunks(big);
+
+    // Basic parity: totals match and per-chunk hash is stable across bakes.
+    expect(chunked.chunksX).toBe(8);
+    expect(chunked.chunksY).toBe(3);
+    expect(chunked.chunks).toHaveLength(24);
+    expect(chunked.boxCount).toBe(unchunked.boxCount);
+    expect(chunked.lights).toEqual(unchunked.lights);
+
+    let nvSum = 0, niSum = 0;
+    for (const c of chunked.chunks) {
+      nvSum += c.writer.nv;
+      niSum += c.writer.ni;
+    }
+    expect(nvSum).toBe(unchunked.writer.nv);
+    expect(niSum).toBe(unchunked.writer.ni);
+
+    // Concatenate every chunk writer's used bytes in chunk-major order and
+    // compare against the unchunked writer. Positions, colours, materials and
+    // normals must match byte-for-byte; indices must match after offsetting.
+    const pos = new Float32Array(nvSum * 3);
+    const col = new Uint8Array(nvSum * 4);
+    const mat = new Uint8Array(nvSum * 4);
+    const nrm = new Int8Array(nvSum * 4);
+    const idx = new Uint32Array(niSum);
+    let vOff = 0, iOff = 0;
+    for (const c of chunked.chunks) {
+      const nv = c.writer.nv;
+      const ni = c.writer.ni;
+      pos.set(c.writer.pos.subarray(0, nv * 3), vOff * 3);
+      col.set(c.writer.col.subarray(0, nv * 4), vOff * 4);
+      mat.set(c.writer.mat.subarray(0, nv * 4), vOff * 4);
+      nrm.set(c.writer.nrm.subarray(0, nv * 4), vOff * 4);
+      for (let k = 0; k < ni; k++) idx[iOff + k] = c.writer.idx[k]! + vOff;
+      vOff += nv;
+      iOff += ni;
+    }
+    expect(pos).toEqual(unchunked.writer.pos.slice(0, nvSum * 3));
+    expect(col).toEqual(unchunked.writer.col.slice(0, nvSum * 4));
+    expect(mat).toEqual(unchunked.writer.mat.slice(0, nvSum * 4));
+    expect(nrm).toEqual(unchunked.writer.nrm.slice(0, nvSum * 4));
+    expect(idx).toEqual(unchunked.writer.idx.slice(0, niSum));
+  });
+
+  it('revealing one cell in an 80x21 level costs under 5 ms', () => {
+    // Warm the JIT with a full bake, then measure the cost of a single
+    // one-cell reveal in the middle of a chunk (chunk (3, 1) covers
+    // x∈[30,40), y∈[7,14); cell (33, 10) is interior).
+    const levelA = bigRoomWith(33, 10, ' ');
+    const levelB = bigRoomWith(33, 10, '.');
+    const scene = new DungeonScene({ material: new MeshBasicMaterial(), seed: 7 });
+    scene.refresh(levelA); // cold: full bake, all chunks.
+    // A no-op call warms the incremental-path branches without changing state.
+    scene.refresh(levelA);
+
+    const t0 = performance.now();
+    const changed = scene.refresh(levelB);
+    const dt = performance.now() - t0;
+    expect(changed).toBe(true);
+    expect(dt).toBeLessThan(5);
+
+    // Sanity: the CHUNK_W / CHUNK_H the ticket fixed produce an 8 × 3 grid,
+    // so the numbers in the assertions above are what a reader expects.
+    expect(CHUNK_W).toBe(10);
+    expect(CHUNK_H).toBe(7);
+    scene.dispose();
   });
 });
