@@ -32,11 +32,12 @@ import {
   SceneBuilder,
   type SceneMaterials,
 } from './scene-builder.js';
-import { cutawayCellsFor, placeOrthoCamera } from './ortho-camera.js';
+import { cutawayCellsFor, orthoPlacement, placeOrthoCamera, type OrthoPlacement } from './ortho-camera.js';
 import { GpuCompositor } from '../gpu/compose.js';
 import { DungeonScene } from '../gpu/dungeon.js';
 import { createVoxelMaterial, W } from '../gpu/materials.js';
 import { Atmosphere, type MoodId } from '../gpu/moods.js';
+import { applyOrthoPlacementTo, cutawayKey, orthoDofFocus } from '../gpu/ortho.js';
 import {
   clampQuality,
   createPipeline,
@@ -364,16 +365,16 @@ export class GlViewport {
     const heroCell = { x: Math.floor(pose.x), y: Math.floor(pose.y) };
     this.lastHeroCell = heroCell;
 
-    // Per-frame decision: only the fps view goes through the GPU path — the
-    // ortho camera + cutaway still ride the legacy scene (docs/gpu.md §7).
+    // Per-frame decision: both views can go through the GPU path now — the
+    // ortho camera + cutaway are wired into `GpuPath` (T-0043, docs/gpu-ortho.md).
+    // Depth-styles (`edges`) and `?gpu=off` still fall to legacy exactly as
+    // before, so the legacy renderer stays a first-class citizen.
     const styleNeedsDepth = this.style.style.needsDepth === true;
-    const path: ViewportPath = this.view === 'ortho'
-      ? 'legacy'
-      : choosePath({
-          gpuParam: this.effectiveGpuParam(),
-          gpuReady: this.gpuReady && this.gpu !== null,
-          styleNeedsDepth,
-        });
+    const path: ViewportPath = choosePath({
+      gpuParam: this.effectiveGpuParam(),
+      gpuReady: this.gpuReady && this.gpu !== null,
+      styleNeedsDepth,
+    });
     this.lastPath = path;
 
     if (path === 'legacy') {
@@ -413,7 +414,7 @@ export class GlViewport {
       viewportPx,
     );
     try {
-      gpu.render(level, pose, sprites, vFovDeg, path, size, viewportPx, this.pinnedMood);
+      gpu.render(level, pose, sprites, vFovDeg, path, size, viewportPx, this.pinnedMood, this.view, this.cols, this.rows);
     } catch (err) {
       this.fallbackToLegacy(err);
       // Re-run this frame on the legacy path so the user gets something.
@@ -855,6 +856,7 @@ class GpuPath {
   readonly caps: RendererCaps;
   readonly scene: WG.Scene;
   readonly camera: WG.PerspectiveCamera;
+  readonly orthoCamera: WG.OrthographicCamera;
   readonly lantern: WG.PointLight;
   readonly dungeon: DungeonScene;
   readonly atmosphere: Atmosphere;
@@ -862,10 +864,15 @@ class GpuPath {
   readonly compositor: GpuCompositor;
   readonly backend: BackendChoice;
   readonly sprites: SpriteLayer;
+  readonly ghostGroup: WG.Group;
+  readonly ghostGeom: WG.BoxGeometry;
+  readonly ghostMaterial: WG.MeshBasicMaterial;
   quality: QualityName;
   mood: MoodId;
   private lastTime = 0;
   private lastMoodDecision: MoodId | null = null;
+  private lastView: 'fps' | 'ortho' = 'fps';
+  private lastGhostKey = '';
 
   private constructor(init: {
     canvas: HTMLCanvasElement;
@@ -873,6 +880,7 @@ class GpuPath {
     caps: RendererCaps;
     scene: WG.Scene;
     camera: WG.PerspectiveCamera;
+    orthoCamera: WG.OrthographicCamera;
     lantern: WG.PointLight;
     dungeon: DungeonScene;
     atmosphere: Atmosphere;
@@ -880,6 +888,9 @@ class GpuPath {
     compositor: GpuCompositor;
     backend: BackendChoice;
     sprites: SpriteLayer;
+    ghostGroup: WG.Group;
+    ghostGeom: WG.BoxGeometry;
+    ghostMaterial: WG.MeshBasicMaterial;
     quality: QualityName;
     mood: MoodId;
   }) {
@@ -888,6 +899,7 @@ class GpuPath {
     this.caps = init.caps;
     this.scene = init.scene;
     this.camera = init.camera;
+    this.orthoCamera = init.orthoCamera;
     this.lantern = init.lantern;
     this.dungeon = init.dungeon;
     this.atmosphere = init.atmosphere;
@@ -895,6 +907,9 @@ class GpuPath {
     this.compositor = init.compositor;
     this.backend = init.backend;
     this.sprites = init.sprites;
+    this.ghostGroup = init.ghostGroup;
+    this.ghostGeom = init.ghostGeom;
+    this.ghostMaterial = init.ghostMaterial;
     this.quality = init.quality;
     this.mood = init.mood;
   }
@@ -963,10 +978,19 @@ class GpuPath {
     const camera = new WG.PerspectiveCamera(70, aspect, 0.05, 60);
     camera.position.set(0, EYE_HEIGHT, 0);
     scene.add(camera);
+    // Dedicated `OrthographicCamera` for the T-0043 3/4 overhead view. The
+    // pipeline is built with the perspective camera; each ortho frame the
+    // path copies this camera's projection + world matrices onto it so the
+    // graph renders with an ortho projection without a full rebuild.
+    const orthoCamera = new WG.OrthographicCamera(-1, 1, 1, -1, 0.1, 200);
+    scene.add(orthoCamera);
     // The hero's lantern — reuses the same constants as the legacy path so
-    // one number lives in one place (`docs/gpu.md` §5).
+    // one number lives in one place (`docs/gpu.md` §5). Kept at scene level
+    // (not a child of `camera`) so the ortho view can move the camera 40
+    // cells NW-above the hero without dragging the light away too.
     const lantern = new WG.PointLight(GPU_LANTERN_COLOR, LANTERN_INTENSITY, LANTERN_DISTANCE, 1);
-    camera.add(lantern);
+    lantern.position.set(0, EYE_HEIGHT, 0);
+    scene.add(lantern);
 
     const voxelMat = createVoxelMaterial({ weather: true, sway: true });
     const dungeon = new DungeonScene({ material: voxelMat, ceilingMaterial: voxelMat });
@@ -976,6 +1000,21 @@ class GpuPath {
     // tile art, lit by the ported stack rather than pasted on top (T-0042).
     const sprites = new SpriteLayer();
     scene.add(sprites.root);
+
+    // Ghost mesh scaffolding for the ortho cutaway (T-0043, docs/gpu-ortho.md).
+    // One shared `BoxGeometry` + one translucent basic material; per-hero
+    // meshes get parented to `ghostGroup` and swapped in/out when the hero
+    // cell moves. Empty until the first ortho frame lands.
+    const ghostGroup = new WG.Group();
+    ghostGroup.name = 'ortho-ghost';
+    scene.add(ghostGroup);
+    const ghostGeom = new WG.BoxGeometry(1, 1, 1);
+    const ghostMaterial = new WG.MeshBasicMaterial({
+      color: 0x9a9a9e,
+      transparent: true,
+      opacity: 0.35,
+      depthWrite: false,
+    });
 
     // Build `Atmosphere` *before* the pipeline so its per-mood env map is
     // available at SSR construction (T-0048/T-0049; stochastic SSR throws on
@@ -1017,8 +1056,9 @@ class GpuPath {
     atmosphere.update(0.016);
 
     const path = new GpuPath({
-      canvas, renderer, caps, scene, camera, lantern, dungeon, atmosphere,
-      handle, compositor, backend, sprites, quality, mood: 'torchlit',
+      canvas, renderer, caps, scene, camera, orthoCamera, lantern, dungeon, atmosphere,
+      handle, compositor, backend, sprites, ghostGroup, ghostGeom, ghostMaterial,
+      quality, mood: 'torchlit',
     });
 
     // Attach loss listeners for backends that surface them. Both are best-
@@ -1066,17 +1106,53 @@ class GpuPath {
     size: { w: number; h: number },
     viewportPx: { cssW: number; cssH: number; dpr: number },
     pinnedMood: MoodId | null,
+    view: 'fps' | 'ortho',
+    viewportCols: number,
+    viewportRows: number,
   ): void {
-    // 1. Sync camera to hero pose (docs/gpu.md §5; same numbers the legacy
-    //    camera uses, on purpose).
-    this.camera.position.set(pose.x, EYE_HEIGHT, pose.y);
-    this.camera.rotation.set(CAMERA_PITCH, -pose.yaw, 0, 'YXZ');
-    const aspect = viewportPx.cssW / Math.max(1, viewportPx.cssH);
-    if (this.camera.fov !== vFovDeg || this.camera.aspect !== aspect) {
-      this.camera.fov = vFovDeg;
-      this.camera.aspect = aspect;
-      this.camera.updateProjectionMatrix();
+    // 1. Camera. The pipeline is built with `this.camera` (perspective), so
+    //    the ortho branch drives an `OrthographicCamera` and copies its
+    //    projection + world matrices onto `this.camera` — no pipeline rebuild
+    //    when the player toggles F3, and afterburn's TSL graph reads the same
+    //    reference either way. Docs/gpu-ortho.md §"the projection copy".
+    const heroCell = { x: Math.floor(pose.x), y: Math.floor(pose.y) };
+    let orthoPlace: OrthoPlacement | null = null;
+    if (view === 'ortho') {
+      orthoPlace = orthoPlacement(heroCell, viewportCols, viewportRows, 2);
+      applyOrthoPlacementTo(this.orthoCamera, orthoPlace);
+      // Copy pose + projection to the pipeline camera.
+      this.orthoCamera.updateMatrixWorld(true);
+      this.camera.position.copy(this.orthoCamera.position);
+      this.camera.quaternion.copy(this.orthoCamera.quaternion);
+      this.camera.updateMatrixWorld(true);
+      this.camera.projectionMatrix.copy(this.orthoCamera.projectionMatrix);
+      this.camera.projectionMatrixInverse.copy(this.orthoCamera.projectionMatrixInverse);
+    } else {
+      // fps: perspective driven from the pose.
+      this.camera.position.set(pose.x, EYE_HEIGHT, pose.y);
+      this.camera.rotation.set(CAMERA_PITCH, -pose.yaw, 0, 'YXZ');
+      const aspect = viewportPx.cssW / Math.max(1, viewportPx.cssH);
+      if (this.camera.fov !== vFovDeg || this.camera.aspect !== aspect || this.lastView === 'ortho') {
+        this.camera.fov = vFovDeg;
+        this.camera.aspect = aspect;
+        this.camera.updateProjectionMatrix();
+      }
     }
+    // Lantern rides at the hero cell in both views — it is a scene child, not
+    // a camera child, so the ortho camera moving 40 cells out does not drag
+    // the light with it (T-0043).
+    this.lantern.position.set(pose.x, EYE_HEIGHT, pose.y);
+
+    // 1b. View-change side effects: hide the ceiling for the overhead view
+    //     (`docs/gpu.md` §4 kept it in its own group precisely for this);
+    //     drop the ghost mesh on the way out; force a rebuild on the way in.
+    if (view !== this.lastView) {
+      this.dungeon.ceiling.visible = view === 'fps';
+      if (view === 'fps') this.disposeGhostMesh();
+      this.lastGhostKey = '';
+      this.lastView = view;
+    }
+    if (view === 'ortho') this.refreshGhostMesh(level, heroCell);
 
     // 2. Refresh the dungeon geometry if the level changed.
     this.dungeon.refresh(level);
@@ -1130,9 +1206,59 @@ class GpuPath {
       // vignette and grain are left alone: whatever the mood wrote applies.
     }
 
+    // 5b. Push the ortho camera distance into the DOF focus so the entire
+    //     board renders sharp under the overhead view. The mood table sets
+    //     focus ≈ 5 m for the fps camera; the ortho camera sits ~40 m out.
+    if (view === 'ortho' && orthoPlace !== null) {
+      const dof = orthoDofFocus(orthoPlace);
+      this.handle.look.focus.value = dof.focus;
+      this.handle.look.focusRange.value = dof.focusRange;
+    }
+
     // 6. Size and render.
     this.resizeTo(size.w, size.h);
     this.handle.render();
+  }
+
+  /**
+   * Rebuild the ortho cutaway ghost mesh iff the hero cell moved
+   * (`cutawayKey(hero)` is the memo). The ghost mesh sits at wall cells the
+   * cutaway box crosses — see `docs/gpu-ortho.md` §"the ghost mesh" for why
+   * this is option (a) and what it does not fix.
+   */
+  private refreshGhostMesh(level: LevelView, hero: { x: number; y: number }): void {
+    const key = cutawayKey(hero);
+    if (key === this.lastGhostKey) return;
+    this.lastGhostKey = key;
+    this.disposeGhostMesh();
+    const cells = cutawayCellsFor(hero);
+    for (const cellKey of cells) {
+      const [xs, ys] = cellKey.split(',');
+      if (xs === undefined || ys === undefined) continue;
+      const cx = Number(xs);
+      const cy = Number(ys);
+      if (!Number.isFinite(cx) || !Number.isFinite(cy)) continue;
+      if (cx < 0 || cy < 0 || cx >= level.width || cy >= level.height) continue;
+      // Only wall cells earn a ghost cube — nothing to hide over floors.
+      if (!isSolid(level.kindAt(cx, cy))) continue;
+      const mesh = new WG.Mesh(this.ghostGeom, this.ghostMaterial);
+      mesh.position.set(cx + 0.5, 0.5, cy + 0.5);
+      mesh.frustumCulled = false;
+      // Late render order so the ghost draws after the opaque merged chunk
+      // it sits on; without this the depth-sorted transparency queue can
+      // put it behind the wall on some backends.
+      mesh.renderOrder = 999;
+      this.ghostGroup.add(mesh);
+    }
+  }
+
+  /** Drop every mesh under the ghost group. Geometry + material are shared
+   *  and outlive individual meshes, so only the wrapper `Mesh`es get freed. */
+  private disposeGhostMesh(): void {
+    while (this.ghostGroup.children.length > 0) {
+      const child = this.ghostGroup.children[this.ghostGroup.children.length - 1]!;
+      this.ghostGroup.remove(child);
+    }
   }
 
   /** Called when viewport cells resize; the next `render` recomputes size. */
@@ -1143,6 +1269,9 @@ class GpuPath {
 
   /** Free every GPU-side resource the path owns. */
   dispose(): void {
+    try { this.disposeGhostMesh(); } catch { /* ignore */ }
+    try { this.ghostGeom.dispose(); } catch { /* ignore */ }
+    try { this.ghostMaterial.dispose(); } catch { /* ignore */ }
     try { this.compositor.dispose(); } catch { /* ignore */ }
     try { this.sprites.dispose(); } catch { /* ignore */ }
     try { this.dungeon.dispose(); } catch { /* ignore */ }
