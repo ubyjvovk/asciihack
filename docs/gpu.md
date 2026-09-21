@@ -326,9 +326,25 @@ initialises and the style allows it.
 ## 7. What stays
 
 `web/src/gl/scene-builder.ts`, its materials and the cutaway stay exactly as
-they are: they are the fallback path (§3, §6) and the ortho view keeps using
-them until a later ticket ports the cutaway to the GPU scene. `GlViewport`
+they are: they are the fallback path (§3, §6), reached when the GPU path
+cannot initialise and whenever a `needsDepth` style is active. `GlViewport`
 owns both paths and decides per frame.
+
+**The ortho view is on the GPU path** (T-0043 + T-0050); this section used to
+say it stayed on the legacy renderer. Getting it there cost three attempts
+and turned up one lesson worth keeping: a far camera needs its own fog.
+`FogExp2` survival is `e^(−density · distance)`, so the moods' first-person
+densities (`torchlit` 0.10, `deep_dark` 0.20) leave **1.8 %** of the scene
+at the ortho camera's ~40-unit distance, against a near-black fog colour —
+an entirely black frame, at every quality tier, with no error anywhere. The
+ortho view therefore scales the mood's density by
+`ORTHO_FOG_DENSITY / FPS_FOG_DENSITY` (0.1), reusing the two constants the
+legacy path has always had. Two things that were *not* the cause, but were
+real bugs found on the way: the graph must be rebuilt against a genuine
+`OrthographicCamera` (`pass(scene, camera)` binds it at build time, so
+copying a projection matrix onto a perspective camera does nothing), and
+`SSGINode.setSize` reads `camera.fov`, which an orthographic camera does not
+have — so ortho demotes SSGI to GTAO.
 
 ## 8. Budget
 
