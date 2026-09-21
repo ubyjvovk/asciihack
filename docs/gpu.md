@@ -219,6 +219,19 @@ node scripts/web-shot.mjs "/scene.html?render=amber" shot.png --swiftshader
 node scripts/web-shot.mjs "/scene.html?gpu=raw&q=high" raw.png --gpu --strict
 ```
 
+- **`scripts/web-sheet.sh`** — one PNG contact sheet from several bench
+  queries, each tile labelled with its query, so a whole look review is a
+  single image:
+
+  ```sh
+  bash scripts/web-sheet.sh out.png "render=amber&pose=7.5,4.5,90" \
+      "render=ascii&pose=7.5,4.5,90" "render=gloom&pose=4.5,2.5,135" \
+      "render=amber&view=ortho"
+  ```
+
+  The pre-port baseline is `.tigerteam/shots/sheet-before.png` — compare
+  against it, not against memory.
+
 `--swiftshader` forces software GL (portable, no GPU needed); `--gpu` asks for
 the real device and is what the WebGPU path wants. The tool prints console
 errors, page errors, failed requests and `window.__bench.debugInfo()`, and
