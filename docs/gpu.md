@@ -132,6 +132,37 @@ cannot run them. So the two renderers coexist:
 3. Raw mode skips the style renderer: the GPU canvas is shown directly
    (`F8` toggles, `?gpu=raw`), which is how the port gets eyeballed.
 
+### 6.1 The grade fights the quantiser — what styled mode sends
+
+This is the decision most likely to make the port look *worse* than what it
+replaces, so it is settled here rather than in a ticket.
+
+Afterburn's pipeline ends in **display space**: AgX tone map, split-tone,
+contrast, saturation, **vignette** and **animated grain**. The AsciiCity style
+prelude then applies its own `exposure` (1.7) and `shaped(v) = pow(v, 0.45)`
+density curve to what it is given, because it expects a scene-linear frame.
+Feeding it a finished film frame double-grades it: blacks crush, the 1.7×
+clips the top end, the vignette eats the corners of a 40-column image, and
+per-pixel grain averaged into cells **shimmers between frames** — noise is the
+one thing a cell quantiser cannot hide.
+
+So the two modes take different amounts of finishing:
+
+| | raw mode | styled mode |
+|---|---|---|
+| lighting stack (SSGI, SSR, rays, TRAA, DOF, bloom) | on | on |
+| AgX + split-tone + contrast + saturation | on | on |
+| vignette | on | **`look.vignette = 0`** |
+| grain | on | **`look.grain = 0`** |
+| final scale | `look.outputScale = 1` | **`look.outputScale = 1 / styleExposure`** (≈ 0.59 at the default 1.7) |
+
+`outputScale` is a new `createLook()` uniform (default `1.0`) applied as the
+last multiply of the grade block, beside `fade`. Scaling **after** the tone
+map is deliberate: scaling before it would change the AgX response, whereas
+this just hands the style pass a frame whose peak lands where its own
+exposure expects it. Lighting and colour still come from the ported stack —
+only the film finishing is withheld, because the ASCII cell is the film.
+
 **Depth styles.** Only `edges` sets `needsDepth`. A blitted quad has no scene
 depth, so: *the GPU path supports every style with `needsDepth === false`;
 selecting a depth style switches the viewport back to the legacy WebGL path
