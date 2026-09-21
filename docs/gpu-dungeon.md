@@ -38,7 +38,7 @@ later ticket ports the cutaway.
 | `stairs_down`, `ladder_down` | four stepped slate boxes descending into the floor + a faint emissive nosing (5 boxes)                       |
 | `water`                    | flat surface at y ≈ 0.1, `rough 0.05 / metal 0.9` (1 box; SSR reflects the torches)                            |
 | `lava`                     | flat surface at y ≈ 0.1, emissive 6, `fx = pulse`, `dry` (1 box)                                               |
-| `ice`                      | flat surface at y ≈ 0.1, low roughness, pale `crystalCold1` (1 box)                                            |
+| `ice`                      | flat surface at y ≈ 0.1, roughness 0.18, cooler `crystalCold0` (`#6fc3ff`) — tuned to stop the slab blowing out (T-0045) (1 box) |
 | `fountain`                 | small basin: rim (4 slate slabs) + pooled water + central spout (~7 boxes)                                     |
 | `altar`                    | squat slate plinth + lighter cap + tiny emissive candle (~4 boxes)                                             |
 | `grave`                    | headstone slab + a mound of turned earth (~3 boxes)                                                            |
@@ -51,7 +51,7 @@ The palette keys come from `web/src/voxel/palette.ts`: walls `basalt1`/`basalt2`
 with `slate0` chips and `moss0`/`lichen` in the damp corners, floors
 `basalt0`/`basalt1` flagstones with `mud` in the cracks, doors `wood0`/`wood1`
 with `brass` hinges, stairs `slate1`, torches `fire`/`ember`, water `water`,
-lava `ember`, ice `crystalCold1`.
+lava `ember`, ice `crystalCold0`.
 
 ## The ceiling group
 
@@ -141,10 +141,12 @@ but they cannot pin **the look**.
   slabs, chipped silhouettes and per-box jitter are only asserted through
   their box counts and palette keys here — no pixel comparison to
   `key_art_night.png` or `key_art_gold.png` is possible from within a worker.
-- **Whether torches pool the right amount of light.** Intensity 6,
-  distance 8 metres, flicker 0.3 and colour `#ffb060` are hard-coded from
-  the ART_BIBLE lantern reference; the PM eyeballs the actual pool through
-  `/scene.html?render=amber` and may send a tuning follow-up ticket.
+- **Whether torches pool the right amount of light.** Intensity 3.5,
+  distance 7 metres, flicker 0.3 and colour `#ffb060` — the pool was tuned
+  down from the ART_BIBLE lantern reference (intensity 6 / distance 8) in
+  T-0045 after the PM's first-light review showed basalt reading as pale
+  plaster. The PM eyeballs the actual pool through `/scene.html?render=amber`
+  and may send a tuning follow-up ticket.
 - **Whether "only two shadow casters" reads correctly.** The rule is
   covered by a unit test on `PointLight.castShadow`; whether the resulting
   frame looks like "torches near you cast real shadows and further ones
