@@ -37,7 +37,16 @@ import { GpuCompositor } from '../gpu/compose.js';
 import { DungeonScene } from '../gpu/dungeon.js';
 import { createVoxelMaterial, W } from '../gpu/materials.js';
 import { Atmosphere, type MoodId } from '../gpu/moods.js';
-import { applyOrthoPlacementTo, cutawayKey, orthoDofFocus } from '../gpu/ortho.js';
+import {
+  applyOrthoPlacementTo,
+  cutawayKey,
+  FPS_FOG_DENSITY,
+  moodFogDensityForView,
+  orthoDofFocus,
+  ORTHO_FOG_DENSITY,
+  pipelineCameraForView,
+} from '../gpu/ortho.js';
+import { densityFogFactor, fog, uniform } from 'three/tsl';
 import {
   clampQuality,
   createPipeline,
@@ -69,14 +78,11 @@ export const LANTERN_INTENSITY = 12;
 export const EYE_HEIGHT = 0.5;
 /** Horizon offset approximated by pitching the camera slightly down (T-0023). */
 export const CAMERA_PITCH = -0.08;
-/** Exponential-fog density for the fps close-up (camera at the hero cell, so
- *  depths are 1–10 cells; tuned in T-0031 rework 2). */
-export const FPS_FOG_DENSITY = 0.10;
-/** Exponential-fog density for the ortho 3/4 view. The ortho camera sits
- *  ~40 cells from the scene, so the fps density (0.10) would bury every
- *  surface in black (fogFactor ≈ 1 at depth 40) — the T-0032 black-canvas
- *  bug. A small density keeps a faint depth cue without occluding the room. */
-export const ORTHO_FOG_DENSITY = 0.01;
+// Fog densities now live in `web/src/gpu/ortho.ts` (T-0050 rework 3) so the
+// ortho scaling helper can reference them without pulling this browser-only
+// module (which uses DOM) into the pure test file. Re-exported here for
+// docs/web.md and any external caller.
+export { FPS_FOG_DENSITY, ORTHO_FOG_DENSITY };
 
 /** Style-pass exposure the styled path compensates for (docs/gpu.md §6.1). */
 export const STYLE_EXPOSURE = 1.7;
@@ -297,13 +303,57 @@ export class GlViewport {
    * Plain-number snapshot of the viewport for on-page debugging
    * (`window.__asciihack.gl.debugInfo()`). No three.js objects — the PM pastes
    * this into a console to diagnose camera/frustum issues without digging into
-   * the scene graph. `left/right/top/bottom` are 0 for the fps perspective
-   * camera (its frustum is FOV-derived, not a box).
+   * the scene graph.
+   *
+   * The report describes **the path that drew the last frame** (T-0050): on
+   * the GPU path it reads the camera the pipeline is bound to (position,
+   * near/far and — for ortho — the frustum sides `applyOrthoPlacementTo`
+   * wrote), plus the GPU scene's own counts (chunk meshes, live torch
+   * lights, sprite quads). On the legacy path it keeps the pre-T-0050
+   * shape: the `THREE.*Camera` the `StyleRenderer` was handed and the
+   * `SceneBuilder` instance counts. Before T-0050 the ortho GPU path always
+   * returned the untouched legacy `orthoCamera` (a ±1 frustum at the
+   * origin) and zero meshes, which hid the actual bound-camera state and
+   * made the black-frame bug undiagnosable from the console.
+   *
+   * `left/right/top/bottom` are 0 for whichever perspective camera is
+   * active (its frustum is FOV-derived, not a box).
    */
   debugInfo(): DebugInfo {
+    const usingGpu = this.lastPath !== 'legacy' && this.gpu !== null;
+    const h = this.lastHeroCell;
+    if (usingGpu) {
+      const gpu = this.gpu!;
+      const cam = this.view === 'ortho' ? gpu.orthoCamera : gpu.camera;
+      const isOrtho = this.view === 'ortho';
+      return {
+        view: this.view,
+        camera: {
+          type: this.view,
+          position: { x: cam.position.x, y: cam.position.y, z: cam.position.z },
+          target: { x: h.x + 0.5, y: 0.5, z: h.y + 0.5 },
+          near: cam.near,
+          far: cam.far,
+          left: isOrtho ? gpu.orthoCamera.left : 0,
+          right: isOrtho ? gpu.orthoCamera.right : 0,
+          top: isOrtho ? gpu.orthoCamera.top : 0,
+          bottom: isOrtho ? gpu.orthoCamera.bottom : 0,
+        },
+        meshes: {
+          walls: gpu.dungeon.mainMeshes().filter((m) => m !== null).length,
+          floors: gpu.dungeon.pointLights.length,
+          sprites: gpu.sprites.root.children.length,
+        },
+        styleId: this.style.style.id,
+        path: this.lastPath,
+        gpuReady: this.gpuReady,
+        backend: this.gpu?.backend ?? null,
+        quality: this.gpu?.quality ?? null,
+        mood: this.gpu?.mood ?? null,
+      };
+    }
     const cam = this.view === 'ortho' ? this.orthoCamera : this.camera;
     const isOrtho = cam instanceof THREE.OrthographicCamera;
-    const h = this.lastHeroCell;
     return {
       view: this.view,
       camera: {
@@ -661,7 +711,26 @@ export class GlViewport {
 /** An empty string set, reused as the "no cutaway" sentinel in `applyCutaway`. */
 const EMPTY_STRING_SET: ReadonlySet<string> = new Set();
 
-/** Plain-number snapshot returned by `GlViewport.debugInfo()` (T-0032 rework). */
+/**
+ * Plain-number snapshot returned by `GlViewport.debugInfo()` (T-0032 rework,
+ * T-0050 made per-path).
+ *
+ * The `camera` and `meshes` fields describe **the path that drew the last
+ * frame**, keyed by `path`:
+ *
+ * - `path === 'legacy'` (or before the GPU path is `gpuReady`):
+ *   `camera` reports the `THREE.*Camera` the `StyleRenderer` was handed, and
+ *   `meshes.{walls,floors,sprites}` are the `SceneBuilder`'s instance counts.
+ * - `path === 'raw'` / `path === 'styled'` (GPU path live):
+ *   `camera` reports the `WG.*Camera` the pipeline is bound to — the very
+ *   reference `applyOrthoPlacementTo` writes to on an ortho frame — and
+ *   `meshes.walls` is the chunk mesh count from `DungeonScene`, `meshes.floors`
+ *   is the number of live `PointLight`s (torches), `meshes.sprites` is the
+ *   `SpriteLayer` quad count.
+ *
+ * `left/right/top/bottom` are 0 for whichever perspective camera is active
+ * (its frustum is FOV-derived, not a box).
+ */
 export interface DebugInfo {
   view: 'fps' | 'ortho';
   camera: {
@@ -867,6 +936,13 @@ class GpuPath {
   readonly ghostGroup: WG.Group;
   readonly ghostGeom: WG.BoxGeometry;
   readonly ghostMaterial: WG.MeshBasicMaterial;
+  /** Uniforms `scene.fogNode` reads. Own copies (not the atmosphere's) so
+   *  `render` can scale density for the ortho view via `moodFogDensityForView`
+   *  without touching `moods.ts` — the atmosphere still writes into its
+   *  internal fog uniforms every `update()`, but nothing points at those
+   *  after we replace `scene.fogNode` in `create()` (T-0050 rework 3). */
+  readonly fogColor: WG.UniformNode<'color', WG.Color>;
+  readonly fogDensity: WG.UniformNode<'float', number>;
   quality: QualityName;
   mood: MoodId;
   private lastTime = 0;
@@ -891,6 +967,8 @@ class GpuPath {
     ghostGroup: WG.Group;
     ghostGeom: WG.BoxGeometry;
     ghostMaterial: WG.MeshBasicMaterial;
+    fogColor: WG.UniformNode<'color', WG.Color>;
+    fogDensity: WG.UniformNode<'float', number>;
     quality: QualityName;
     mood: MoodId;
   }) {
@@ -910,6 +988,8 @@ class GpuPath {
     this.ghostGroup = init.ghostGroup;
     this.ghostGeom = init.ghostGeom;
     this.ghostMaterial = init.ghostMaterial;
+    this.fogColor = init.fogColor;
+    this.fogDensity = init.fogDensity;
     this.quality = init.quality;
     this.mood = init.mood;
   }
@@ -979,9 +1059,10 @@ class GpuPath {
     camera.position.set(0, EYE_HEIGHT, 0);
     scene.add(camera);
     // Dedicated `OrthographicCamera` for the T-0043 3/4 overhead view. The
-    // pipeline is built with the perspective camera; each ortho frame the
-    // path copies this camera's projection + world matrices onto it so the
-    // graph renders with an ortho projection without a full rebuild.
+    // pipeline is built against the perspective camera on boot; F3 rebuilds
+    // the graph against this ortho camera (T-0050 — the "projection copy"
+    // trick T-0043 shipped produced a black frame because the TSL nodes
+    // derived their uniforms from the still-perspective reference).
     const orthoCamera = new WG.OrthographicCamera(-1, 1, 1, -1, 0.1, 200);
     scene.add(orthoCamera);
     // The hero's lantern — reuses the same constants as the legacy path so
@@ -1028,6 +1109,18 @@ class GpuPath {
     const lookProxy: AtmosphereLook = {};
     const atmosphere = new Atmosphere({ scene, look: lookProxy, weather: W });
 
+    // Own the scene's fog uniforms so `render` can scale density for the
+    // ortho view (T-0050 rework 3). The atmosphere set `scene.fogNode`
+    // against its own internal uniforms in its constructor; we replace the
+    // node with ours here so the ortho scale (via `moodFogDensityForView`)
+    // reaches the shader. The atmosphere still writes its internal uniforms
+    // every `_apply()`, but those uniforms are now orphaned — `render`
+    // drives ours from `atmosphere.state` each frame instead. Reasoning
+    // sits in `docs/gpu-ortho.md` §"Fog scales with the view".
+    const fogColor = uniform(new WG.Color(0x0b0d10));
+    const fogDensity = uniform(FPS_FOG_DENSITY);
+    scene.fogNode = fog(fogColor, densityFogFactor(fogDensity));
+
     // `sun` is null on purpose: dungeons have no shaft light and
     // `GodraysNode` throws on a light with no shadow map (docs/gpu.md §3).
     // `environment` closes the T-0048 hole — see `docs/gpu-compose.md`.
@@ -1058,7 +1151,7 @@ class GpuPath {
     const path = new GpuPath({
       canvas, renderer, caps, scene, camera, orthoCamera, lantern, dungeon, atmosphere,
       handle, compositor, backend, sprites, ghostGroup, ghostGeom, ghostMaterial,
-      quality, mood: 'torchlit',
+      fogColor, fogDensity, quality, mood: 'torchlit',
     });
 
     // Attach loss listeners for backends that surface them. Both are best-
@@ -1110,29 +1203,24 @@ class GpuPath {
     viewportCols: number,
     viewportRows: number,
   ): void {
-    // 1. Camera. The pipeline is built with `this.camera` (perspective), so
-    //    the ortho branch drives an `OrthographicCamera` and copies its
-    //    projection + world matrices onto `this.camera` — no pipeline rebuild
-    //    when the player toggles F3, and afterburn's TSL graph reads the same
-    //    reference either way. Docs/gpu-ortho.md §"the projection copy".
+    // 1. Camera. The pipeline was built against `this.camera` (perspective)
+    //    at boot; F3 rebuilds the graph against the real `OrthographicCamera`
+    //    via `handle.setCamera` — only on a view change, never per frame
+    //    (docs/gpu-ortho.md "The camera rebuild"). The previous "copy the
+    //    ortho projection onto the perspective camera" trick rendered a
+    //    black frame because the TSL nodes derived their uniforms from the
+    //    still-`isPerspectiveCamera === true` reference (T-0050).
     const heroCell = { x: Math.floor(pose.x), y: Math.floor(pose.y) };
     let orthoPlace: OrthoPlacement | null = null;
     if (view === 'ortho') {
       orthoPlace = orthoPlacement(heroCell, viewportCols, viewportRows, 2);
       applyOrthoPlacementTo(this.orthoCamera, orthoPlace);
-      // Copy pose + projection to the pipeline camera.
       this.orthoCamera.updateMatrixWorld(true);
-      this.camera.position.copy(this.orthoCamera.position);
-      this.camera.quaternion.copy(this.orthoCamera.quaternion);
-      this.camera.updateMatrixWorld(true);
-      this.camera.projectionMatrix.copy(this.orthoCamera.projectionMatrix);
-      this.camera.projectionMatrixInverse.copy(this.orthoCamera.projectionMatrixInverse);
     } else {
-      // fps: perspective driven from the pose.
       this.camera.position.set(pose.x, EYE_HEIGHT, pose.y);
       this.camera.rotation.set(CAMERA_PITCH, -pose.yaw, 0, 'YXZ');
       const aspect = viewportPx.cssW / Math.max(1, viewportPx.cssH);
-      if (this.camera.fov !== vFovDeg || this.camera.aspect !== aspect || this.lastView === 'ortho') {
+      if (this.camera.fov !== vFovDeg || this.camera.aspect !== aspect) {
         this.camera.fov = vFovDeg;
         this.camera.aspect = aspect;
         this.camera.updateProjectionMatrix();
@@ -1143,10 +1231,17 @@ class GpuPath {
     // the light with it (T-0043).
     this.lantern.position.set(pose.x, EYE_HEIGHT, pose.y);
 
-    // 1b. View-change side effects: hide the ceiling for the overhead view
-    //     (`docs/gpu.md` §4 kept it in its own group precisely for this);
-    //     drop the ghost mesh on the way out; force a rebuild on the way in.
+    // 1b. View-change side effects: rebuild the pipeline graph against the
+    //     view's real camera (T-0050), hide the ceiling for the overhead
+    //     view (`docs/gpu.md` §4 kept it in its own group precisely for
+    //     this), drop the ghost mesh on the way out, force a rebuild on the
+    //     way in. `handle.setCamera` is a graph rebuild — cheap on paper,
+    //     never called per frame, only when F3 flips `view`.
     if (view !== this.lastView) {
+      this.handle.setCamera(pipelineCameraForView(view, {
+        perspective: this.camera,
+        orthographic: this.orthoCamera,
+      }));
       this.dungeon.ceiling.visible = view === 'fps';
       if (view === 'fps') this.disposeGhostMesh();
       this.lastGhostKey = '';
@@ -1159,8 +1254,10 @@ class GpuPath {
     this.dungeon.updateLights(Math.floor(pose.x), Math.floor(pose.y));
 
     // 2b. Update sprite billboards (monsters, items, hero) — camera-facing
-    //     quads lit by the same stack as the terrain (T-0042).
-    this.sprites.update(sprites, this.camera);
+    //     quads lit by the same stack as the terrain (T-0042). Face whichever
+    //     camera the graph is currently rebuilt against so billboards yaw
+    //     toward the ortho camera in ortho mode too.
+    this.sprites.update(sprites, view === 'ortho' ? this.orthoCamera : this.camera);
 
     // 3. Mood: pinned via `?mood=` or derived from the hero's cell.
     const cellX = Math.floor(pose.x);
@@ -1192,6 +1289,18 @@ class GpuPath {
     const dt = this.lastTime === 0 ? 0.016 : Math.min(0.1, (now - this.lastTime) / 1000);
     this.lastTime = now;
     this.atmosphere.update(dt);
+
+    // 4b. Drive our own fog uniforms from the atmosphere's current mood,
+    //     scaling density for the ortho view (T-0050 rework 3). The
+    //     atmosphere's blend already ran; `moodFogDensityForView` is a
+    //     multiplicative scale, so deep_dark's heavier fog stays
+    //     proportionally heavier than torchlit's. Before this fix the ortho
+    //     view rendered black at every quality tier — the fps-tuned density
+    //     (torchlit 0.10) leaves e^(−0.10·40) ≈ 1.8 % of the scene surviving
+    //     40 cells out; scaled by 0.1 that becomes ≈ 67 %.
+    const currentMood = this.atmosphere.state;
+    this.fogColor.value.setHex(currentMood.fog.color);
+    this.fogDensity.value = moodFogDensityForView(view, currentMood.fog.density);
 
     // 5. Apply the styled/raw grade overrides *after* the mood writes so the
     //    mood's vignette/grain don't leak into styled mode (docs/gpu.md §6.1).
