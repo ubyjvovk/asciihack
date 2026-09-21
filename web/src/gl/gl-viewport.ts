@@ -87,6 +87,7 @@ import {
   type DampState,
 } from '../gpu/thirdperson.js';
 import { createWeather, type WeatherHandle } from '../gpu/weather.js';
+import { pickCellFromEvent, type Bounds, type Cell } from '../gpu/pick.js';
 
 /** Distance in cells the hero's lantern reaches before falling to black. */
 export const LANTERN_DISTANCE = 14;
@@ -332,6 +333,46 @@ export class GlViewport {
    */
   zoomThird(delta: number): void {
     this.thirdDist = clampThirdDist(this.thirdDist + delta);
+  }
+
+  /**
+   * Click-to-move (T-0061, docs/gpu-pick.md). Turn a `MouseEvent` on the
+   * DOM terminal into the map cell under the cursor, using whichever camera
+   * the active view renders through. Refreshes `orthoCamera`/`camera` for the
+   * current view so the pick uses a live pose even if the last `render` used
+   * the GPU path (which leaves the legacy cameras untouched for `ortho` and
+   * `third`). Does not advance the third-view spring damper — read-only.
+   *
+   * **`updateMatrixWorld(true)` is load-bearing** (T-0061 rework 2):
+   * `Raycaster.setFromCamera` reads the camera position from `matrixWorld`,
+   * and `position.set` + `lookAt` only mutate `position`/`quaternion`. When
+   * the GPU path is drawing the frame, GlViewport's `this.camera`/
+   * `this.orthoCamera` are never handed to a `WebGLRenderer.render`, so their
+   * `matrixWorld` stays stuck at construction identity and the picked ray
+   * comes from the world origin looking straight ahead — hence the earlier
+   * `y = -86` off-map picks. Forcing the update fixes both branches.
+   *
+   * `bounds` (optional) is passed through to `cellUnderRay` so a hit outside
+   * the level rectangle returns `null` instead of a garbage off-map cell.
+   */
+  pickCell(ev: MouseEvent, bounds?: Bounds): Cell | null {
+    if (this.view === 'ortho') {
+      placeOrthoCamera(this.orthoCamera, this.lastHeroCell, this.cols, this.rows, 2);
+      this.orthoCamera.updateMatrixWorld(true);
+      return pickCellFromEvent(ev, this.canvas, this.orthoCamera, bounds);
+    }
+    if (this.view === 'third') {
+      const wanted = thirdPersonPose(this.lastHeroCell, this.thirdYawSteps, this.thirdDist);
+      const damped = this.thirdDamped ?? { position: wanted.position, target: wanted.target };
+      this.camera.position.set(damped.position.x, damped.position.y, damped.position.z);
+      this.camera.lookAt(damped.target.x, damped.target.y, damped.target.z);
+      if (this.camera.fov !== wanted.fov) {
+        this.camera.fov = wanted.fov;
+        this.camera.updateProjectionMatrix();
+      }
+    }
+    this.camera.updateMatrixWorld(true);
+    return pickCellFromEvent(ev, this.canvas, this.camera, bounds);
   }
 
   /** Cycle through `STYLE_ORDER` (positive = next, negative = previous). */

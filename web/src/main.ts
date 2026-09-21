@@ -18,7 +18,14 @@
 import { NethackSession, runSession } from '../../src/engine/session.js';
 import { App } from '../../src/ui/app.js';
 import { FpsMode, type MovementScheme } from '../../src/ui/modes/fps.js';
-import { poseFor, spritesFromMap } from '../../src/ui/view3d.js';
+import { poseFor, spritesFromMap, charKey, sendKey } from '../../src/ui/view3d.js';
+import {
+  createTraveler,
+  findPath,
+  type Traveler,
+  type TravelerState,
+} from '../../src/ui/travel.js';
+import type { Cell } from './gpu/pick.js';
 import type { Theme } from '../../src/render/themes.js';
 import { DEFAULT_SETTINGS, type Settings } from '../../src/ui/settings.js';
 import { DomTerm } from './dom-term.js';
@@ -116,21 +123,68 @@ function boot(): void {
     // explicit `?view=` wins; failing that `?mode=ortho` still implies the
     // overhead camera, since that mode is asking for it.
     gl.setView(opts.viewExplicit ?? (opts.mode === 'ortho' ? 'ortho' : opts.view));
-    // Debug handle so the PM can diagnose the viewport from the page console:
-    // `window.__asciihack.gl.debugInfo()` (plain numbers, see gl-viewport.ts).
-    (window as unknown as { __asciihack: { gl: GlViewport } }).__asciihack = { gl };
     // Movement scheme follows the 3D view: fps is a first-person camera, so
     // arrows turn/walk relative to the facing; ortho and third-person are
     // top-down/behind, so arrows are compass moves and the avatar swings to
     // face the direction (T-0057). Applied once at boot and again below on
     // every F2/F3/F9 view switch.
     syncMovement(app, gl.currentView);
-    const loop = createRenderLoop(gl, session, app);
+    const traveler = createTraveler({
+      session,
+      // Route the step through `App.handleKey`, the *same* path a real
+      // keypress takes. The earlier `sendKey(session, () => {}, …)` passed a
+      // no-op queue, so any step sent while `session.pending` was momentarily
+      // null was dropped on the floor and the traveler waited for a move that
+      // could never arrive (PM, live-game diagnosis). The App owns the real
+      // queue and drains it when the next request lands.
+      sendStep: (viKey) => app.handleKey(charKey(viKey)),
+    });
+    const loop = createRenderLoop(gl, session, app, traveler);
+    // Debug handle so the PM can diagnose the viewport from the page console:
+    // `window.__asciihack.gl.debugInfo()` (plain numbers, see gl-viewport.ts)
+    // and `window.__asciihack.travel` (last pick, last path length, traveler
+    // state) — the click-to-move instrument the T-0061 rework asked for.
+    const travelDebug: TravelDebug = { lastPick: null, lastPathLength: null };
+    (window as unknown as {
+      __asciihack: {
+        gl: GlViewport;
+        travel: {
+          debug: TravelDebug;
+          state(): TravelerState;
+        };
+      };
+    }).__asciihack = {
+      gl,
+      travel: { debug: travelDebug, state: () => traveler.state() },
+    };
+    // Click-to-move (T-0061). The GL canvas is `pointer-events: none` so the
+    // DOM terminal keeps focus (docs/web.md); the terminal <pre> is where
+    // clicks land, and `gl.pickCell` unprojects the event onto the floor plane
+    // through the live camera.
+    host.addEventListener('click', (ev) => {
+      const bounds = { width: session.map.width, height: session.map.height };
+      const cell = gl.pickCell(ev, bounds);
+      travelDebug.lastPick = cell;
+      travelDebug.lastPathLength = null;
+      if (cell === null) return;
+      const hero = session.hero;
+      if (hero === null) return;
+      const path = findPath(session.map, hero, cell);
+      travelDebug.lastPathLength = path === null ? null : path.length;
+      if (path === null || path.length === 0) return;
+      traveler.start(path);
+      loop.mark();
+    });
     // Capture F5 (style cycle) and F2/F3 (view switch) at the document level
     // so the WebGL viewport reacts before the App consumes them, and mark the
     // loop dirty so the next rAF repaints without waiting for a session event
     // (T-0032 fix for the T-0031 nit).
     document.addEventListener('keydown', (ev) => {
+      // Any key press stops an in-flight travel — a queued burst that ignored
+      // the interrupt would walk the hero into whatever the player just
+      // reacted to (T-0061). Modifier-only presses (Shift, Ctrl, …) do not
+      // count as an override.
+      if (!isModifierOnly(ev)) traveler.abort('user-key');
       if (ev.key === 'F5') {
         const step = ev.shiftKey ? -1 : 1;
         gl.cycleStyle(step);
@@ -250,13 +304,17 @@ interface RenderLoop {
  * is animating a turn, or a caller `mark()`s the loop dirty (view/style
  * switch). `requestAnimationFrame` is throttled to the browser's refresh
  * rate; when nothing changes we skip the GL call entirely.
+ *
+ * The click-to-move traveler (T-0061) also ticks here: at most one vi-key
+ * per rAF, so a queued walk cannot outrun the game or the browser.
  */
-function createRenderLoop(gl: GlViewport, session: NethackSession, app: App): RenderLoop {
+function createRenderLoop(gl: GlViewport, session: NethackSession, app: App, traveler: Traveler): RenderLoop {
   let dirty = true;
   const mark = (): void => { dirty = true; };
   session.on('change', mark);
   session.on('request', mark);
   const raf = (): void => {
+    traveler.tick();
     const fps = getFps(app);
     const animating = fps !== null && fps.isTurning;
     if (dirty || animating) {
@@ -267,6 +325,18 @@ function createRenderLoop(gl: GlViewport, session: NethackSession, app: App): Re
   };
   requestAnimationFrame(raf);
   return { mark };
+}
+
+/** Modifier-only keydown events don't count as a travel-abort trigger. */
+function isModifierOnly(ev: KeyboardEvent): boolean {
+  return ev.key === 'Shift' || ev.key === 'Control' || ev.key === 'Alt' || ev.key === 'Meta';
+}
+
+/** Debug snapshot for the click-to-move path — mutated on every click and read
+ *  through `window.__asciihack.travel.debug` (T-0061 rework 2). */
+interface TravelDebug {
+  lastPick: Cell | null;
+  lastPathLength: number | null;
 }
 
 /** Read the active fps mode (if the App is in fps), or null. */
