@@ -116,6 +116,20 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   before the first ticket.
 
 ## Board snapshot
+- 2026-09-21 04:20 — **The afterburn port is done: 51 accepted, board
+  drained, full gate green** (typecheck x2, 276 tests, build, NetHack lib,
+  bridge, bridge-smoke). Landed tonight: T-0036 voxel kit, T-0037 pipeline,
+  T-0038 material+moods, T-0039 dungeon bake, T-0040 wiring, T-0041 SSR
+  stochastic gate, T-0042 sprites, T-0043+T-0050 ortho, T-0044 dungeon air,
+  T-0045/47/48/49/51 tuning and fixes, T-0046 chunked rebuild.
+  Reference shots in `.tigerteam/shots/`: `before-after.png` (the deliverable),
+  `final-raw.png`, `final-ascii.png`, `gpu-ortho.png`, `gpu-air.png`.
+  All measurements are in `docs/gpu.md` §3.1-3.3.
+  **What is NOT verified and cannot be from here: real frame time.** Every
+  perf number came from SwiftShader software rasterisation. The user opening
+  `/gpu-probe.html` in their own Chrome is the only way to learn whether the
+  WebGPU backend works there (headless Chromium hits a three-r185-vs-Chrome
+  `swizzle` mismatch and falls back to WebGL2).
 - 2026-09-21 03:40 — **45 done; the port is landed and visible.** T-0040
   (wiring), T-0045/T-0047 (tuning, DOF), T-0048 (mood environment) and T-0046
   (chunked rebuild: single-cell reveal 38 ms → 1.2 ms p50, byte-identical
@@ -295,6 +309,14 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   yet.
 
 ## Next actions
+- **For the user, first thing:** open `http://127.0.0.1:5173/scene.html?gpu=raw&q=ultra`
+  in a real browser and `/gpu-probe.html` beside it. Everything in this wave
+  was verified under software rasterisation; the WebGPU backend and the real
+  frame budget (docs/gpu.md §8) are still unknown.
+- Optional next tickets, none blocking: give sprites real NetHack tile art on
+  the GPU path (they are flat tinted quads without a `tile`); a god-ray shaft
+  where a level has one (needs a shadow-casting light, docs/gpu.md §3);
+  brightness is deliberately untouched — measured and left alone.
 - **Queued as drafts, promote after T-0040 lands** (in this order):
   T-0045 look tuning (fill its table from the eyeball review first),
   T-0046 chunked dungeon rebuild — *this one matters*: `DungeonScene`
