@@ -65,6 +65,32 @@ with `slate0` chips and `moss0`/`lichen` in the damp corners, floors
 with `brass` hinges, stairs `slate1`, torches `fire`/`ember`, water `water`,
 lava `ember`, ice `crystalCold0`.
 
+## Per-box jitter (T-0054)
+
+Wetness had been doing double duty in T-0053's predecessor look: it darkened
+albedo *and* its sheen picked out flagstone edges. Removing it made stone
+dry — correct — but the amber quantiser noticed the floor's edge cue
+missing (measured on the amber ASCII output, same pose, before → after
+T-0053):
+
+|            | black  | mean | p95 | **levels** |
+|------------|--------|------|-----|-----------:|
+| wet stone  | 77.4 % | 10.4 | 62  | **148**    |
+| dry stone  | 74.7 % | 11.4 | 66  | **134**    |
+
+Brightness is fine; the 14 lost distinct levels are what mattered — that
+is exactly the resource the quantiser spends. T-0054 restores them in the
+geometry instead of by making things wet again: `bakeChunkCellBoxes` now
+constructs its `VoxelBuilder` with **`jitter: 0.08`** (per-box lightness
+`±8 %`) for every wall and floor stone box.
+
+`vendor/afterburn/docs/ART_BIBLE.md` §2 asks for **`±3–6 %`**, and we went
+above that band **deliberately**. Their range is tuned for surfaces with a
+wet sheen picking up the edges; dry stone here has to carry the readability
+on its own. The `bakeChunkCeilingBoxes` builder stays at `jitter: 0.03`
+(the ceiling sits above the eye, has no edge cue to lose, and its role is
+to darken the room from above without shimmering).
+
 ## Dry by default (T-0053)
 
 A dungeon is mostly dry stone. Afterburn's moods were tuned for a world in

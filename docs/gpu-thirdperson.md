@@ -148,14 +148,36 @@ starts fresh, again matching afterburn's rig.
 
 ## Fog
 
-At the default distance of ~10.7 cells and the mood table's
-`torchlit.fog.density = 0.10`, fog survival is `e^(−0.10·10.7) ≈ 34 %`,
-which is atmospheric rather than black. **This is the measurement the
-ticket asked for.** The ortho helper's `moodFogDensityForView` therefore
-passes `'fps'` for `view === 'third'` — no rescale — because the mood
-tuning already lands in a comfortable range at this distance. The two
-knobs in `web/src/gpu/ortho.ts` (`FPS_FOG_DENSITY = 0.10`,
-`ORTHO_FOG_DENSITY = 0.01`) remain the only fog constants.
+*Rewritten by T-0054. T-0052's "34 % survival is atmospheric" call was made
+on paper; the PM's shot revoked it.*
+
+Mean luminance over the same frame, same pose, same mood, measured after
+T-0053 landed:
+
+| view      | mean |
+|-----------|------|
+| fps       | 54.0 |
+| ortho     | 28.8 |
+| **third** | **8.0** |
+
+At the default `THIRD_DIST_DEFAULT_CELLS ≈ 10.7` cells and the mood
+table's `torchlit.fog.density = 0.10`, `FogExp2` survival is
+`e^(−0.10·10.7) ≈ 34 %` — that number is correct, but 34 % *plus* the
+ported pipeline's inverse-square falloff over ~10 cells left the diorama
+in a cave: `mean 8.0` vs the raw dungeon's `54.0` in fps.
+
+`web/src/gpu/ortho.ts` therefore gains a third knob,
+**`THIRD_FOG_DENSITY = 0.04`**, and `moodFogDensityForView` now maps
+`'third'` to it. `e^(−0.04·10.7) ≈ 65 %` — atmospheric rather than
+black. The value sits between `ORTHO_FOG_DENSITY = 0.01` and
+`FPS_FOG_DENSITY = 0.10`, keeping the natural ordering
+`fps > third > ortho` by camera distance.
+
+Scaling follows the ortho pattern exactly: the mood's raw density is
+multiplied by `THIRD_FOG_DENSITY / FPS_FOG_DENSITY = 0.4`, so
+`deep_dark`'s heavier fog stays proportionally heavier than
+`torchlit`'s. No per-view magic number — the three knobs above are the
+only fog constants.
 
 ## SSGI, SSR, TRAA, DOF
 

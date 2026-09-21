@@ -18,7 +18,9 @@ import {
   orthoDofFocus,
   ORTHO_FOG_DENSITY,
   pipelineCameraForView,
+  THIRD_FOG_DENSITY,
 } from '../web/src/gpu/ortho.js';
+import { THIRD_DIST_DEFAULT_CELLS } from '../web/src/gpu/thirdperson.js';
 
 /** In-memory stand-in for an `OrthographicCamera` — records everything
  *  `applyOrthoPlacementTo` writes, so the test can assert against it without
@@ -251,6 +253,52 @@ describe('gpu ortho — the ported afterburn view over the ortho camera', () => 
     // integer percentage so a future retune keeps the ortho view visible.
     const survivalPct = Math.exp(-moodFogDensityForView('ortho', torchlit) * ORTHO_DISTANCE_CELLS) * 100;
     expect(survivalPct).toBeGreaterThan(50);
+  });
+
+  it('the third-person view uses its own fog density, between fps and ortho', () => {
+    // T-0054: the T-0052 helper mapped `'third'` → `'fps'` on the assumption
+    // that `e^(−0.10 · 10.7) ≈ 34 %` fog survival was "atmospheric". The PM's
+    // shot proved otherwise — mean luminance over the same frame, same pose,
+    // same mood:
+    //
+    //   view       mean
+    //   fps        54.0
+    //   ortho      28.8
+    //   third       8.0   ← the mapping to fps left the diorama in a cave
+    //
+    // 34 % survival plus the ported pipeline's inverse-square falloff over
+    // ~10 cells was too much loss. `THIRD_FOG_DENSITY = 0.04` gives
+    // `e^(−0.04 · 10.7) ≈ 65 %` — atmospheric rather than black. Sits between
+    // the fps and ortho knobs and is scaled through `moodFogDensityForView`
+    // the same way the ortho path already does, so `deep_dark`'s heavier fog
+    // stays proportionally heavier than `torchlit`'s in the third view too.
+    const torchlit = 0.10;   // MOODS.torchlit.fog.density
+    const deepDark = 0.20;   // MOODS.deep_dark.fog.density — visibly heavier
+    // The constant itself sits between ortho and fps — the ordering encodes
+    // "how much of the scene the eye sees" at each camera distance.
+    expect(THIRD_FOG_DENSITY).toBeGreaterThan(ORTHO_FOG_DENSITY);
+    expect(THIRD_FOG_DENSITY).toBeLessThan(FPS_FOG_DENSITY);
+    // Third-view scale is `THIRD_FOG_DENSITY / FPS_FOG_DENSITY` — same shape
+    // as the ortho path. Reuses the exported constants; no third magic number.
+    const thirdRatio = THIRD_FOG_DENSITY / FPS_FOG_DENSITY;
+    expect(moodFogDensityForView('third', torchlit)).toBeCloseTo(torchlit * thirdRatio);
+    expect(moodFogDensityForView('third', deepDark)).toBeCloseTo(deepDark * thirdRatio);
+    // Third-view density sits between the fps pass-through and the ortho
+    // scale for the same mood — the eye's ordering by camera distance.
+    expect(moodFogDensityForView('third', torchlit)).toBeLessThan(moodFogDensityForView('fps', torchlit));
+    expect(moodFogDensityForView('third', torchlit)).toBeGreaterThan(moodFogDensityForView('ortho', torchlit));
+    // Proportional heaviness preserved: `deep_dark / torchlit` is the same in
+    // every view. Without this the third-view scale would flatten the mood
+    // table's expressive range — deep_dark would look the same as torchlit.
+    const fpsRatio = moodFogDensityForView('fps', deepDark) / moodFogDensityForView('fps', torchlit);
+    const thirdViewRatio = moodFogDensityForView('third', deepDark) / moodFogDensityForView('third', torchlit);
+    expect(thirdViewRatio).toBeCloseTo(fpsRatio);
+    // And the scale lands the frame back in the 65 % survival band the ticket
+    // asked for, at the default `THIRD_DIST_DEFAULT_CELLS ≈ 10.7`. Pinned to
+    // catch a retune that walks the number back toward the old 34 %.
+    const survivalPct = Math.exp(-moodFogDensityForView('third', torchlit) * THIRD_DIST_DEFAULT_CELLS) * 100;
+    expect(survivalPct).toBeGreaterThan(60);
+    expect(survivalPct).toBeLessThan(75);
   });
 
   it('DOF focus follows the ortho camera distance', () => {

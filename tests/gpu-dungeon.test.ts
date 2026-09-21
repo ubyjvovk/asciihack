@@ -322,6 +322,67 @@ describe('gpu/dungeon — bakeLevel + DungeonScene', () => {
     scene.dispose();
   });
 
+  it('floor and wall stone vary by eight percent per box', () => {
+    // T-0054: T-0053 correctly made dungeon stone dry, but wetness had been
+    // doing double duty — it darkened albedo *and* its sheen picked out
+    // flagstone edges. Without it the amber quantiser reads a flat tan
+    // expanse (wet 148 levels → dry 134 = 14 levels lost). Raising the
+    // per-box lightness jitter from ±4 % to ±8 % puts the variation back in
+    // the geometry rather than by wetting the floor again.
+    //
+    // The test is a black-box read of `bakeLevel`'s writer. `basalt1` (the
+    // corridor cell's single 8×1×8 box, and one of the wall body's colour
+    // choices) is `0x2a3437 = (42, 52, 55)`; `jitterColor` scales every
+    // channel by a common lightness `l = 1 + (rand−0.5)·2·jitter` and only
+    // r/b pick up a small hue tint, so the green channel `g' = round(52·l)`
+    // reads out the lightness directly. Sample many corridor cells → 200+
+    // basalt1 boxes → `g'/52` should span the full ±8 % window.
+    const rows: string[] = [];
+    for (let y = 0; y < 15; y++) rows.push('%'.repeat(20));
+    const level = levelFromAscii(rows);
+    const { writer } = bakeLevel(level);
+
+    const BR = 42, BG = 52, BB = 55; // basalt1 = 0x2a3437
+    const seen = new Set<string>();
+    const scales: number[] = [];
+    const nv = writer.nv;
+    // Every vertex of a box shares the same (r, g, b, alpha) tuple; alpha is
+    // `Math.round(rnd·255)` so distinct boxes differ. Dedupe on the whole
+    // tuple and keep only colours consistent with a jittered basalt1 (within
+    // ±10 % on every channel — well outside `mud` at (58, 58, 51), which
+    // corridors sprinkle with 30 % probability).
+    for (let i = 0; i < nv; i++) {
+      const r = writer.col[i * 4]!;
+      const g = writer.col[i * 4 + 1]!;
+      const b = writer.col[i * 4 + 2]!;
+      const a = writer.col[i * 4 + 3]!;
+      const key = `${r},${g},${b},${a}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (Math.abs(r / BR - 1) > 0.10) continue;
+      if (Math.abs(g / BG - 1) > 0.10) continue;
+      if (Math.abs(b / BB - 1) > 0.10) continue;
+      scales.push(g / BG);
+    }
+
+    // Sample size guards the range assertion below — a tiny sample could
+    // easily miss the extremes even at the right jitter setting.
+    expect(scales.length).toBeGreaterThanOrEqual(100);
+    const min = Math.min(...scales);
+    const max = Math.max(...scales);
+    // The observed lightness range spans well beyond the ±4 % envelope the
+    // pre-T-0054 setting allowed (max span ≈ [0.96, 1.04]). Pinning at
+    // `max > 1.05` and `min < 0.95` catches a regression that walks jitter
+    // back down without any lucky sampling saving it.
+    expect(max).toBeGreaterThan(1.05);
+    expect(min).toBeLessThan(0.95);
+    // And no box escapes the theoretical ±8 % window (`l ∈ [0.92, 1.08)`
+    // rounded to integer 0..255 → `g'/52 ∈ [48/52, 56/52]` = [0.923, 1.077]).
+    // A future retune that pushes jitter past 8 % would fail this side.
+    expect(max).toBeLessThanOrEqual(56 / BG);
+    expect(min).toBeGreaterThanOrEqual(48 / BG);
+  });
+
   it('a fully known 80x21 level stays under the box budget and bakes in under 50 ms', () => {
     const big: LevelView = levelFromAscii(buildBigRoomRows(), { lit: (k) => (k === 'floor' ? true : undefined) });
 
