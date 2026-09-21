@@ -109,6 +109,22 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   before the first ticket.
 
 ## Board snapshot
+- 2026-09-21 03:10 — **41 done.** T-0039 (dungeon bake: 6 770 boxes for a
+  full 80x21 level, ~38 ms) and T-0045 (the first tuning pass) accepted.
+  **First light happened early**: I taught `/gpu-probe.html` to build the real
+  `DungeonScene`, so the port was visible ~30 min before T-0040 wires it up —
+  `.tigerteam/shots/first-light-dungeon.png` (too hot) and
+  `tuned-dungeon.png` (after T-0045). Torches, flagstones, the ceiling and
+  SSR reflections in the wet floor and the ice all read correctly.
+  Correction recorded in `docs/gpu.md` §3.1: the earlier `reference-torch.png`
+  was credited to the ported pipeline but the probe was falling through to a
+  minimal graph for `?stack=voxel`. Fixed, re-measured, note left in place.
+  **Holding further brightness tuning** until the ASCII output is visible:
+  the style prelude applies its own exposure 1.7 and `pow(v, 0.45)`, so
+  judging the raw frame's mean is judging the wrong image. Measured after
+  T-0045, four poses, raw at 640x360: mean 19-37, black 25-58 %.
+  Running: T-0040 (wiring) and T-0047 (dungeon DOF focus — afterburn's 30 m
+  outdoor default left the whole dungeon defocused).
 - 2026-09-21 03:25 — **39 done** (T-0038 moods/material accepted after
   diffing its constants against the vendored source — the only deltas are the
   deliberately-dropped Crystal Hollow block). Running: T-0039 (the dungeon
