@@ -7,7 +7,7 @@
  * `http://127.0.0.1:5173/scene.html`.
  *
  * Query: `?pose=x,y,yawDeg` (default a doorway view), `?render=<style>`,
- * `?fov=<deg>`, `?view=fps|ortho|third`, plus whatever the viewport itself
+ * `?fov=<deg>`, `?view=fps|ortho|third` (default `third`), plus whatever the viewport itself
  * reads (`?gpu=`, `?q=` once the GPU path lands). Arrow keys/WASD walk,
  * `[`/`]` cycle the style. `window.__bench` and `window.__ready` are the
  * automation handles.
@@ -109,8 +109,10 @@ function boot(): void {
   const pose = poseFromQuery(window.location.search);
   const fov = Number(params.get('fov') ?? '70');
   const viewport = new GlViewport({ initialStyle: params.get('render') ?? 'amber' });
-  if (params.get('view') === 'ortho') viewport.setView('ortho');
-  else if (params.get('view') === 'third') viewport.setView('third');
+  // Same default as the game page: afterburn's third-person follow camera,
+  // with `?view=fps` / `?view=ortho` to opt out.
+  const rawView = params.get('view');
+  viewport.setView(rawView === 'fps' || rawView === 'ortho' ? rawView : 'third');
 
   const cellW = 9;
   const cellH = 18;

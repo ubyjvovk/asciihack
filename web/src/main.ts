@@ -29,6 +29,9 @@ import { HERO_SPRITE_HEIGHT } from './gl/ortho-camera.js';
 /** Character-name rule from `bin/asciihack-lib.sh` — mirrored server-side. */
 const NAME_RE = /^[A-Za-z0-9_-]{1,20}$/;
 
+/** The 3D camera the page starts in. */
+export type ViewName = 'fps' | 'ortho' | 'third';
+
 interface UrlOpts {
   name: string;
   theme: Theme | null;
@@ -36,7 +39,9 @@ interface UrlOpts {
   render: string | null;
   /** `?view=third` selects the third-person view once the viewport is mounted.
    *  Matches the `?view=fps|ortho` pattern already accepted by `scene-bench`. */
-  view: 'third' | null;
+  view: ViewName;
+  /** The `?view=` the URL actually carried, or null when it was absent. */
+  viewExplicit: ViewName | null;
 }
 
 /** Parse the query string; falls back to sensible defaults for missing bits. */
@@ -49,8 +54,14 @@ export function parseUrlOpts(search: string): UrlOpts {
   const rawMode = p.get('mode') ?? 'fps';
   const mode = rawMode === 'classic' || rawMode === 'fps' || rawMode === 'ortho' ? rawMode : 'fps';
   const render = p.get('render');
-  const view = p.get('view') === 'third' ? 'third' : null;
-  return { name, theme, mode, render, view };
+  // Afterburn's long-lens follow camera is the default 3D view (user,
+  // 2026-09-21); `?view=fps` or `?view=ortho` opts out, and F2/F3/F9 still
+  // switch at runtime.
+  const rawView = p.get('view');
+  const viewExplicit: ViewName | null =
+    rawView === 'fps' || rawView === 'ortho' || rawView === 'third' ? rawView : null;
+  const view: ViewName = viewExplicit ?? 'third';
+  return { name, theme, mode, render, view, viewExplicit };
 }
 
 function isTheme(v: string | null): v is Theme {
@@ -101,10 +112,10 @@ function boot(): void {
     externalViewport: gl !== null,
   });
   if (gl !== null) {
-    // `?view=third` overrides the mode's default so the browser hosts the
-    // long-lens diorama follow from load. Otherwise the mode picks fps/ortho.
-    if (opts.view === 'third') gl.setView('third');
-    else gl.setView(opts.mode === 'ortho' ? 'ortho' : 'fps');
+    // The 3D view defaults to afterburn's third-person follow camera. An
+    // explicit `?view=` wins; failing that `?mode=ortho` still implies the
+    // overhead camera, since that mode is asking for it.
+    gl.setView(opts.viewExplicit ?? (opts.mode === 'ortho' ? 'ortho' : opts.view));
     // Debug handle so the PM can diagnose the viewport from the page console:
     // `window.__asciihack.gl.debugInfo()` (plain numbers, see gl-viewport.ts).
     (window as unknown as { __asciihack: { gl: GlViewport } }).__asciihack = { gl };

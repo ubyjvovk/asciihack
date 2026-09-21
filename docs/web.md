@@ -26,6 +26,13 @@ Open `http://127.0.0.1:5173/?name=mia`. `?theme=amber|gloom|solarized|cyber`,
 `?mode=fps|ortho|classic` and `?render=<style-id>` (see the WebGL
 viewport section) are also honoured.
 
+The 3D view starts in **`third`** — afterburn's long-lens follow camera
+(`docs/gpu-thirdperson.md`) — since 2026-09-21. `?view=fps|ortho|third`
+picks one explicitly; with no `?view=`, `?mode=ortho` still implies the
+overhead camera. At runtime **`F2`** is first-person, **`F3`** ortho and
+**`F9`** third-person (F4 was already the minimap toggle), and **`F8`**
+toggles the raw un-quantised frame.
+
 `npm run web:build` produces the static bundle under `dist-web/`. The
 site still needs a running WS server; the browser bundle contains no
 NetHack code.
