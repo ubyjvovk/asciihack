@@ -90,12 +90,84 @@ All colours come from `web/src/voxel/palette.ts` — no invented hexes.
 
 ## Box counts
 
-- **Hero: 49 boxes** (budget: ≤ 400).
-- **Pet: 31 boxes** (budget: ≤ 200).
+- **Hero: 53 boxes** (budget: ≤ 400). Four of them are T-0064's corner
+  chamfers on the tunic — see "Depth and the chamfer trick" below.
+- **Pet: 31 boxes** (budget: ≤ 200). Left flat (see "Pet" below).
 
 Both are far under the art bible's 900-box character budget on purpose:
 they are 0.45–0.7 cells on screen, not 1.45 m props, so surface detail
 past ~50 boxes disappears into the AsciiCity quantiser.
+
+## Depth and the chamfer trick (T-0064)
+
+The pre-T-0064 hero had a torso 6.0 wide × 3.8 deep — a **0.63** depth-to-
+width ratio, i.e. a cardboard slab in profile. From the diorama camera's
+42° pitch every rotation of the sprite exposed one flat 6.0 × 7.2 side of
+the tunic; the figure read as a paper cutout. T-0064 pushed depth up to
+**~0.80 of width** and stair-stepped the corners so the chest no longer
+reads as a box.
+
+### New depths and depth-to-width ratios
+
+| Part            | Width | Old depth → new | Old ratio → new |
+|-----------------|-------|-----------------|-----------------|
+| Torso (tunic)   | 6.0   | 3.8 → **4.8**   | 0.63 → **0.80** |
+| Belt            | 6.4   | 4.0 → **5.0**   | 0.63 → **0.78** |
+| Head (face)     | 4.4   | 4.0 → **4.6**   | 0.91 → **1.05** |
+| Head (hair cap) | 4.6   | 4.2 → **4.8**   | 0.91 → **1.04** |
+| Shoulder pad    | 1.9   | 3.2 → **5.2**   | 1.68 → **2.74** |
+| Upper arm       | 1.7   | 3.0 → **3.8**   | 1.76 → **2.24** |
+| Forearm         | 1.8   | 2.8 → **3.5**   | 1.56 → **1.94** |
+| Pant leg        | 2.6   | 3.0 → **3.8**   | 1.15 → **1.46** |
+| Boot upper      | 2.9   | 3.9 → **4.9**   | 1.34 → **1.69** |
+| Boot sole       | 3.0   | 4.0 → **5.0**   | 1.33 → **1.67** |
+| Neck            | 2.2   | 2.2 → **2.8**   | 1.00 → **1.27** |
+
+Height was left alone: the "the hero model stands 0.7 cells tall" test
+still passes unchanged. The cloak drape and back pack were shifted 0.7
+back to clear the deeper tunic and its back-corner chamfers.
+
+### The chamfer trick
+
+Four `moss1`/`fabric` boxes are added at the tunic's four vertical
+corners. Each is **1.2 × 1.2 in cross-section, full torso height (7.2)**,
+positioned so that on both horizontal axes it protrudes 0.6 outward from
+the tunic corner and sits 0.6 inside it — i.e. "a smaller box set in by
+~0.6 on both horizontal axes" from the corner. From above the torso goes
+from a hard 6.0 × 4.8 rectangle to a rectangle with a small stair-step at
+each corner, which is exactly what `ART_BIBLE.md` §2 means by "curves are
+stair-stepped": axis-aligned boxes only, corners softened by an extra
+step rather than a bevel. The four chamfer boxes and the shoulder pads
+carry moss1's per-box jitter, so the corner steps also break the tunic
+into three lighter/darker slabs when the diorama camera rakes across it.
+
+### Compared with afterburn's pilot (`vendor/afterburn/src/models/pilot.js`)
+
+The pilot's rig has always been "not flat": its main torso boxes are
+
+- chest 7.4 w × 5.2 d — **0.70** depth-to-width,
+- waist 6.6 w × 4.5 d — **0.68**,
+- shoulder cap 2.8 w × 3.1 d — **1.11** (the cap is deeper than it is wide),
+- upper arm 2.45 w × 2.6 d — **1.06**.
+
+The pre-T-0064 hero's 0.63 tunic ratio put it *behind* the pilot on the
+one axis that matters at this camera; the new 0.80 ratio pulls it
+slightly *past* the pilot's chest, and the shoulder-pad ratio of 2.74
+overshoots the pilot's 1.11 to preserve the adventurer's broad-shouldered
+read at 0.7 cells screen height. The pilot uses `roundLayer()` to
+stair-step its helmet dome; we adopt the same principle here, but with
+just four corner columns because the tunic is a rectangle, not a
+circle-in-a-square.
+
+## Pet
+
+The pet is left at its previous 31-box, ~0.5-depth-to-width shape — the
+ticket allowed the same treatment "if it is cheap" but the pet is already
+much less slab-like than the pre-T-0064 hero (torso 5.0 wide × 9.0 deep,
+depth/width 1.8 in its long axis), and the small critter's silhouette
+does not read as cardboard from the camera. Doing a matching depth pass
+would touch a dozen boxes and reshape the cream-belly stripe for no
+visible gain; skipping stays inside the ticket's "cheap or nothing" gate.
 
 ## Facing
 

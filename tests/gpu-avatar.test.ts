@@ -29,6 +29,20 @@ describe('voxel avatars — hero and pet on the GPU render path', () => {
     expect(m.boxCount).toBeGreaterThan(0);
   });
 
+  it('the hero torso is at least three quarters as deep as it is wide', () => {
+    // The tunic is the largest-volume box on the rig; before T-0064 its
+    // depth/width was ~0.63, a slab that read as cardboard from the diorama
+    // camera. The ticket lifted it to ~0.80 and pins the floor at 0.75 so a
+    // future re-grade cannot slide back into slab territory.
+    const m = buildHeroModel();
+    const boxes = m.parts.flatMap((p) => p.boxes);
+    let torso = boxes[0]!;
+    for (const box of boxes) {
+      if (box.w * box.h * box.d > torso.w * torso.h * torso.d) torso = box;
+    }
+    expect(torso.d / torso.w).toBeGreaterThanOrEqual(0.75);
+  });
+
   it('the pet model stays inside its box budget', () => {
     const p = buildPetModel();
     // Ticket budget: pet ≤ 200 boxes.
