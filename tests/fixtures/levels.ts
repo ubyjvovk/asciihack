@@ -4,7 +4,7 @@
  */
 import type { CellKind, LevelView } from '../../src/model/types.js';
 
-/** Legend: `#`/`|`/`-` wall, `.` floor, `+` closed door, `'` open door, `D` doorway, `~` water, `T` tree, `>`/`<` stairs, `%` corridor, space unexplored. */
+/** Legend: `#`/`|`/`-` wall, `.` floor, `+` closed door, `'` open door, `D` doorway, `~` water, `L` lava, `I` ice, `{` fountain, `T` tree, `>`/`<` stairs, `%` corridor, space unexplored. */
 function charToKind(ch: string): CellKind {
   switch (ch) {
     case '#':
@@ -21,6 +21,12 @@ function charToKind(ch: string): CellKind {
       return 'doorway';
     case '~':
       return 'water';
+    case 'L':
+      return 'lava';
+    case 'I':
+      return 'ice';
+    case '{':
+      return 'fountain';
     case 'T':
       return 'tree';
     case '>':
@@ -34,14 +40,23 @@ function charToKind(ch: string): CellKind {
   }
 }
 
+/** Extra options for `levelFromAscii`. */
+export interface LevelFromAsciiOptions {
+  /** Return `MapCell.lit` for a cell; `undefined` leaves it unset. */
+  lit?: (kind: CellKind, x: number, y: number) => boolean | undefined;
+}
+
 /**
  * Build a `LevelView` from rows of legend characters. Row 0 is the north
  * (smallest y) edge; each char is one cell. Out-of-range cells read `unexplored`.
+ * When `opts.lit(kind, x, y)` is supplied, its result is written to
+ * `MapCell.lit`; absent, `lit` stays `undefined`.
  */
-export function levelFromAscii(rows: string[]): LevelView {
+export function levelFromAscii(rows: string[], opts?: LevelFromAsciiOptions): LevelView {
   const height = rows.length;
   const width = rows[0]?.length ?? 0;
   const grid: CellKind[][] = rows.map((r) => [...r].map(charToKind));
+  const litFn = opts?.lit;
   return {
     width,
     height,
@@ -51,7 +66,9 @@ export function levelFromAscii(rows: string[]): LevelView {
     },
     cellAt(x, y) {
       if (x < 0 || y < 0 || x >= width || y >= height) return null;
-      return { x, y, kind: grid[y]?.[x] ?? 'unexplored', terrain: null, top: null };
+      const kind = grid[y]?.[x] ?? 'unexplored';
+      const lit = litFn === undefined ? undefined : litFn(kind, x, y);
+      return { x, y, kind, terrain: null, top: null, lit };
     },
   };
 }
