@@ -68,6 +68,7 @@ import {
   type ViewportPath,
 } from '../gpu/path.js';
 import { SpriteLayer } from '../gpu/sprites.js';
+import { createWeather, type WeatherHandle } from '../gpu/weather.js';
 
 /** Distance in cells the hero's lantern reaches before falling to black. */
 export const LANTERN_DISTANCE = 14;
@@ -762,6 +763,10 @@ export interface DebugInfo {
  *  three needs a Camera reference to render. */
 const RAW_BLIT_CAMERA = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
+/** Reused hero-focus vector for the per-frame `weather.update` call so the
+ *  render loop stays allocation-free (T-0044). */
+const WEATHER_FOCUS_SCRATCH = new WG.Vector3();
+
 /** Collect wall cells in the same row-major order `SceneBuilder` uses so we
  *  can address individual instances of its wall `InstancedMesh` (non-door
  *  solid cells, `unexplored` skipped). */
@@ -933,6 +938,7 @@ class GpuPath {
   readonly compositor: GpuCompositor;
   readonly backend: BackendChoice;
   readonly sprites: SpriteLayer;
+  readonly weather: WeatherHandle;
   readonly ghostGroup: WG.Group;
   readonly ghostGeom: WG.BoxGeometry;
   readonly ghostMaterial: WG.MeshBasicMaterial;
@@ -964,6 +970,7 @@ class GpuPath {
     compositor: GpuCompositor;
     backend: BackendChoice;
     sprites: SpriteLayer;
+    weather: WeatherHandle;
     ghostGroup: WG.Group;
     ghostGeom: WG.BoxGeometry;
     ghostMaterial: WG.MeshBasicMaterial;
@@ -985,6 +992,7 @@ class GpuPath {
     this.compositor = init.compositor;
     this.backend = init.backend;
     this.sprites = init.sprites;
+    this.weather = init.weather;
     this.ghostGroup = init.ghostGroup;
     this.ghostGeom = init.ghostGeom;
     this.ghostMaterial = init.ghostMaterial;
@@ -1121,11 +1129,17 @@ class GpuPath {
     const fogDensity = uniform(FPS_FOG_DENSITY);
     scene.fogNode = fog(fogColor, densityFogFactor(fogDensity));
 
+    // Dungeon-air overlay (T-0044): drips / motes / embers composited
+    // additively **after** the lighting stack, so their transparent quads
+    // never touch the G-buffer SSGI/SSR read. Built before the pipeline so
+    // its scene can be passed as `overlay` at construction.
+    const weather = createWeather(W);
+
     // `sun` is null on purpose: dungeons have no shaft light and
     // `GodraysNode` throws on a light with no shadow map (docs/gpu.md §3).
     // `environment` closes the T-0048 hole — see `docs/gpu-compose.md`.
     const handle = createPipeline(pipelineOptionsWithEnv(
-      { renderer, scene, camera, requested: quality, sun: null },
+      { renderer, scene, camera, requested: quality, sun: null, overlay: weather.scene },
       atmosphere,
     ));
     const compositor = new GpuCompositor(canvas);
@@ -1150,7 +1164,7 @@ class GpuPath {
 
     const path = new GpuPath({
       canvas, renderer, caps, scene, camera, orthoCamera, lantern, dungeon, atmosphere,
-      handle, compositor, backend, sprites, ghostGroup, ghostGeom, ghostMaterial,
+      handle, compositor, backend, sprites, weather, ghostGroup, ghostGeom, ghostMaterial,
       fogColor, fogDensity, quality, mood: 'torchlit',
     });
 
@@ -1324,6 +1338,13 @@ class GpuPath {
       this.handle.look.focusRange.value = dof.focusRange;
     }
 
+    // 5c. Advance the dungeon-air overlay (T-0044). The mood id + shared W
+    //     uniforms pick which of drips/motes/embers are active and how
+    //     strong; the focus point centres the wrap volume on the hero so
+    //     particles follow the camera without popping.
+    WEATHER_FOCUS_SCRATCH.set(pose.x, EYE_HEIGHT, pose.y);
+    this.weather.update(dt, WEATHER_FOCUS_SCRATCH, target);
+
     // 6. Size and render.
     this.resizeTo(size.w, size.h);
     this.handle.render();
@@ -1383,6 +1404,7 @@ class GpuPath {
     try { this.ghostMaterial.dispose(); } catch { /* ignore */ }
     try { this.compositor.dispose(); } catch { /* ignore */ }
     try { this.sprites.dispose(); } catch { /* ignore */ }
+    try { this.weather.dispose(); } catch { /* ignore */ }
     try { this.dungeon.dispose(); } catch { /* ignore */ }
     try { this.renderer.dispose(); } catch { /* ignore */ }
   }
