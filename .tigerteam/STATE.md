@@ -43,6 +43,15 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   2026-09-01). Worktrees get it via `scripts/nethack-src.sh` (T-0001).
 
 ## Decision log (append-only)
+- 2026-09-21 — **Three bugs this session were invisible to tests and only a
+  screenshot found them**, all in the same shape: a shared resource used by
+  two things. The ortho view was black because moods carry *first-person* fog
+  densities and the ortho camera is 40 units out. Movement looked reversed
+  because the camera sat north of the hero, mirroring the world — the keys
+  were always right. The wall cutout deleted the hero because the avatars are
+  meshed with the *same* voxel material as the walls, so he satisfied his own
+  cutout. **When a ticket's value is visual, shoot it between the worktree
+  gate and `tigerteam accept`** ([[pm-verify-before-accept]] in memory).
 - 2026-09-21 — **Process lesson, learned the hard way: verify the frame
   BEFORE the accept, not in the same breath.** I ran `tigerteam accept
   T-0043` and the verification screenshot in one command; the shot came back
@@ -116,6 +125,24 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   before the first ticket.
 
 ## Board snapshot
+- 2026-09-21 (late) — **59 accepted.** After the port landed the user drove a
+  round of look/feel feedback, all verified by screenshot before accept:
+  T-0052 third-person camera (now the **default view**, `?view=`), T-0053 dry
+  stone, T-0055 particles off + no black floor holes, T-0056 voxel hero/pet
+  avatars from afterburn's pilot, T-0057 plain NetHack movement with the
+  avatar turning to face travel, T-0058 the Diablo wall cutout, T-0059
+  minimap at 2x (whole level). PM-made edits: raw afterburn frame is the
+  **default path** (`?gpu=auto` for ASCII, F8 toggles), camera zoomed out to
+  14 cells with fog thinned to 0.03 to match, compass hidden outside
+  first-person, open doorways are a plain hole, camera moved **south** of the
+  hero (it was north, mirroring the world — that was the "reversed movement").
+  Running: T-0060 smooth hero motion, T-0061 click-to-move.
+  Reference shots in `.tigerteam/shots/`: `wall-cutout.png`,
+  `avatars-no-particles.png`, `third-person.png`, `doorway-hole.png`,
+  `before-after.png`.
+  **Keys: F2 fps, F3 ortho, F9 third-person, F8 raw/ASCII, Q/E rotate.**
+  Dev server binds 0.0.0.0 (`ASCIIHACK_WEB_HOST` / `ASCIIHACK_WS_HOST` to
+  revert); the ws server has no auth.
 - 2026-09-21 04:20 — **The afterburn port is done: 51 accepted, board
   drained, full gate green** (typecheck x2, 276 tests, build, NetHack lib,
   bridge, bridge-smoke). Landed tonight: T-0036 voxel kit, T-0037 pipeline,
