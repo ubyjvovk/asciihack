@@ -40,11 +40,11 @@ export const THIRD_PITCH_RAD = (42 * Math.PI) / 180;
 export const THIRD_LOOK_HEIGHT_CELLS = 0.95 * THIRD_SCALE;
 
 /** Default camera-to-target distance, in cells. Afterburn: 26 m; scaled: `26 · 0.7 / 1.7 ≈ 10.7`. */
-export const THIRD_DIST_DEFAULT_CELLS = 26 * THIRD_SCALE;
+export const THIRD_DIST_DEFAULT_CELLS = 34 * THIRD_SCALE;
 /** Minimum camera-to-target distance (wheel-zoom clamp), in cells. Afterburn 18 m → ~7.41 cells. */
 export const THIRD_DIST_MIN_CELLS = 18 * THIRD_SCALE;
 /** Maximum camera-to-target distance (wheel-zoom clamp), in cells. Afterburn 34 m → ~14.0 cells. */
-export const THIRD_DIST_MAX_CELLS = 34 * THIRD_SCALE;
+export const THIRD_DIST_MAX_CELLS = 52 * THIRD_SCALE;
 
 /** Yaw snap step: 45° = π/4. ART_BIBLE §6 "follows the player with a soft
  *  spring", but the rig snaps yaw to 45° steps rather than tracking heading. */

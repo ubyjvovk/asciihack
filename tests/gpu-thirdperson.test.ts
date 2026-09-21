@@ -57,9 +57,9 @@ describe('gpu third-person — afterburn long-lens diorama follow', () => {
     // `HERO_SPRITE_HEIGHT / AFTERBURN_HERO_M`. Default 26 m → ~10.7 cells,
     // matching the ticket's table.
     expect(THIRD_SCALE).toBeCloseTo(HERO_SPRITE_HEIGHT / AFTERBURN_HERO_M);
-    expect(THIRD_DIST_DEFAULT_CELLS).toBeCloseTo(26 * THIRD_SCALE);
-    expect(THIRD_DIST_DEFAULT_CELLS).toBeGreaterThan(10);
-    expect(THIRD_DIST_DEFAULT_CELLS).toBeLessThan(11);
+    expect(THIRD_DIST_DEFAULT_CELLS).toBeCloseTo(34 * THIRD_SCALE);
+    expect(THIRD_DIST_DEFAULT_CELLS).toBeGreaterThan(13);
+    expect(THIRD_DIST_DEFAULT_CELLS).toBeLessThan(15);
     // Camera-to-target magnitude equals the requested distance — a sanity
     // check on the sphere placement: the position is exactly `dist` away.
     const dx = pose.position.x - pose.target.x;
@@ -114,12 +114,12 @@ describe('gpu third-person — afterburn long-lens diorama follow', () => {
     // bounds are ~7.4 (min) and ~14.0 (max) cells. The mouse wheel walks
     // `zoomThird(delta)` which calls `clampThirdDist`.
     expect(THIRD_DIST_MIN_CELLS).toBeCloseTo(18 * THIRD_SCALE);
-    expect(THIRD_DIST_MAX_CELLS).toBeCloseTo(34 * THIRD_SCALE);
+    expect(THIRD_DIST_MAX_CELLS).toBeCloseTo(52 * THIRD_SCALE);
     // The scale conversion table in the ticket, verified:
     expect(THIRD_DIST_MIN_CELLS).toBeGreaterThan(7.3);
     expect(THIRD_DIST_MIN_CELLS).toBeLessThan(7.5);
-    expect(THIRD_DIST_MAX_CELLS).toBeGreaterThan(13.9);
-    expect(THIRD_DIST_MAX_CELLS).toBeLessThan(14.1);
+    expect(THIRD_DIST_MAX_CELLS).toBeGreaterThan(21.3);
+    expect(THIRD_DIST_MAX_CELLS).toBeLessThan(21.5);
     // Passing the default through is idempotent — the wheel doesn't kick you
     // out of a legal position on the first tick.
     expect(clampThirdDist(THIRD_DIST_DEFAULT_CELLS)).toBe(THIRD_DIST_DEFAULT_CELLS);

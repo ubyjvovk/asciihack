@@ -297,7 +297,7 @@ describe('gpu ortho — the ported afterburn view over the ortho camera', () => 
     // asked for, at the default `THIRD_DIST_DEFAULT_CELLS ≈ 10.7`. Pinned to
     // catch a retune that walks the number back toward the old 34 %.
     const survivalPct = Math.exp(-moodFogDensityForView('third', torchlit) * THIRD_DIST_DEFAULT_CELLS) * 100;
-    expect(survivalPct).toBeGreaterThan(60);
+    expect(survivalPct).toBeGreaterThan(60); // 65.7 % at the 14-cell default
     expect(survivalPct).toBeLessThan(75);
   });
 

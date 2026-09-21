@@ -170,7 +170,7 @@ export const ORTHO_FOG_DENSITY = 0.01;
  *  read as "the diorama is in a cave"; the number here is what the PM
  *  measured after T-0053 landed. Sits between `ORTHO_FOG_DENSITY` and
  *  `FPS_FOG_DENSITY`, keeping the natural ordering fps > third > ortho. */
-export const THIRD_FOG_DENSITY = 0.04;
+export const THIRD_FOG_DENSITY = 0.03;
 
 /**
  * Scale a mood's raw fog density for the active view. In fps the density
