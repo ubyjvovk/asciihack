@@ -38,7 +38,7 @@ Uniform block (`web/src/gpu/materials.ts::CUTOUT`, written from
 | `enabled`       | float  | 0       | 1 in `third`/`ortho`, 0 in `fps`                                                                              |
 | `heroCamDist`   | float  | 0       | Hero's camera-space distance (`-viewZ` at the hero's world position, positive in front of the camera)         |
 | `heroScreen`    | vec2   | (0, 0)  | Hero's projected pixel position, WebGPU convention (top-left origin) — matches TSL `screenCoordinate.xy`      |
-| `heroScreenPx`  | float  | 0       | Pixel radius around `heroScreen` inside which fragments are cut (per frame: `1.4 · avatarOnScreenHeightPx`)   |
+| `heroScreenPx`  | float  | 0       | Pixel radius around `heroScreen` inside which fragments are cut (per frame, from projected head→feet — see below) |
 | `depthBias`     | float  | 0.15    | Cells the fragment must be *nearer* than the hero to fire; `CUTOUT_DEPTH_BIAS_CELLS`                          |
 
 A fragment is discarded when **all** of:
@@ -68,19 +68,46 @@ is `step(cutStrength, dither)` — TSL `step(edge, x)` returns 1 when
 `x >= edge`, so a fraction `cutStrength` of the pixels in the fade band
 are cut and the shape stays opaque.
 
-`heroScreenPx` is `1.4 · avatarOnScreenHeightPx`. The avatar's on-screen
-height is derived per frame from the live camera and the hero's distance,
-not hard-coded — for a perspective camera, one world unit at depth `d`
-subtends `canvasH / (2 · d · tan(fov/2))` pixels; for the ortho camera it
-subtends `canvasH / (top − bottom)` pixels. So a hole opens tight around
-the avatar at every zoom.
+## Radius from projected head→feet, not a camera-space formula
 
-The predicate at cell resolution is in `web/src/gpu/cutout.ts::isCutCell`
-— the same rule expressed as a horizontal cone (screen radius at hero's
-depth is a world radius `screenRadius`; at cell depth `d`, the cone covers
-lateral offset `≤ screenRadius · d / heroDepth`). Same test the shader
-evaluates, no `three`, so `tests/gpu-cutout.test.ts` can catch a sign flip
-without a GPU.
+Attempt 1 derived `heroScreenPx` as
+`1.4 · HERO_SPRITE_HEIGHT · canvasH / (2 · heroCamDist · tan(fov/2))`.
+That formula gives the pixel size of a world segment **perpendicular to
+the view direction** — it is the correct number for the vertical span of
+a signboard facing the camera, and the wrong number for a vertical world
+segment viewed by a pitched camera. The third-person camera sits 42°
+above the horizon (`docs/gpu-thirdperson.md` §"Pose"), so a vertical
+world segment projects with a `~cos(42°)` foreshortening. Attempt 1's
+value came in ~30 % larger than the avatar's actual on-screen height,
+and the resulting radius scooped a wide dithered arc out of walls that
+never blocked the hero — the rework's primary complaint.
+
+The rule now: project the hero's **head and feet** through the live
+camera and take the pixel distance between them. That is the avatar's
+actual on-screen height, whatever the camera's pitch and lens.
+`web/src/gpu/cutout.ts::projectHeroForCutout` runs the projection,
+returns `{ heroCamDist, heroScreenX, heroScreenY, screenRadiusPx }` and
+is unit-tested; `gl-viewport.ts::GpuPath.render` calls it once per
+frame and writes the four numbers into `CUTOUT`. The
+`CUTOUT_SCREEN_RADIUS_FACTOR = 1.4` multiplier is the ticket's starting
+number and lives next to the helper so a re-tune touches one place.
+
+### Reading the numbers back
+
+The PM can read the resolved values from the console — the debug hook
+carries them since the rework:
+
+```js
+window.__asciihack.gl.debugInfo().cutout
+// → { enabled: true, heroScreen: { x, y }, heroCamDist: 13.8, screenRadiusPx: 90 }
+```
+
+`enabled: false` in fps. When the pixel radius reads as (say) 0.98 rather
+than something in the tens or low hundreds, the derivation is broken and
+the answer is in one line; when it reads as expected but the shot still
+shows a wide cut, the depth half is the problem instead. Attempt 1's
+version reported `screenRadiusPx ≈ 120 px` on a 900-px canvas at the
+default pose; the corrected value is `~90 px`.
 
 ## What is exempt
 
@@ -130,23 +157,35 @@ reads as motion rather than noise.
   fragment-stage discard, evaluated inside `createVoxelMaterial`. Written
   by `gl-viewport.ts::GpuPath.render`; the material never touches these
   uniforms itself.
+- `web/src/gpu/cutout.ts` — the pure helpers:
+  - `projectHeroForCutout(camera, heroX, heroCentreY, heroZ, spriteHeight,
+    canvasW, canvasH, radiusFactor)` returns the four pixel numbers the
+    material's `CUTOUT` block wants. Derives `screenRadiusPx` from the
+    projected head→feet distance so a pitched or zoomed camera changes
+    the number the way it changes the avatar itself.
+  - `isCutCell(cellX, cellY, hero, camera, screenRadiusCells,
+    depthBiasCells)` — the same fragment-shader predicate restated at
+    cell resolution. `three`-independent (uses only `{ x, y, z }`
+    literals), so the "which cells satisfy the rule" property is pinned
+    without a GPU.
+  - `CUTOUT_DEPTH_BIAS_CELLS`, `CUTOUT_SCREEN_FADE_FRACTION`,
+    `CUTOUT_FLOOR_EPSILON`, `CUTOUT_SCREEN_RADIUS_FACTOR` — the shader's
+    defaults, named and reused.
 - `web/src/gl/gl-viewport.ts::GpuPath.render` — every frame, when
   `view === 'third' || view === 'ortho'`:
   - `CUTOUT.enabled.value = 1`;
   - Pick the active camera (`this.orthoCamera` in ortho, `this.camera`
-    otherwise), refresh its `matrixWorldInverse` via
-    `activeCam.updateMatrixWorld(true)`, then compute
-    `heroCamDist = -heroWorld.applyMatrix4(matrixWorldInverse).z` and
-    project `heroWorld` to NDC → pixel coords (top-left origin) for
-    `heroScreen`;
-  - Compute `heroScreenPx = 1.4 · HERO_SPRITE_HEIGHT · pxPerWorldUnit`
-    from the live camera (perspective: `canvasH / (2 · heroCamDist ·
-    tan(fov/2))`; ortho: `canvasH / (top − bottom) · zoom`);
-  - Set `depthBias = CUTOUT_DEPTH_BIAS_CELLS`.
-- `web/src/gpu/cutout.ts` — pure helpers (no `three`, no DOM).
-  `isCutCell` for the cell-resolution predicate the docs and tests reason
-  about; `CUTOUT_DEPTH_BIAS_CELLS`, `CUTOUT_SCREEN_FADE_FRACTION` and
-  `CUTOUT_FLOOR_EPSILON` for the shader's defaults.
+    otherwise), call `projectHeroForCutout` with the smoothed hero pose
+    at `HERO_SPRITE_HEIGHT / 2` (mid-height) and the current canvas
+    dimensions;
+  - Write the returned `heroCamDist`, `heroScreen`, `heroScreenPx` into
+    `CUTOUT`; set `depthBias = CUTOUT_DEPTH_BIAS_CELLS`;
+  - Cache the returned `CutoutFrame` on `lastCutoutFrame` so
+    `GlViewport.debugInfo()` can surface the resolved pixel numbers.
+- `web/src/gl/gl-viewport.ts::GlViewport.debugInfo().cutout` — reports
+  `{ enabled, heroScreen: { x, y }, heroCamDist, screenRadiusPx }` from
+  the most recent frame the cutout ran. `enabled` is false and the
+  numbers are zero in fps or before the first GPU frame.
 
 ## The T-0043 ghost mesh is still in place
 
@@ -170,17 +209,19 @@ cutaway" if either half of the removal misses a call site.
 
 The worker container has no GPU and cannot look at a rendered frame. So:
 
-- **No visual verification of the discard.** The four pure-function
-  cases in `tests/gpu-cutout.test.ts` pin the geometry rule at cell
-  resolution, and the shader is a direct restatement of the same
-  predicate against `positionView.z` and `screenCoordinate.xy`. Whether
-  the compiled fragment shader actually discards the fragments the rule
-  identifies — and whether the screen-door fade reads as a "soft hole"
-  or a "dither cloud" at the ticket's `1.4 · avatarHeight` radius — is
-  the PM's eyeball review through `/scene.html?view=third` and
-  `/scene.html?view=ortho` under `?gpu=raw` and `?gpu=auto`.
-- **The eyeball shot for the fix itself.** The bug shot is
-  `.tigerteam/shots/wall-cutout.png` (from the T-0058 accept run) — the
-  cutout is visible in a wall that never blocked the hero. The
-  reshoot after this ticket should show that same wall opaque, and a
-  wall directly in front of the hero clear.
+- **No visual verification of the discard.** The pure-function cases in
+  `tests/gpu-cutout.test.ts` pin the geometry rule at cell resolution
+  and the pixel-radius derivation, and the shader is a direct
+  restatement of the same predicate against `positionView.z` and
+  `screenCoordinate.xy`. Whether the compiled fragment shader actually
+  discards the fragments the rule identifies — and whether the
+  screen-door fade reads as a "soft hole" or a "dither cloud" at the
+  ticket's `1.4 · avatarHeight` radius — is the PM's eyeball review
+  through `/scene.html?view=third` and `/scene.html?view=ortho` under
+  `?gpu=raw` and `?gpu=auto`.
+- **The eyeball shot for the fix itself.** The rework shot is
+  `.tigerteam/shots/cutout-still-wrong.png`; the reshoot should show
+  (a) the hero two cells from the south wall with the wall opaque, and
+  (b) the hero against the wall with a tight hole the size of the
+  avatar. Reading `debugInfo().cutout.screenRadiusPx` from the console
+  gives the exact pixel number in either shot.

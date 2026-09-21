@@ -44,7 +44,7 @@ import { cutawayCellsFor, HERO_SPRITE_HEIGHT, orthoPlacement, placeOrthoCamera, 
 import { GpuCompositor } from '../gpu/compose.js';
 import { DungeonScene } from '../gpu/dungeon.js';
 import { CUTOUT, createVoxelMaterial, W } from '../gpu/materials.js';
-import { CUTOUT_DEPTH_BIAS_CELLS } from '../gpu/cutout.js';
+import { CUTOUT_DEPTH_BIAS_CELLS, CUTOUT_SCREEN_RADIUS_FACTOR, projectHeroForCutout, type CutoutFrame } from '../gpu/cutout.js';
 import { Atmosphere, type MoodId } from '../gpu/moods.js';
 import {
   applyOrthoPlacementTo,
@@ -413,6 +413,7 @@ export class GlViewport {
   debugInfo(): DebugInfo {
     const usingGpu = this.lastPath !== 'legacy' && this.gpu !== null;
     const h = this.lastHeroCell;
+    const cutout = this.cutoutDebug();
     if (usingGpu) {
       const gpu = this.gpu!;
       // Third-person reuses the perspective `gpu.camera`, just repositioned.
@@ -442,6 +443,7 @@ export class GlViewport {
         backend: this.gpu?.backend ?? null,
         quality: this.gpu?.quality ?? null,
         mood: this.gpu?.mood ?? null,
+        cutout,
       };
     }
     // Third-person reuses the legacy `this.camera` (perspective), repositioned.
@@ -471,6 +473,27 @@ export class GlViewport {
       backend: this.gpu?.backend ?? null,
       quality: this.gpu?.quality ?? null,
       mood: this.gpu?.mood ?? null,
+      cutout,
+    };
+  }
+
+  /** Snapshot of the CUTOUT uniforms `GpuPath.render` wrote last frame
+   *  (T-0063 rework — the PM asked for the numbers so the pixel radius can
+   *  be read directly instead of inferred from a screenshot). `enabled` is
+   *  `false` in `fps` (the camera IS the hero there) and while the GPU path
+   *  is not running the last frame; the other fields report the most-recent
+   *  frame the cutout was active on. */
+  private cutoutDebug(): CutoutDebug {
+    const frame = this.gpu?.lastCutoutFrame ?? null;
+    const enabled = frame !== null;
+    return {
+      enabled,
+      heroScreen: {
+        x: frame?.heroScreenX ?? 0,
+        y: frame?.heroScreenY ?? 0,
+      },
+      heroCamDist: frame?.heroCamDist ?? 0,
+      screenRadiusPx: frame?.screenRadiusPx ?? 0,
     };
   }
 
@@ -900,6 +923,26 @@ export interface DebugInfo {
   quality: QualityName | null;
   /** Current mood id being applied by the GPU path, or null. */
   mood: MoodId | null;
+  /** Hero cutout numbers the shader received last frame (T-0063 rework). */
+  cutout: CutoutDebug;
+}
+
+/** Plain-number snapshot of the CUTOUT uniforms — surfaced by
+ *  `GlViewport.debugInfo().cutout` so the PM can read the pixel radius and
+ *  hero screen position directly. All zero and `enabled: false` when the
+ *  cutout is off (fps view, or before the first GPU frame). */
+export interface CutoutDebug {
+  /** True when the cutout uniform block is driving a discard this frame
+   *  (`view === 'third' || view === 'ortho'`). */
+  enabled: boolean;
+  /** Hero's projected pixel position (top-left origin, matches TSL
+   *  `screenCoordinate.xy`). */
+  heroScreen: { x: number; y: number };
+  /** Hero's camera-space depth in world units (positive in front of the
+   *  camera). Compare against `-positionView.z` fragment-side. */
+  heroCamDist: number;
+  /** Pixel radius around `heroScreen` inside which fragments are cut. */
+  screenRadiusPx: number;
 }
 
 /** Per-frame third-person pose after the spring damper (`dampPose`) has run.
@@ -1108,6 +1151,11 @@ class GpuPath {
   private lastMoodDecision: MoodId | null = null;
   private lastView: 'fps' | 'ortho' | 'third' = 'fps';
   private lastGhostKey = '';
+  /** Resolved cutout numbers from the most recent `render` — surfaced by
+   *  `GlViewport.debugInfo()` so the PM can read the actual pixel radius
+   *  and hero screen position instead of inferring them from a screenshot.
+   *  `null` in `fps` (the cutout is disabled there). */
+  lastCutoutFrame: CutoutFrame | null = null;
 
   private constructor(init: {
     canvas: HTMLCanvasElement;
@@ -1431,53 +1479,35 @@ class GpuPath {
     const cutoutOn = view === 'third' || view === 'ortho';
     CUTOUT.enabled.value = cutoutOn ? 1.0 : 0.0;
     if (cutoutOn) {
-      // Project the smoothed hero position with the live camera. The active
-      // camera's `matrixWorldInverse` may not have been refreshed yet this
-      // frame (the renderer normally does it during draw), so update it
-      // explicitly before reading it — otherwise the first frame after a
-      // view flip reads last frame's transform.
+      // Project the smoothed hero position with the live camera. `heroCentreY`
+      // is the avatar mid-height so the projected pixel lands on the hero's
+      // torso, not its feet or the ceiling. `projectHeroForCutout` derives the
+      // screen radius from the pixel distance between the hero's projected
+      // head and feet, so a pitched camera (third-person sits 42° above the
+      // horizon) foreshortens the number the way it foreshortens the avatar
+      // itself. Attempt 1 used a camera-space formula that assumed a segment
+      // perpendicular to the view direction; the resulting radius was ~30 %
+      // too wide and cut walls that never blocked the hero — the rework's
+      // primary complaint. See `docs/gpu-cutout.md` §"Radius from projected
+      // head→feet, not a camera-space formula".
       const activeCam = view === 'ortho' ? this.orthoCamera : this.camera;
-      activeCam.updateMatrixWorld(true);
-      // Hero centre in world coords: smoothed cell position (map y → world
-      // z) lifted to the avatar's mid-height so the projected pixel lands
-      // on the hero's torso rather than its feet or the ceiling.
-      const heroCentreY = HERO_SPRITE_HEIGHT * 0.5;
-      const heroWorld = new THREE.Vector3(pose.x, heroCentreY, pose.y);
-      // Camera-space depth: `-viewZ` is the positive distance in front of
-      // the camera along the viewing direction. The shader compares
-      // `-positionView.z` against this uniform.
-      const heroView = heroWorld.clone().applyMatrix4(activeCam.matrixWorldInverse);
-      const heroCamDist = -heroView.z;
-      CUTOUT.heroCamDist.value = heroCamDist;
-      // Projected pixel position — NDC (y up) → pixels with a top-left
-      // origin (y down) so the units match TSL `screenCoordinate.xy`,
-      // which follows the WebGPU convention (top-left origin) on both
-      // backends via `builder.isFlipY()` (three/nodes/display/ScreenNode).
-      const heroNDC = heroWorld.clone().project(activeCam);
-      const canvasW = this.canvas.width;
-      const canvasH = this.canvas.height;
-      const heroPxX = (heroNDC.x * 0.5 + 0.5) * canvasW;
-      const heroPxY = (1.0 - (heroNDC.y * 0.5 + 0.5)) * canvasH;
-      CUTOUT.heroScreen.value.set(heroPxX, heroPxY);
-      // Avatar on-screen height in pixels — derived from the camera and
-      // hero distance rather than hard-coded so the cutout scales with
-      // zoom (`docs/gpu-cutout.md` §"Numbers"). Perspective: the vertical
-      // span of one world unit at depth `d` is `canvasH / (2·d·tan(fov/2))`
-      // pixels. Ortho: it's `canvasH / (top − bottom)`, independent of
-      // depth. The `Math.max(..., 0.001)` guards a degenerate `d ≈ 0` (the
-      // hero briefly coincident with the camera during a pose blend);
-      // without it the pixel value blows up and `heroScreenPx` becomes NaN.
-      let pixelsPerWorldUnit: number;
-      if (view === 'ortho') {
-        const viewHeightWorld = (this.orthoCamera.top - this.orthoCamera.bottom) / this.orthoCamera.zoom;
-        pixelsPerWorldUnit = canvasH / Math.max(0.001, viewHeightWorld);
-      } else {
-        const fovRad = (this.camera.fov * Math.PI) / 180;
-        pixelsPerWorldUnit = (canvasH * 0.5) / Math.max(0.001, heroCamDist * Math.tan(fovRad * 0.5));
-      }
-      const avatarPx = HERO_SPRITE_HEIGHT * pixelsPerWorldUnit;
-      CUTOUT.heroScreenPx.value = 1.4 * avatarPx;
+      const frame = projectHeroForCutout(
+        activeCam,
+        pose.x,
+        HERO_SPRITE_HEIGHT * 0.5,
+        pose.y,
+        HERO_SPRITE_HEIGHT,
+        this.canvas.width,
+        this.canvas.height,
+        CUTOUT_SCREEN_RADIUS_FACTOR,
+      );
+      CUTOUT.heroCamDist.value = frame.heroCamDist;
+      CUTOUT.heroScreen.value.set(frame.heroScreenX, frame.heroScreenY);
+      CUTOUT.heroScreenPx.value = frame.screenRadiusPx;
       CUTOUT.depthBias.value = CUTOUT_DEPTH_BIAS_CELLS;
+      this.lastCutoutFrame = frame;
+    } else {
+      this.lastCutoutFrame = null;
     }
 
     // 1b. View-change side effects: rebuild the pipeline graph against the

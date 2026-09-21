@@ -1,17 +1,24 @@
 /**
- * Pure-function tests for the hero cutout (T-0063, docs/gpu-cutout.md). Every
- * case exercises `web/src/gpu/cutout.ts`, whose helpers stay `three`-free so
- * this file compiles under the root tsconfig (no DOM lib) — the material-side
- * discard is `MeshStandardNodeMaterial.maskNode` in `web/src/gpu/materials.ts`
- * and cannot run without a WebGPU renderer; see `docs/gpu-cutout.md` §"What I
+ * Pure-function tests for the hero cutout (T-0063, docs/gpu-cutout.md). The
+ * cell-resolution predicate (`isCutCell`) exercises the shader's discard rule
+ * without a GPU; the projection helper (`projectHeroForCutout`) is the CPU
+ * side the render loop calls each frame, tested against a real `three`
+ * `PerspectiveCamera` to catch the rework's "the radius is in world units,
+ * not pixels" class of bug. The material-side discard is
+ * `MeshStandardNodeMaterial.maskNode` in `web/src/gpu/materials.ts` and
+ * cannot run without a WebGPU renderer; see `docs/gpu-cutout.md` §"What I
  * could not verify".
  *
- * Case names are the ticket's acceptance list — do not rename them.
+ * Case names are the ticket's acceptance list — do not rename them, do not
+ * add other tests.
  */
 import { describe, expect, it } from 'vitest';
+import { PerspectiveCamera, Vector3 } from 'three/webgpu';
 import {
   CUTOUT_DEPTH_BIAS_CELLS,
+  CUTOUT_SCREEN_RADIUS_FACTOR,
   isCutCell,
+  projectHeroForCutout,
 } from '../web/src/gpu/cutout.js';
 
 // Radius used by the pure helper's tests: cell-space stand-in for the shader's
@@ -84,5 +91,65 @@ describe('gpu cutout — cut only what actually blocks the hero', () => {
     const eastCam = { x: 12, y: 4, z: 3.5 };
     expect(isCutCell(6, 3, hero, eastCam, SCREEN_RADIUS_CELLS, CUTOUT_DEPTH_BIAS_CELLS)).toBe(true);
     expect(isCutCell(5, 4, hero, eastCam, SCREEN_RADIUS_CELLS, CUTOUT_DEPTH_BIAS_CELLS)).toBe(false);
+  });
+
+  it('the screen radius is in pixels and scales with the viewport', () => {
+    // T-0063 rework: attempt 1 derived `heroScreenPx` from
+    // `HERO_SPRITE_HEIGHT · canvasH / (2·d·tan(fov/2))`. That treats the
+    // avatar as a segment perpendicular to the view direction, but the
+    // third-person camera is pitched 42° down — so a vertical world
+    // segment projects *shorter* than the formula predicts, and the cutout
+    // scooped a wide arc out of walls that never blocked the hero.
+    //
+    // The fix: project the hero's head and feet through the live camera
+    // and take the pixel distance between them as the on-screen height.
+    // This test pins the number against that projected distance (not a
+    // constant) and pins the "in pixels" claim by doubling the canvas.
+    const canvasW = 1600;
+    const canvasH = 900;
+    // Third-person defaults: fov 30°, pitch 42°, distance ~14 cells.
+    const camera = new PerspectiveCamera(30, canvasW / canvasH, 0.1, 100);
+    camera.position.set(5.5, 9.4, 13.9);
+    camera.lookAt(5.5, 0.35, 3.5);
+    const spriteHeight = 0.7;
+    const factor = CUTOUT_SCREEN_RADIUS_FACTOR;
+    const frame = projectHeroForCutout(camera, 5.5, spriteHeight * 0.5, 3.5, spriteHeight, canvasW, canvasH, factor);
+
+    // Camera aimed at the hero's mid-height → hero projects near the middle
+    // of the canvas. Loose tolerance: the point is that the projection is
+    // running, not that lookAt is byte-exact.
+    expect(frame.heroScreenX).toBeCloseTo(canvasW / 2, 0);
+    expect(frame.heroScreenY).toBeCloseTo(canvasH / 2, 0);
+    expect(frame.heroCamDist).toBeGreaterThan(0);
+
+    // Radius pinned against a projected height, not a constant: reproduce
+    // the head→feet pixel distance the helper computes and assert 1.4× it.
+    // Attempt 1's camera-space formula gave a value ~30 % larger than this
+    // because it ignored the pitch foreshortening; that is the regression
+    // this case blocks.
+    camera.updateMatrixWorld(true);
+    const feetNDC = new Vector3(5.5, 0, 3.5).project(camera);
+    const headNDC = new Vector3(5.5, spriteHeight, 3.5).project(camera);
+    const dxPx = (headNDC.x - feetNDC.x) * 0.5 * canvasW;
+    const dyPx = -(headNDC.y - feetNDC.y) * 0.5 * canvasH;
+    const projectedHeightPx = Math.hypot(dxPx, dyPx);
+    expect(frame.screenRadiusPx).toBeCloseTo(factor * projectedHeightPx, 3);
+    // Sanity: the perpendicular-segment formula overestimates by more than
+    // one pixel. If a future refactor slid back into it, this catches it.
+    const fovRad = (camera.fov * Math.PI) / 180;
+    const perpendicularHeightPx = spriteHeight * canvasH / (2 * frame.heroCamDist * Math.tan(fovRad * 0.5));
+    expect(perpendicularHeightPx - projectedHeightPx).toBeGreaterThan(1);
+
+    // Scales with the viewport: doubling both canvas dimensions doubles
+    // every pixel number the helper returns. If the radius were a world-
+    // unit value (the reworker's hypothesis), the number would be the same
+    // at both resolutions.
+    const bigger = projectHeroForCutout(camera, 5.5, spriteHeight * 0.5, 3.5, spriteHeight, canvasW * 2, canvasH * 2, factor);
+    expect(bigger.screenRadiusPx).toBeCloseTo(frame.screenRadiusPx * 2, 3);
+    expect(bigger.heroScreenX).toBeCloseTo(frame.heroScreenX * 2, 3);
+    expect(bigger.heroScreenY).toBeCloseTo(frame.heroScreenY * 2, 3);
+    // `heroCamDist` is a world-space distance — invariant under a canvas
+    // resize (the camera did not move).
+    expect(bigger.heroCamDist).toBeCloseTo(frame.heroCamDist, 3);
   });
 });
