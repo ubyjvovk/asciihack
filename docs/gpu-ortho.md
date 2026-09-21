@@ -166,12 +166,17 @@ the top of most walls in the cutaway zone. But this is not the full "walls
 in front of the hero go transparent" behaviour the legacy path delivers,
 and the docs must not overclaim.
 
-**The follow-up ticket** is option (b): a clip volume in the voxel material,
-driven by the hero cell centre and the cutaway box extents, applied as a
-per-fragment `discard` inside the box. That ticket touches
-`web/src/gpu/materials.ts` (and possibly `dungeon.ts` to feed the hero
-uniform through). It composes on top of option (a) without discarding
-anything shipped here.
+**The follow-up ticket** was option (b): a clip volume in the voxel
+material, driven by the hero cell centre and the cutaway box extents,
+applied as a per-fragment `discard` inside the box. That work is **now
+shipped in T-0058 — see `docs/gpu-cutout.md`**. It touches
+`web/src/gpu/materials.ts` (adds the shared `CUTOUT` uniform block and the
+fragment-stage discard) and `web/src/gl/gl-viewport.ts` (writes the
+uniforms every frame in the third and ortho views). With T-0058 in place,
+the wall genuinely disappears where the hero stands under it, and the
+ghost-mesh overlay in `refreshGhostMesh` below is now **redundant** —
+removing it is a small isolated cleanup filed as a separate ticket, since
+this ticket's scope excludes it.
 
 ## Fog scales with the view
 
