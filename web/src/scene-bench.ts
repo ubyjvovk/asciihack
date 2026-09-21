@@ -85,9 +85,15 @@ function benchLevel(): LevelView {
 function benchSprites(pose: Pose): Sprite[] {
   // The hero stands wherever the camera is looking, so `?pose=` frames him —
   // which is what makes the wall cutout testable from the bench.
+  // Sprite coordinates are integer *cells* (what `spritesFromMap` produces in
+  // the real game); the renderer centres them. Passing the raw fractional
+  // pose here would draw the hero half a cell off from anything that keys on
+  // the hero cell, such as the wall cutout.
+  const hx = Math.floor(pose.x);
+  const hy = Math.floor(pose.y);
   return [
-    { x: pose.x, y: pose.y, ch: '@', rgb: [0.9, 0.85, 0.75], cls: 'mon', height: 0.7 },
-    { x: pose.x + 1, y: pose.y, ch: 'f', rgb: [0.75, 0.7, 0.6], cls: 'pet', height: 0.45 },
+    { x: hx, y: hy, ch: '@', rgb: [0.9, 0.85, 0.75], cls: 'mon', height: 0.7 },
+    { x: hx + 1, y: hy, ch: 'f', rgb: [0.75, 0.7, 0.6], cls: 'pet', height: 0.45 },
     { x: 9.5, y: 2.5, ch: 'd', rgb: [0.85, 0.75, 0.35], cls: 'mon', height: 0.6 },
     { x: 8.5, y: 4.5, ch: 'f', rgb: [0.55, 0.85, 0.95], cls: 'pet', height: 0.45 },
     { x: 11.5, y: 3.5, ch: 'T', rgb: [0.95, 0.35, 0.3], cls: 'mon', height: 1.2 },
