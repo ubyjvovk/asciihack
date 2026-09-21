@@ -19,7 +19,12 @@ import { NethackSession, runSession } from '../../src/engine/session.js';
 import { App } from '../../src/ui/app.js';
 import { FpsMode, type MovementScheme } from '../../src/ui/modes/fps.js';
 import { poseFor, spritesFromMap, charKey, sendKey } from '../../src/ui/view3d.js';
-import { findPath, stepKey, type PathCell } from '../../src/ui/travel.js';
+import {
+  createTraveler,
+  findPath,
+  type Traveler,
+  type TravelerState,
+} from '../../src/ui/travel.js';
 import type { Cell } from './gpu/pick.js';
 import type { Theme } from '../../src/render/themes.js';
 import { DEFAULT_SETTINGS, type Settings } from '../../src/ui/settings.js';
@@ -124,7 +129,10 @@ function boot(): void {
     // face the direction (T-0057). Applied once at boot and again below on
     // every F2/F3/F9 view switch.
     syncMovement(app, gl.currentView);
-    const traveler = createTraveler(session, app);
+    const traveler = createTraveler({
+      session,
+      sendStep: (viKey) => sendKey(session, () => {}, charKey(viKey)),
+    });
     const loop = createRenderLoop(gl, session, app, traveler);
     // Debug handle so the PM can diagnose the viewport from the page console:
     // `window.__asciihack.gl.debugInfo()` (plain numbers, see gl-viewport.ts)
@@ -318,138 +326,11 @@ function isModifierOnly(ev: KeyboardEvent): boolean {
   return ev.key === 'Shift' || ev.key === 'Control' || ev.key === 'Alt' || ev.key === 'Meta';
 }
 
-/** Click-to-move state machine (T-0061, docs/gpu-pick.md). */
-interface Traveler {
-  /** Begin walking a fresh path; replaces any in-flight walk. */
-  start(path: readonly PathCell[]): void;
-  /** Abandon the current walk (called on interrupt). No-op when idle. */
-  abort(reason?: TravelAbortReason): void;
-  /** Send at most one vi-key toward the next path cell, subject to the
-   *  interrupt rules. Called once per rAF. */
-  tick(): void;
-  /** Snapshot of the traveler's state — exposed on `window.__asciihack.travel`
-   *  so the PM can diagnose a stuck walk from the page console (T-0061 rework 2). */
-  state(): TravelerState;
-}
-
-/** Why a walk was aborted. `null` means either running or never started. */
-type TravelAbortReason =
-  | 'no-pending'
-  | 'not-key-or-pos'
-  | 'message-changed'
-  | 'no-hero'
-  | 'blocked'
-  | 'no-step-key'
-  | 'user-key'
-  | 'new-path'
-  | null;
-
-interface TravelerState {
-  pathLength: number;
-  expectedNext: PathCell | null;
-  msgSnapshot: number;
-  pending: string | null;
-  lastAbortReason: TravelAbortReason;
-}
-
 /** Debug snapshot for the click-to-move path — mutated on every click and read
  *  through `window.__asciihack.travel.debug` (T-0061 rework 2). */
 interface TravelDebug {
   lastPick: Cell | null;
   lastPathLength: number | null;
-}
-
-/**
- * Build the click-to-move state machine (T-0061, docs/gpu-pick.md).
- *
- * The walker owns three pieces of state: the remaining path, the cell the
- * hero is expected to occupy after the last step we sent, and the message
- * count at the moment we sent it. On each rAF `tick`, if the game is asking
- * for a key and none of the interrupt conditions fires, one vi-key is sent
- * and the state advances; otherwise the path is dropped in silence — the
- * ticket asks for no beep, no message on failure.
- *
- * Interrupts (any one aborts the walk):
- *   1. The hero did not arrive at `expectedNext` — something blocked or
- *      turned us aside on the previous step.
- *   2. `session.messages.length` grew since we sent the previous step — the
- *      message line changed, so NetHack wants the player to notice something.
- *   3. Any non-modifier key was pressed — the player is taking over.
- *   4. Pending request is anything other than a key ask (menu, yn, getlin,
- *      display, pos, …) — driving those with vi-keys would be user hostile.
- */
-function createTraveler(session: NethackSession, _app: App): Traveler {
-  let path: PathCell[] = [];
-  let expectedNext: PathCell | null = null;
-  let msgSnapshot = 0;
-  let lastAbortReason: TravelAbortReason = null;
-  // Gate below guarantees we only call `sendKey` while a `key`/`pos` request is
-  // pending, so `sendKey`'s queue fallback never fires and this stays a no-op.
-  const queueKey = (): void => {};
-  const abort = (reason: TravelAbortReason = null): void => {
-    if (path.length > 0) lastAbortReason = reason;
-    path = [];
-    expectedNext = null;
-  };
-  const start = (fresh: readonly PathCell[]): void => {
-    if (path.length > 0) lastAbortReason = 'new-path';
-    path = [...fresh];
-    expectedNext = null;
-    msgSnapshot = session.messages.length;
-  };
-  const tick = (): void => {
-    if (path.length === 0) return;
-    const pending = session.pending;
-    // Wait: the bridge is still processing the last turn.
-    if (pending === null) return;
-    // Interrupt: anything other than a key/pos ask (a menu, yn, display,
-    // getlin, …) means the game wants something specific from the player.
-    // NetHack's `readchar_core` uses `nh_poskey` for the main gameplay input,
-    // so `pos` is the *normal* pending kind during play — earlier attempts
-    // only accepting `key` aborted every walk on the first tick (T-0061 rework 2).
-    if (pending.kind !== 'key' && pending.kind !== 'pos') {
-      abort('not-key-or-pos');
-      return;
-    }
-    // Interrupt: a new message means NetHack wants the player to see it.
-    if (session.messages.length > msgSnapshot) {
-      abort('message-changed');
-      return;
-    }
-    const hero = session.hero;
-    if (hero === null) {
-      abort('no-hero');
-      return;
-    }
-    // Interrupt: the previous step did not land where we expected — something
-    // blocked, staggered or otherwise interrupted the move.
-    if (expectedNext !== null && (hero.x !== expectedNext.x || hero.y !== expectedNext.y)) {
-      abort('blocked');
-      return;
-    }
-    const next = path[0]!;
-    const dx = next.x - hero.x;
-    const dy = next.y - hero.y;
-    const key = stepKey(dx, dy);
-    if (key === null) {
-      abort('no-step-key');
-      return;
-    }
-    // Advance state *before* the answer: `session.answer` fires listeners
-    // synchronously, and one of them (`repaint`) may indirectly re-enter tick.
-    path.shift();
-    expectedNext = next;
-    msgSnapshot = session.messages.length;
-    sendKey(session, queueKey, charKey(key));
-  };
-  const state = (): TravelerState => ({
-    pathLength: path.length,
-    expectedNext: expectedNext === null ? null : { x: expectedNext.x, y: expectedNext.y },
-    msgSnapshot,
-    pending: session.pending === null ? null : session.pending.kind,
-    lastAbortReason,
-  });
-  return { start, abort, tick, state };
 }
 
 /** Read the active fps mode (if the App is in fps), or null. */

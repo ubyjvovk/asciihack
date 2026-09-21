@@ -10,7 +10,7 @@
  * add other tests.
  */
 import { describe, expect, it } from 'vitest';
-import { findPath } from '../src/ui/travel.js';
+import { createTraveler, findPath, type TravelSessionView } from '../src/ui/travel.js';
 import type { CellKind, LevelView, MapCell } from '../src/model/types.js';
 import { cellUnderRay } from '../web/src/gpu/pick.js';
 
@@ -150,6 +150,57 @@ describe('click-to-move — BFS over the remembered map', () => {
     // At t=10 the hit is (10.5, 0, 20.5): floor → (10, 20).
     const oblique = cellUnderRay({ x: 10.5, y: 5, z: 25.5 }, { x: 0, y: -0.5, z: -0.5 });
     expect(oblique).toEqual({ x: 10, y: 20 });
+  });
+
+  it('the traveler aborts with a timeout when the hero does not arrive', () => {
+    // Live-game failure the rework 3 was written to pin: the traveler sent
+    // its single vi-key, session.answer cleared `pending`, NetHack issued a
+    // fresh `nh_poskey` — but the hero never moved and no message-line change
+    // fired the interrupt path either. Without a watchdog the traveler hung
+    // forever with `lastAbortReason === null`. The 1.5-s timeout drops it.
+    let clockMs = 1000;
+    const sent: string[] = [];
+    const session: TravelSessionView = {
+      // NetHack's normal input path during play is `nh_poskey`, so `pos`
+      // matches the pending kind the live-game trace showed.
+      pending: { kind: 'pos' },
+      hero: { x: 5, y: 7 },
+      messages: { length: 1 },
+    };
+    const traveler = createTraveler({
+      session,
+      sendStep: (viKey) => sent.push(viKey),
+      now: () => clockMs,
+      timeoutMs: 1500,
+    });
+    // Adjacent-west step; the previous test proved `findPath` returns a
+    // single cell here — the traveler pops it and sends `h`.
+    traveler.start([{ x: 4, y: 7 }]);
+    traveler.tick();
+    expect(sent).toEqual(['h']);
+    expect(traveler.state()).toMatchObject({
+      pathLength: 0,
+      expectedNext: { x: 4, y: 7 },
+      lastAbortReason: null,
+    });
+    // Hero has not arrived (still at (5, 7)); before the timeout fires the
+    // traveler simply waits — no abort, no further keys sent.
+    clockMs = 2000; // +1 s
+    traveler.tick();
+    expect(sent).toEqual(['h']);
+    expect(traveler.state().lastAbortReason).toBeNull();
+    // Past the 1.5-s deadline the watchdog trips and drops the walk.
+    clockMs = 2600; // +1.6 s from send
+    traveler.tick();
+    expect(traveler.state()).toMatchObject({
+      pathLength: 0,
+      expectedNext: null,
+      lastAbortReason: 'timeout',
+    });
+    // Idle after the abort: further ticks do nothing.
+    clockMs = 10_000;
+    traveler.tick();
+    expect(sent).toEqual(['h']);
   });
 
   it('cellUnderRay returns null for a ray that misses the floor', () => {

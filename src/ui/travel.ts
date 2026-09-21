@@ -125,3 +125,178 @@ export function findPath(
 export function stepKey(dx: number, dy: number): string | null {
   return VI_KEYS[`${dx},${dy}`] ?? null;
 }
+
+/**
+ * Read-only view of a `NethackSession` the traveler needs. Structural typing
+ * lets `NethackSession` itself pass unchanged; tests use a plain mock with the
+ * same shape so `createTraveler` stays testable in node.
+ */
+export interface TravelSessionView {
+  readonly pending: { readonly kind: string } | null;
+  readonly hero: { readonly x: number; readonly y: number } | null;
+  readonly messages: { readonly length: number };
+}
+
+/** Why a walk was aborted. `null` means either running or never started. */
+export type TravelAbortReason =
+  | 'not-key-or-pos'
+  | 'message-changed'
+  | 'no-hero'
+  | 'blocked'
+  | 'no-step-key'
+  | 'user-key'
+  | 'new-path'
+  | 'timeout'
+  | null;
+
+/** Snapshot of the traveler's state — exposed on `window.__asciihack.travel`
+ *  so the PM can diagnose a stuck walk from the page console (T-0061 rework). */
+export interface TravelerState {
+  pathLength: number;
+  expectedNext: PathCell | null;
+  msgSnapshot: number;
+  pending: string | null;
+  lastAbortReason: TravelAbortReason;
+}
+
+/** Public interface of the traveler state machine (docs/gpu-pick.md). */
+export interface Traveler {
+  /** Begin walking a fresh path; replaces any in-flight walk. */
+  start(path: readonly PathCell[]): void;
+  /** Abandon the current walk (called on interrupt). No-op when idle. */
+  abort(reason?: TravelAbortReason): void;
+  /** Send at most one vi-key toward the next path cell, subject to the
+   *  interrupt rules. Called once per rAF. */
+  tick(): void;
+  /** Snapshot of the traveler's state (for the page-console debug handle). */
+  state(): TravelerState;
+}
+
+/** Wiring for `createTraveler`. `now` and `timeoutMs` are injectable so tests
+ *  drive the watchdog with a fake clock; `sendStep` sends one vi-key. */
+export interface TravelDeps {
+  session: TravelSessionView;
+  sendStep: (viKey: string) => void;
+  now?: () => number;
+  timeoutMs?: number;
+}
+
+/** Default watchdog delay: the last step must land within 1.5 s (T-0061
+ *  rework attempt 3). Past that the walk aborts with reason `'timeout'` — a
+ *  traveler that hangs forever with no `lastAbortReason` is worse than one
+ *  that gives up, because the failure is invisible in `state()`. */
+export const DEFAULT_TRAVEL_TIMEOUT_MS = 1500;
+
+/**
+ * Build the click-to-move state machine (T-0061, docs/gpu-pick.md).
+ *
+ * The walker owns four pieces of state: the remaining path, the cell the
+ * hero is expected to occupy after the last step we sent, the message count
+ * at that moment, and the wall-clock time of the send. On each `tick`, the
+ * walker first confirms whether the previous step landed (or has run out of
+ * time — the watchdog) and then, if the game is asking for a key and none of
+ * the interrupt conditions fires, sends the next vi-key.
+ *
+ * Interrupts (any one aborts the walk):
+ *   1. **`'timeout'`** — the previous step did not land within `timeoutMs`.
+ *      Covers the single-step case where `path` is already empty and the
+ *      per-tick `'blocked'` check no longer fires.
+ *   2. **`'blocked'`** — a new key/pos request arrived but the hero has not
+ *      reached `expectedNext`; something turned us aside on the previous step.
+ *   3. **`'message-changed'`** — `session.messages.length` grew since the
+ *      previous step; NetHack wants the player to notice something.
+ *   4. **`'not-key-or-pos'`** — pending is a menu / yn / getlin / display /
+ *      extcmd / file / message-menu; driving those with vi-keys is user hostile.
+ *   5. **`'user-key'`** / **`'new-path'`** — external abort by the click
+ *      listener (user pressed a key, or clicked a new destination).
+ */
+export function createTraveler(deps: TravelDeps): Traveler {
+  const timeoutMs = deps.timeoutMs ?? DEFAULT_TRAVEL_TIMEOUT_MS;
+  const now = deps.now ?? ((): number => Date.now());
+  let path: PathCell[] = [];
+  let expectedNext: PathCell | null = null;
+  let msgSnapshot = 0;
+  let lastSendTime = 0;
+  let lastAbortReason: TravelAbortReason = null;
+
+  const abort = (reason: TravelAbortReason = null): void => {
+    if (path.length > 0 || expectedNext !== null) lastAbortReason = reason;
+    path = [];
+    expectedNext = null;
+  };
+
+  const start = (fresh: readonly PathCell[]): void => {
+    if (path.length > 0 || expectedNext !== null) lastAbortReason = 'new-path';
+    path = [...fresh];
+    expectedNext = null;
+    msgSnapshot = deps.session.messages.length;
+  };
+
+  const tick = (): void => {
+    if (path.length === 0 && expectedNext === null) return;
+
+    const hero = deps.session.hero;
+
+    // Confirmation phase: did the previous step land, or has time run out?
+    if (expectedNext !== null) {
+      if (hero !== null && hero.x === expectedNext.x && hero.y === expectedNext.y) {
+        expectedNext = null; // step landed — proceed to the next
+      } else if (now() - lastSendTime > timeoutMs) {
+        abort('timeout');
+        return;
+      }
+    }
+
+    if (path.length === 0) return;
+
+    const pending = deps.session.pending;
+    if (pending === null) return; // bridge is still processing
+    if (pending.kind !== 'key' && pending.kind !== 'pos') {
+      abort('not-key-or-pos');
+      return;
+    }
+    if (deps.session.messages.length > msgSnapshot) {
+      abort('message-changed');
+      return;
+    }
+    if (hero === null) {
+      abort('no-hero');
+      return;
+    }
+    // If NetHack is ready for input but the hero has not reached
+    // `expectedNext`, the previous step was rejected (a monster, a door):
+    // that's `'blocked'` — the fast-fail path when `pending` moves faster
+    // than the timeout.
+    if (expectedNext !== null) {
+      abort('blocked');
+      return;
+    }
+
+    const next = path[0]!;
+    const dx = next.x - hero.x;
+    const dy = next.y - hero.y;
+    const key = stepKey(dx, dy);
+    if (key === null) {
+      abort('no-step-key');
+      return;
+    }
+
+    // Advance state *before* `sendStep`: the callback runs listeners
+    // synchronously (`repaint`), which can indirectly re-enter `tick`.
+    path.shift();
+    expectedNext = next;
+    msgSnapshot = deps.session.messages.length;
+    lastSendTime = now();
+    deps.sendStep(key);
+  };
+
+  const state = (): TravelerState => ({
+    pathLength: path.length,
+    expectedNext: expectedNext === null ? null : { x: expectedNext.x, y: expectedNext.y },
+    msgSnapshot,
+    pending: deps.session.pending === null ? null : deps.session.pending.kind,
+    lastAbortReason,
+  });
+
+  return { start, abort, tick, state };
+}

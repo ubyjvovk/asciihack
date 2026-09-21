@@ -123,21 +123,53 @@ The first click-to-move attempt aborted on every non-`key` pending and
 so silently dropped every walk — the observable symptom the T-0061
 rework fixed. `sendKey` (`src/ui/view3d.ts`) already answers both.
 
+### Reply shape for `nh_poskey`
+
+The reply the traveler writes for a `pos` pending is **byte-identical** to
+the reply the keyboard path (`App.flushQueue`, `src/ui/app.ts`) writes for
+the same movement key — both go through `sendKey` → `session.answer({ kind:
+'pos', key: code })` → `{ id, ret: code }` (see `src/engine/session.ts:357`).
+The bridge (`bridge/nh-bridge.c:933`) reads a non-zero `ret` as the char
+code and returns it straight to `readchar_core` (`nethack/src/cmd.c:5247`),
+which returns `(char) sym` to `parse()` — exactly the path a keypress takes.
+The `{ ret: 0, x, y, mod }` shape is reserved for a real mouse *click*
+(NetHack routes that through `click_to_cmd`), and we deliberately do **not**
+use it: the classic "send a vi-key" path already carries every safeguard
+(message pager, overlay routing, animation lock), and sending a synthesised
+click here would fight NetHack's own `flags.travelcmd` logic. So the
+"traveler" and "keyboard" wire messages are the same; the walker adds only
+the client-side state machine and the watchdog. If the hero does not move
+after a click, the timeout guarantees the walker fails visibly instead of
+wedging.
+
 ### Interrupts (any one aborts the walk, silently)
 
-1. **The hero did not arrive at `expectedNext`.** After a step we
-   remember the cell we asked to walk into; on the next `key`/`pos`
-   request we check that `session.hero` matches it. If it does not — a
-   monster blocked, a door refused, we were stunned — abort.
-2. **The message line changed.** `session.messages.length` grew since the
-   last step: NetHack wants the player to notice something ("You see a
-   fountain here."). Abort so the player can read it.
-3. **Any non-modifier key was pressed.** The player is taking over;
-   dropping the queue is the least surprising behaviour. Shift/Ctrl/Alt/Meta
-   on their own do not count.
-4. **The pending request is neither `key` nor `pos`.** A menu, yn-prompt,
-   getlin or display means the game wants something specific from the
-   player — driving those with vi-keys is user-hostile, so abort.
+1. **The hero did not arrive at `expectedNext` (`blocked`).** After a step
+   we remember the cell we asked to walk into; on the next `key`/`pos`
+   request, if `session.hero` still isn't there — a monster blocked, a door
+   refused, we were stunned — abort. The `blocked` check only fires when
+   NetHack has moved on to a fresh input request; the watchdog below covers
+   the case where nothing at all comes back.
+2. **Watchdog timeout (`timeout`).** If the previous step has not landed
+   within **`DEFAULT_TRAVEL_TIMEOUT_MS = 1500` ms**, abort with
+   `'timeout'`. This is the backstop for the single-step case where `path`
+   is empty after the send and the `blocked` check no longer fires — the
+   rework-3 live game showed the traveler hanging forever with
+   `lastAbortReason === null` because the response never came. A traveler
+   that gives up loudly beats a traveler that wedges silently; a real failure
+   now shows up in `window.__asciihack.travel.state()` as `lastAbortReason:
+   'timeout'` after 1.5 s.
+3. **The message line changed (`message-changed`).**
+   `session.messages.length` grew since the last step: NetHack wants the
+   player to notice something ("You see a fountain here."). Abort so the
+   player can read it.
+4. **Any non-modifier key was pressed (`user-key`).** The player is taking
+   over; dropping the queue is the least surprising behaviour.
+   Shift/Ctrl/Alt/Meta on their own do not count.
+5. **The pending request is neither `key` nor `pos` (`not-key-or-pos`).** A
+   menu, yn-prompt, getlin or display means the game wants something
+   specific from the player — driving those with vi-keys is user-hostile,
+   so abort.
 
 ### Debug handle
 
@@ -147,7 +179,11 @@ and `window.__asciihack.travel.state()` (traveler snapshot: remaining
 `pathLength`, `expectedNext`, `msgSnapshot`, current `pending` kind, and
 `lastAbortReason`) let the PM diagnose a stuck walk from the page
 console without a rebuild — the T-0061 rework asked for it after the
-first attempt failed silently in a live game.
+first attempt failed silently in a live game. If a click walk stalls,
+sample `state()` twice at ≥ 1.5 s apart: `lastAbortReason: 'timeout'` on
+the second read means NetHack accepted the key but the hero never moved
+(a live-game diagnosis for the PM), whereas `null` both times means the
+tick never ran (rAF paused, `traveler` never wired).
 
 We deliberately do **not** use NetHack's own `_` travel command: driving
 its cursor prompt over the bridge is a bigger and more fragile job than
