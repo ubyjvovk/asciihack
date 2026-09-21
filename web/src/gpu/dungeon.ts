@@ -183,6 +183,27 @@ function isWallKind(k: CellKind): boolean {
   return k === 'wall' || k === 'stone';
 }
 
+/** True for the four kinds that justify a wet cell: standing water, ice, a fountain, or a lowered drawbridge. */
+function isDampSource(k: CellKind): boolean {
+  return k === 'water' || k === 'ice' || k === 'fountain' || k === 'drawbridge';
+}
+
+/**
+ * A cell is damp when it or one of its orthogonal neighbours is a damp
+ * source (`water`, `ice`, `fountain`, `drawbridge`). Dry-by-default is
+ * expressed per-cell by setting `dry: true` on every stone box the bakers
+ * emit in a non-damp cell; damp cells keep the flag off so they still take
+ * the mood's wetness and puddles (docs/gpu-dungeon.md, docs/gpu-materials.md).
+ */
+export function isDampCell(level: LevelView, x: number, y: number): boolean {
+  if (isDampSource(level.kindAt(x, y))) return true;
+  if (isDampSource(level.kindAt(x - 1, y))) return true;
+  if (isDampSource(level.kindAt(x + 1, y))) return true;
+  if (isDampSource(level.kindAt(x, y - 1))) return true;
+  if (isDampSource(level.kindAt(x, y + 1))) return true;
+  return false;
+}
+
 /** True for kinds that are walkable (get a floor treatment and a ceiling). */
 function passable(k: CellKind): boolean {
   if (k === 'unexplored') return false;
@@ -571,30 +592,42 @@ export function chunkHashOf(level: LevelView, b: ChunkBounds): string {
 /** Bake main geometry (walls, floors, doors, stairs, features) for one chunk. */
 function bakeChunkCellBoxes(level: LevelView, b: ChunkBounds, baseSeed: number): VoxelBox[] {
   const builder = new VoxelBuilder({ unit: 0.125, seed: baseSeed, jitter: 0.04 });
+  const boxes = builder.parts[0]!.boxes;
   for (let y = b.y0; y < b.y1; y++) {
     for (let x = b.x0; x < b.x1; x++) {
       const kind = level.kindAt(x, y);
       if (kind === 'unexplored') continue;
       builder.rand = makeRng(cellSeed(x, y, baseSeed));
+      const before = boxes.length;
       builder.at(x * CELL_UNITS, 0, y * CELL_UNITS, () => bakeCell(builder, level, x, y, kind));
+      // Dry by default: the level's stone is only wet where the cell (or an
+      // orthogonal neighbour) is water, ice, a fountain or a drawbridge.
+      if (!isDampCell(level, x, y)) {
+        for (let i = before; i < boxes.length; i++) boxes[i]!.dry = true;
+      }
     }
   }
-  return builder.parts[0]!.boxes;
+  return boxes;
 }
 
 /** Bake ceiling geometry (one 8×1×8 slab per known passable cell) for one chunk. */
 function bakeChunkCeilingBoxes(level: LevelView, b: ChunkBounds, baseSeed: number): VoxelBox[] {
   const builder = new VoxelBuilder({ unit: 0.125, seed: baseSeed, jitter: 0.03 });
+  const boxes = builder.parts[0]!.boxes;
   for (let y = b.y0; y < b.y1; y++) {
     for (let x = b.x0; x < b.x1; x++) {
       if (!passable(level.kindAt(x, y))) continue;
       builder.rand = makeRng(cellSeed(x, y, baseSeed) ^ 0x1c9e7f5b);
+      const before = boxes.length;
       builder.at(x * CELL_UNITS, 0, y * CELL_UNITS, () => {
         builder.box(0, CELL_UNITS, 0, CELL_UNITS, 1, CELL_UNITS, 'basalt0', 'rock');
       });
+      if (!isDampCell(level, x, y)) {
+        for (let i = before; i < boxes.length; i++) boxes[i]!.dry = true;
+      }
     }
   }
-  return builder.parts[0]!.boxes;
+  return boxes;
 }
 
 /** Bake torch sconce geometry for every torch mounted on a wall inside a chunk. */
@@ -827,13 +860,17 @@ export function bakeCeiling(level: LevelView, opts?: BakeOptions): { writer: Geo
   const baseSeed = opts?.seed ?? 1;
   const cells = ceilingCells(level);
   const builder = new VoxelBuilder({ unit: 0.125, seed: baseSeed, jitter: 0.03 });
+  const boxes = builder.parts[0]!.boxes;
   for (const [x, y] of cells) {
     builder.rand = makeRng(cellSeed(x, y, baseSeed) ^ 0x1c9e7f5b);
+    const before = boxes.length;
     builder.at(x * CELL_UNITS, 0, y * CELL_UNITS, () => {
       builder.box(0, CELL_UNITS, 0, CELL_UNITS, 1, CELL_UNITS, 'basalt0', 'rock');
     });
+    if (!isDampCell(level, x, y)) {
+      for (let i = before; i < boxes.length; i++) boxes[i]!.dry = true;
+    }
   }
-  const boxes = builder.parts[0]!.boxes;
   const hidden = hiddenFaces(boxes);
   const writer = new GeoWriter(Math.max(64, boxes.length));
   for (let i = 0; i < boxes.length; i++) writer.box(boxes[i]!, 0.125, 0, 0, 0, IDENTITY, hidden[i]!);

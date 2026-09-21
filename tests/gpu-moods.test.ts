@@ -115,6 +115,24 @@ describe('gpu/moods — pure parts', () => {
     expect(result).toEqual(MOODS.torchlit);
   });
 
+  it('only the flooded mood carries standing water', () => {
+    // Dry-by-default policy: a dungeon is mostly dry stone, and per-cell `dry`
+    // marks (dungeon.ts) express "wet only where there's a reason". Moods keep
+    // a tiny residual sheen at most; only the `flooded` mood is meant to look
+    // soaked, so it is the only one with non-zero standing water (puddles) and
+    // full-strength wetness. See docs/gpu-materials.md's mood table.
+    for (const id of Object.keys(MOODS) as MoodId[]) {
+      const w = MOODS[id].weather;
+      if (id === 'flooded') {
+        expect(w.puddles).toBeGreaterThan(0);
+        expect(w.wetness).toBe(1);
+      } else {
+        expect(w.puddles).toBe(0);
+        expect(w.wetness).toBeLessThan(0.2);
+      }
+    }
+  });
+
   it('moodEnvironment builds a 32x16 equirect gradient between the mood\'s fill colours', () => {
     const mood = MOODS.torchlit;
     const tex = moodEnvironment(mood);

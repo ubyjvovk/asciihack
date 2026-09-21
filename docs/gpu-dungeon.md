@@ -32,10 +32,10 @@ later ticket ports the cutaway.
   (halo culling — see below).
 - `bakeCeiling(level, opts?)`, `ceilingCells(level)`, `doorAxis(level, x, y)`,
   `chunksOf(level)`, `chunkAt(level, cx, cy)`, `chunkBoundsList(level)`,
-  `chunkHashOf(level, bounds)`, `selectActiveTorches(torches, x, y)` and the
-  `CHUNK_W` / `CHUNK_H` constants — small pure helpers used by
-  `DungeonScene`, exported so tests can inspect the same intermediates the
-  scene bakes.
+  `chunkHashOf(level, bounds)`, `selectActiveTorches(torches, x, y)`,
+  `isDampCell(level, x, y)` and the `CHUNK_W` / `CHUNK_H` constants — small
+  pure helpers used by `DungeonScene`, exported so tests can inspect the
+  same intermediates the scene bakes.
 
 ## Kind → geometry
 
@@ -64,6 +64,38 @@ with `slate0` chips and `moss0`/`lichen` in the damp corners, floors
 `basalt0`/`basalt1` flagstones with `mud` in the cracks, doors `wood0`/`wood1`
 with `brass` hinges, stairs `slate1`, torches `fire`/`ember`, water `water`,
 lava `ember`, ice `crystalCold0`.
+
+## Dry by default (T-0053)
+
+A dungeon is mostly dry stone. Afterburn's moods were tuned for a world in
+a storm — the ported `torchlit` inherited `wetness 0.5 / puddles 0.25`, so
+every corridor read rained-on. T-0053 flips the polarity: the four
+non-`flooded` moods drop to near-zero wetness with no puddles (see
+`docs/gpu-materials.md`'s mood table), and `dungeon.ts` marks every stone
+box `dry: true` **unless the level gives a reason to be wet**:
+
+```ts
+isDampCell(level, x, y): boolean
+```
+
+is a pure predicate exported from `web/src/gpu/dungeon.ts`. It returns
+`true` when the cell at `(x, y)` — or any of its four orthogonal
+neighbours — is `water`, `fountain`, `drawbridge` or `ice`; everywhere
+else it returns `false`. `bakeChunkCellBoxes`, `bakeChunkCeilingBoxes` and
+`bakeCeiling` bake each cell as before, then, when `isDampCell` is false,
+walk the newly-added boxes and set `dry = true` on them. The
+`FLAG_DRY` bit at `aMat.a >> 7` is what the material shader reads
+(`docs/gpu-materials.md`): a dry surface never darkens for wetness and
+never picks up a puddle.
+
+The upshot: **corridors, ordinary rooms, doors and stairs are dry**. Only
+the cells at or beside standing water, an ice slab, a fountain or a
+drawbridge remain "wet-eligible", so in `flooded` or next to a pool the
+stone still darkens and SSR still has something to reflect — everywhere
+else, it is rock. Damp source cells' own emitters (the ice slab's
+`dry: true`, the water pool's non-`stone` material, lava's dry ember) are
+unaffected because the loop only walks newly-added boxes when the cell is
+*not* damp; damp cells keep whatever the per-material preset gave them.
 
 ## The ceiling group
 
