@@ -1,33 +1,40 @@
 /**
  * Hero cutout — pure geometry for the "cut only what actually blocks the hero"
  * rule (T-0063, `docs/gpu-cutout.md`). The material-side discard lives in
- * `createVoxelMaterial` (`materials.ts`); this file holds two testable
- * predicates the render loop and the shader rely on:
+ * `createVoxelMaterial` (`materials.ts`); this file holds the pure helpers
+ * the render loop and the shader rely on:
  *
- *   - `isCutCell(...)` — the same fragment-shader test restated at cell
- *     resolution. `three`-free so the "which cells are inside the cone"
- *     property can be pinned without a GPU.
+ *   - `isCutCell(...)` — the same depth predicate at cell resolution, using a
+ *     lateral cone against the camera → hero ray as a cheap stand-in for
+ *     "inside the hero's silhouette". `three`-free, node-testable, and the
+ *     four depth cases in `tests/gpu-cutout.test.ts` pin the depth part of
+ *     the shader rule without a GPU. The shader itself uses the projected
+ *     screen rectangle (below); the cone is a strictly-conservative
+ *     approximation for the "beside/behind is safe" property the depth
+ *     cases exercise.
  *   - `projectHeroForCutout(...)` — the CPU-side projection the render loop
- *     runs each frame. Takes a live `three.Camera` and returns the pixel
- *     numbers the shader gets. Rework of attempt 1: attempt 1 derived
- *     `heroScreenPx` from `HERO_SPRITE_HEIGHT · canvasH / (2·d·tan(fov/2))`,
- *     which assumes a segment perpendicular to the view direction — but the
- *     third-person camera is pitched 42° down, so a vertical world segment
- *     projects **shorter** than that. The overestimated radius scooped a
- *     wide dithered arc out of walls that never blocked the hero. Fix:
- *     project the hero's head and feet through the live camera and take
- *     the pixel distance between them as the true on-screen height, then
- *     multiply by `screenRadiusFactor` (default 1.4, from the ticket).
+ *     runs each frame. Takes a live `three.Camera` and returns the four
+ *     pixel numbers the shader gets: `heroCamDist` for the depth test and
+ *     `heroScreenMin`/`heroScreenMax` for the rectangle test, plus the
+ *     fade margin the shader softens the edges with. The rectangle comes
+ *     from projecting the eight corners of the hero's AABB and taking the
+ *     pixel-space extremes.
  *
- * The rule (T-0063): cut only fragments that are (a) **nearer the camera than
- * the hero** and (b) **projected within a screen-space radius** of the hero's
- * projected position. The previous version compared a world-space distance
- * from the hero cell and clipped anything on the camera side, which cut walls
- * that never occluded the player. Iso games get this right with the depth +
- * screen test — a wall beside or behind the hero is never in the camera's
- * line to the hero, so it is never nearer than the hero along that ray, so
- * it is never cut. See `docs/gpu-cutout.md` §"Why the world-space proximity
- * version was wrong".
+ * The rule (T-0063 rework 3): cut only fragments that are (a) **nearer the
+ * camera than the hero** and (b) **inside the hero's projected silhouette
+ * rectangle**, expanded by a small fade margin for the screen-door dither.
+ * The previous versions failed the ticket in turn:
+ *
+ *  - T-0058 world-space proximity — cut any wall inside a 2.5-cell disk
+ *    around the hero, regardless of occlusion (`docs/gpu-cutout.md` §"Why
+ *    the world-space proximity version was wrong").
+ *  - Rework 1 depth + screen-space **disc** — the disc reached well past
+ *    the figure and scooped floor/wall that never overlapped his silhouette
+ *    (`docs/gpu-cutout.md` §"Why a screen-space disc was tried and
+ *    rejected"). Fix: use the projected AABB, not a radius.
+ *
+ * With the rectangle rule the hole is exactly as big as the avatar is on
+ * screen and appears only where something would actually hide him.
  */
 
 import { Vector3, type Camera } from 'three';
@@ -51,32 +58,37 @@ export interface Vec3Lite {
  *  cut. */
 export const CUTOUT_DEPTH_BIAS_CELLS = 0.15;
 
-/** Fade-band fraction of `screenRadius` for the screen-door dither. The
- *  shader keeps the ring `[screenRadius, screenRadius · (1 + fade)]` soft
- *  via `interleavedGradientNoise(screenCoordinate.xy)`. `0.35` matches the
- *  ticket's "35 % of the radius" number. Not used by `isCutCell` — a cell
- *  is either inside the cone or not; the fade is a per-pixel effect the
- *  shader owns. */
-export const CUTOUT_SCREEN_FADE_FRACTION = 0.35;
-
 /** World Y (cells) below which the discard never fires. Guards the floor —
  *  cutting the floor plane leaves a hole under the hero. Anything standing
  *  up in the way (walls, doorframes) has fragments above this threshold. */
 export const CUTOUT_FLOOR_EPSILON = 0.05;
 
-/** Default multiplier for `screenRadiusPx = factor · heroOnScreenHeightPx`.
- *  Ticket T-0063: "1.4 × the avatar's on-screen height". Keep it a named
- *  constant so a re-tune touches one place. */
-export const CUTOUT_SCREEN_RADIUS_FACTOR = 1.4;
+/** Pixel margin the shader expands the silhouette rectangle by for the
+ *  screen-door fade band. A per-pixel `interleavedGradientNoise` sample is
+ *  compared against a 1 → 0 ramp across this margin, so the hole's edge
+ *  reads as a soft dither rather than a hard rectangle. `6 px` matches the
+ *  rework's number — comfortably visible but not a wash across the
+ *  surrounding wall. */
+export const CUTOUT_SCREEN_FADE_MARGIN_PX = 6.0;
+
+/** Silhouette footprint in cells — the horizontal extent (both x and z) of
+ *  the AABB the projection uses. Measured from `web/src/gpu/avatar.ts`:
+ *  the widest voxels (shoulder pad + arm) reach ~9.6 units on the 0.025
+ *  cell grid → 0.24 cells shoulder-to-shoulder; the pack + cloak give a
+ *  similar depth. `0.3` cells rounds up so a yawing hero (shoulders → 45°
+ *  diagonal) still fits inside the box, and matches the width the ortho
+ *  frustum sizes rooms against. Square in x/z so the projected rectangle
+ *  is rotation-invariant to `Pose.yaw`. */
+export const HERO_SILHOUETTE_WIDTH_CELLS = 0.3;
 
 /**
- * Whether the wall cell at `(cellX, cellY)` is inside the hero cutout: the
- * same predicate the fragment shader evaluates, restated at cell resolution
- * so the docs pin down a rerunnable example and the tests can catch a
- * regression without a GPU. `cellX`/`cellY` and `hero` are in the game's map
- * axes (`x` = column, `y` = row / world-z, the same axes `LevelView.kindAt`
- * uses); `camera` is a world position (map-y → world-z) so callers can pass
- * `THREE.Camera.position` in.
+ * Whether the wall cell at `(cellX, cellY)` is inside the hero cutout at cell
+ * resolution: the depth predicate the shader evaluates per fragment, applied
+ * to a cell centre, with a lateral cone as a strictly-conservative stand-in
+ * for the shader's screen-space rectangle. `cellX`/`cellY` and `hero` are in
+ * the game's map axes (`x` = column, `y` = row / world-z, the same axes
+ * `LevelView.kindAt` uses); `camera` is a world position (map-y → world-z)
+ * so callers can pass `THREE.Camera.position` in.
  *
  * A cell is cut iff both:
  *
@@ -84,11 +96,14 @@ export const CUTOUT_SCREEN_RADIUS_FACTOR = 1.4;
  *    horizontal camera → hero direction), minus `depthBiasCells` — a wall
  *    at or behind the hero's plane, or exactly at the hero's cell, is never
  *    cut;
- *  - its projected offset from the camera → hero ray falls inside a cone
- *    whose radius at the hero's depth is `screenRadiusCells`. This is a
- *    perspective cone: the same on-screen radius covers less world lateral
- *    at shallower depths, so cells nearer the camera need a tighter
- *    lateral offset to be cut.
+ *  - its projected lateral offset from the camera → hero ray falls inside a
+ *    cone whose radius at the hero's depth is `screenRadiusCells`.
+ *
+ * The shader uses a screen-space rectangle instead of a cone; the cone is a
+ * cell-resolution approximation that pins the depth part of the rule (walls
+ * beside or behind the hero fail the depth test regardless of the lateral
+ * shape). `projectHeroForCutout` and `tests/gpu-cutout.test.ts`'s silhouette
+ * case exercise the rectangle rule directly.
  *
  * Degenerate: `camera` sits at the hero's horizontal position → the camera →
  * hero direction is undefined. Nothing is cut (there is no wall "in front of
@@ -127,49 +142,54 @@ export function isCutCell(
   const latZ = cellRelZ - cellDepth * fwdZ;
   const lateral = Math.hypot(latX, latZ);
 
-  // Screen-space cone: the cell is inside the cut iff its lateral offset
-  // is under `screenRadius · cellDepth / heroDepth` (the perspective radius
-  // at the cell's depth). Rearranged to avoid the divide.
+  // Screen-space cone at cell resolution: `lateral < screenRadius · cellDepth
+  // / heroDepth` (the perspective radius at the cell's depth). Rearranged to
+  // avoid the divide.
   return lateral * heroDepth < screenRadiusCells * cellDepth;
 }
 
-/** Plain-number result of `projectHeroForCutout` — the four numbers the
- *  shader's `CUTOUT` uniform block wants, plus what `debugInfo()` prints. */
+/** Plain-number result of `projectHeroForCutout` — the numbers the shader's
+ *  `CUTOUT` uniform block wants each frame, plus what `debugInfo()` prints. */
 export interface CutoutFrame {
   /** Hero's positive camera-space distance (`-heroView.z`), guarded against
    *  a zero/negative degenerate. Same convention as `-positionView.z` in
    *  the shader — positive is in front of the camera. */
   heroCamDist: number;
-  /** Hero's projected pixel X (origin top-left, matching TSL
+  /** Pixel min-x of the projected hero AABB (origin top-left, matching TSL
    *  `screenCoordinate.xy` on both WebGPU and WebGL2 backends via
    *  `builder.isFlipY()`). */
-  heroScreenX: number;
-  /** Hero's projected pixel Y (origin top-left). */
-  heroScreenY: number;
-  /** Pixel radius around `heroScreen*` inside which fragments are cut. */
-  screenRadiusPx: number;
+  heroScreenMinX: number;
+  /** Pixel min-y of the projected hero AABB (top-left origin). */
+  heroScreenMinY: number;
+  /** Pixel max-x of the projected hero AABB (top-left origin). */
+  heroScreenMaxX: number;
+  /** Pixel max-y of the projected hero AABB (top-left origin). */
+  heroScreenMaxY: number;
+  /** Pixel margin the shader expands the rectangle by for the dither fade. */
+  fadeMarginPx: number;
 }
 
 /**
- * Project the hero for the per-frame cutout uniforms. Returns the four pixel
- * numbers the material's `CUTOUT` block needs: hero camera-space depth, hero
- * projected pixel position (top-left origin), and the screen radius.
+ * Project the hero for the per-frame cutout uniforms. Returns the pixel
+ * numbers the material's `CUTOUT` block needs: hero camera-space depth, the
+ * screen-space AABB of the hero's silhouette (top-left pixel origin), and
+ * the fade margin.
  *
- * `screenRadiusPx` is derived from the **projected pixel distance between
- * the hero's head and feet** — not from `HERO_SPRITE_HEIGHT · canvasH /
- * (2·d·tan(fov/2))`, which was attempt 1's mistake. That formula treats
- * the avatar as a segment perpendicular to the view direction; the
- * third-person camera is pitched 42° down, so a vertical world segment
- * projects shorter, and the overestimated radius scooped a wide arc out
- * of walls that never blocked the hero (see `docs/gpu-cutout.md`
- * §"Radius from projected head→feet, not a camera-space formula").
+ * `heroScreenMin`/`heroScreenMax` are the axis-aligned bounding rectangle of
+ * the hero's world-space AABB after projection through the live camera —
+ * the eight corners of a `spriteWidth × spriteHeight × spriteWidth` box
+ * centred at `(heroX, heroBaseY + spriteHeight/2, heroZ)` are projected to
+ * NDC, converted to top-left pixel coords, and the pixel-space min/max are
+ * taken. This is the actual on-screen silhouette of the avatar and it
+ * shrinks/grows with zoom, camera pitch, and canvas size the way the avatar
+ * does, so the hole is the size of the figure it is revealing (see
+ * `docs/gpu-cutout.md` §"Why a screen-space disc was tried and rejected" for
+ * why rework 1's radius was scrapped).
  *
- * `heroCentre*` is the world-space position of the hero's mid-height
- * (typically `spriteHeight * 0.5`); head is `+spriteHeight/2` above it,
- * feet `-spriteHeight/2` below. Works with any three `Camera` (perspective
- * or orthographic) — `Vector3.project` handles the projection matrix.
- * `camera.updateMatrixWorld(true)` is called before reading matrices so
- * a first-frame call after a view flip does not read the previous frame's
+ * Works with any three `Camera` (perspective or orthographic) —
+ * `Vector3.project` handles the projection matrix.
+ * `camera.updateMatrixWorld(true)` is called before reading matrices so a
+ * first-frame call after a view flip does not read the previous frame's
  * transform.
  *
  * Degenerate: hero at the camera position → `heroCamDist` clamps to 0 and
@@ -177,31 +197,53 @@ export interface CutoutFrame {
  */
 export function projectHeroForCutout(
   camera: Camera,
-  heroCentreX: number,
-  heroCentreY: number,
-  heroCentreZ: number,
+  heroX: number,
+  heroBaseY: number,
+  heroZ: number,
+  spriteWidth: number,
   spriteHeight: number,
   canvasWidth: number,
   canvasHeight: number,
-  screenRadiusFactor: number,
+  fadeMarginPx: number,
 ): CutoutFrame {
   camera.updateMatrixWorld(true);
-  const centre = new Vector3(heroCentreX, heroCentreY, heroCentreZ);
+  const centre = new Vector3(heroX, heroBaseY + spriteHeight * 0.5, heroZ);
   const heroView = centre.clone().applyMatrix4(camera.matrixWorldInverse);
   const heroCamDist = Math.max(0, -heroView.z);
-  const centreNDC = centre.clone().project(camera);
-  const heroScreenX = (centreNDC.x * 0.5 + 0.5) * canvasWidth;
-  const heroScreenY = (1.0 - (centreNDC.y * 0.5 + 0.5)) * canvasHeight;
 
-  const halfHeight = spriteHeight * 0.5;
-  const feetNDC = new Vector3(heroCentreX, heroCentreY - halfHeight, heroCentreZ).project(camera);
-  const headNDC = new Vector3(heroCentreX, heroCentreY + halfHeight, heroCentreZ).project(camera);
-  const feetPxX = (feetNDC.x * 0.5 + 0.5) * canvasWidth;
-  const feetPxY = (1.0 - (feetNDC.y * 0.5 + 0.5)) * canvasHeight;
-  const headPxX = (headNDC.x * 0.5 + 0.5) * canvasWidth;
-  const headPxY = (1.0 - (headNDC.y * 0.5 + 0.5)) * canvasHeight;
-  const onScreenHeightPx = Math.hypot(headPxX - feetPxX, headPxY - feetPxY);
-  const screenRadiusPx = screenRadiusFactor * onScreenHeightPx;
+  const halfW = spriteWidth * 0.5;
+  const minX = heroX - halfW;
+  const maxX = heroX + halfW;
+  const minY = heroBaseY;
+  const maxY = heroBaseY + spriteHeight;
+  const minZ = heroZ - halfW;
+  const maxZ = heroZ + halfW;
 
-  return { heroCamDist, heroScreenX, heroScreenY, screenRadiusPx };
+  let sxMin = Infinity;
+  let syMin = Infinity;
+  let sxMax = -Infinity;
+  let syMax = -Infinity;
+  const corner = new Vector3();
+  for (let i = 0; i < 8; i++) {
+    corner.set(
+      (i & 1) === 0 ? minX : maxX,
+      (i & 2) === 0 ? minY : maxY,
+      (i & 4) === 0 ? minZ : maxZ,
+    );
+    corner.project(camera);
+    const px = (corner.x * 0.5 + 0.5) * canvasWidth;
+    const py = (1.0 - (corner.y * 0.5 + 0.5)) * canvasHeight;
+    if (px < sxMin) sxMin = px;
+    if (py < syMin) syMin = py;
+    if (px > sxMax) sxMax = px;
+    if (py > syMax) syMax = py;
+  }
+  return {
+    heroCamDist,
+    heroScreenMinX: sxMin,
+    heroScreenMinY: syMin,
+    heroScreenMaxX: sxMax,
+    heroScreenMaxY: syMax,
+    fadeMarginPx,
+  };
 }

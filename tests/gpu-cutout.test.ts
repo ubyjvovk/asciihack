@@ -1,10 +1,10 @@
 /**
  * Pure-function tests for the hero cutout (T-0063, docs/gpu-cutout.md). The
- * cell-resolution predicate (`isCutCell`) exercises the shader's discard rule
+ * cell-resolution predicate (`isCutCell`) exercises the shader's depth rule
  * without a GPU; the projection helper (`projectHeroForCutout`) is the CPU
  * side the render loop calls each frame, tested against a real `three`
- * `PerspectiveCamera` to catch the rework's "the radius is in world units,
- * not pixels" class of bug. The material-side discard is
+ * `PerspectiveCamera` to pin the rectangle rule that supersedes rework 1's
+ * screen-space disc. The material-side discard is
  * `MeshStandardNodeMaterial.maskNode` in `web/src/gpu/materials.ts` and
  * cannot run without a WebGPU renderer; see `docs/gpu-cutout.md` §"What I
  * could not verify".
@@ -16,13 +16,14 @@ import { describe, expect, it } from 'vitest';
 import { PerspectiveCamera, Vector3 } from 'three/webgpu';
 import {
   CUTOUT_DEPTH_BIAS_CELLS,
-  CUTOUT_SCREEN_RADIUS_FACTOR,
+  CUTOUT_SCREEN_FADE_MARGIN_PX,
+  HERO_SILHOUETTE_WIDTH_CELLS,
   isCutCell,
   projectHeroForCutout,
 } from '../web/src/gpu/cutout.js';
 
 // Radius used by the pure helper's tests: cell-space stand-in for the shader's
-// pixel radius. 1.5 cells is comfortably larger than 1 cell (the minimum
+// pixel rectangle. 1.5 cells is comfortably larger than 1 cell (the minimum
 // horizontal separation between the hero cell centre and an adjacent-wall
 // cell centre — 1 cell), and smaller than the depth to any of the "beside"
 // or "behind" cases below, so the tests pin the depth test and the cone
@@ -93,63 +94,75 @@ describe('gpu cutout — cut only what actually blocks the hero', () => {
     expect(isCutCell(5, 4, hero, eastCam, SCREEN_RADIUS_CELLS, CUTOUT_DEPTH_BIAS_CELLS)).toBe(false);
   });
 
-  it('the screen radius is in pixels and scales with the viewport', () => {
-    // T-0063 rework: attempt 1 derived `heroScreenPx` from
-    // `HERO_SPRITE_HEIGHT · canvasH / (2·d·tan(fov/2))`. That treats the
-    // avatar as a segment perpendicular to the view direction, but the
-    // third-person camera is pitched 42° down — so a vertical world
-    // segment projects *shorter* than the formula predicts, and the cutout
-    // scooped a wide arc out of walls that never blocked the hero.
-    //
-    // The fix: project the hero's head and feet through the live camera
-    // and take the pixel distance between them as the on-screen height.
-    // This test pins the number against that projected distance (not a
-    // constant) and pins the "in pixels" claim by doubling the canvas.
+  it('the cut region is the hero\'s projected silhouette, not a disc', () => {
+    // T-0063 rework 2: the disc reached past the figure (a 54 px radius
+    // around a ~40 px avatar) and scooped floor his shape never covered.
+    // The fix: project the hero's world-space AABB and use the pixel
+    // extremes as a rectangle, so the hole is exactly as big as the
+    // avatar's silhouette on screen — no wider.
     const canvasW = 1600;
     const canvasH = 900;
-    // Third-person defaults: fov 30°, pitch 42°, distance ~14 cells.
     const camera = new PerspectiveCamera(30, canvasW / canvasH, 0.1, 100);
     camera.position.set(5.5, 9.4, 13.9);
     camera.lookAt(5.5, 0.35, 3.5);
     const spriteHeight = 0.7;
-    const factor = CUTOUT_SCREEN_RADIUS_FACTOR;
-    const frame = projectHeroForCutout(camera, 5.5, spriteHeight * 0.5, 3.5, spriteHeight, canvasW, canvasH, factor);
+    const spriteWidth = HERO_SILHOUETTE_WIDTH_CELLS;
+    const frame = projectHeroForCutout(
+      camera, 5.5, 0, 3.5, spriteWidth, spriteHeight, canvasW, canvasH, CUTOUT_SCREEN_FADE_MARGIN_PX,
+    );
 
-    // Camera aimed at the hero's mid-height → hero projects near the middle
-    // of the canvas. Loose tolerance: the point is that the projection is
-    // running, not that lookAt is byte-exact.
-    expect(frame.heroScreenX).toBeCloseTo(canvasW / 2, 0);
-    expect(frame.heroScreenY).toBeCloseTo(canvasH / 2, 0);
-    expect(frame.heroCamDist).toBeGreaterThan(0);
-
-    // Radius pinned against a projected height, not a constant: reproduce
-    // the head→feet pixel distance the helper computes and assert 1.4× it.
-    // Attempt 1's camera-space formula gave a value ~30 % larger than this
-    // because it ignored the pitch foreshortening; that is the regression
-    // this case blocks.
+    // The rectangle matches the projected AABB corners. Reproduce the
+    // helper's projection here: the eight corners of the same AABB
+    // through the same camera, take the pixel min/max, compare.
     camera.updateMatrixWorld(true);
-    const feetNDC = new Vector3(5.5, 0, 3.5).project(camera);
-    const headNDC = new Vector3(5.5, spriteHeight, 3.5).project(camera);
-    const dxPx = (headNDC.x - feetNDC.x) * 0.5 * canvasW;
-    const dyPx = -(headNDC.y - feetNDC.y) * 0.5 * canvasH;
-    const projectedHeightPx = Math.hypot(dxPx, dyPx);
-    expect(frame.screenRadiusPx).toBeCloseTo(factor * projectedHeightPx, 3);
-    // Sanity: the perpendicular-segment formula overestimates by more than
-    // one pixel. If a future refactor slid back into it, this catches it.
-    const fovRad = (camera.fov * Math.PI) / 180;
-    const perpendicularHeightPx = spriteHeight * canvasH / (2 * frame.heroCamDist * Math.tan(fovRad * 0.5));
-    expect(perpendicularHeightPx - projectedHeightPx).toBeGreaterThan(1);
+    const halfW = spriteWidth * 0.5;
+    let sxMin = Infinity, syMin = Infinity, sxMax = -Infinity, syMax = -Infinity;
+    for (let i = 0; i < 8; i++) {
+      const cx = (i & 1) === 0 ? 5.5 - halfW : 5.5 + halfW;
+      const cy = (i & 2) === 0 ? 0 : spriteHeight;
+      const cz = (i & 4) === 0 ? 3.5 - halfW : 3.5 + halfW;
+      const p = new Vector3(cx, cy, cz).project(camera);
+      const px = (p.x * 0.5 + 0.5) * canvasW;
+      const py = (1.0 - (p.y * 0.5 + 0.5)) * canvasH;
+      if (px < sxMin) sxMin = px;
+      if (py < syMin) syMin = py;
+      if (px > sxMax) sxMax = px;
+      if (py > syMax) syMax = py;
+    }
+    expect(frame.heroScreenMinX).toBeCloseTo(sxMin, 3);
+    expect(frame.heroScreenMinY).toBeCloseTo(syMin, 3);
+    expect(frame.heroScreenMaxX).toBeCloseTo(sxMax, 3);
+    expect(frame.heroScreenMaxY).toBeCloseTo(syMax, 3);
 
-    // Scales with the viewport: doubling both canvas dimensions doubles
-    // every pixel number the helper returns. If the radius were a world-
-    // unit value (the reworker's hypothesis), the number would be the same
-    // at both resolutions.
-    const bigger = projectHeroForCutout(camera, 5.5, spriteHeight * 0.5, 3.5, spriteHeight, canvasW * 2, canvasH * 2, factor);
-    expect(bigger.screenRadiusPx).toBeCloseTo(frame.screenRadiusPx * 2, 3);
-    expect(bigger.heroScreenX).toBeCloseTo(frame.heroScreenX * 2, 3);
-    expect(bigger.heroScreenY).toBeCloseTo(frame.heroScreenY * 2, 3);
-    // `heroCamDist` is a world-space distance — invariant under a canvas
-    // resize (the camera did not move).
-    expect(bigger.heroCamDist).toBeCloseTo(frame.heroCamDist, 3);
+    // Silhouette shape, not a disc: aspect ratio matches a standing
+    // figure (taller than wide). A disc-based rule would report a
+    // width == height rectangle even for a tall thin avatar, which
+    // is the very artefact rework 2 scraps.
+    const rectW = frame.heroScreenMaxX - frame.heroScreenMinX;
+    const rectH = frame.heroScreenMaxY - frame.heroScreenMinY;
+    expect(rectH).toBeGreaterThan(rectW);
+    expect(rectH / rectW).toBeGreaterThan(1.3);
+
+    // Tight around the figure. The rectangle is the projected AABB, so it
+    // contains a bit of extra vertical from the depth-of-box seen at 42°
+    // pitch (top-back and bottom-front corners of a 0.3-cell-deep footprint
+    // land above/below the vertical head→feet line). But it is nowhere
+    // near a 1.4 × avatar-height disc, which would give a rectangle
+    // ~2.8 × the head→feet distance. `1.6` sits between the two: the
+    // AABB (~1.4×) passes; the disc (~2.8×) fails.
+    const feetPx = new Vector3(5.5, 0, 3.5).project(camera);
+    const headPx = new Vector3(5.5, spriteHeight, 3.5).project(camera);
+    const feetY = (1.0 - (feetPx.y * 0.5 + 0.5)) * canvasH;
+    const headY = (1.0 - (headPx.y * 0.5 + 0.5)) * canvasH;
+    const projectedHeightPx = Math.abs(feetY - headY);
+    expect(rectH).toBeLessThan(projectedHeightPx * 1.6);
+    // And a disc-based rule at the ticket's 1.4× multiplier would exceed
+    // this bound by a wide margin — pinning "rectangle, not disc" directly.
+    const discRectHeight = 2 * 1.4 * projectedHeightPx;
+    expect(discRectHeight).toBeGreaterThan(projectedHeightPx * 1.6);
+
+    // The fade margin is passed through unchanged — the shader adds
+    // 6 px of dither around the rectangle, not around a disc.
+    expect(frame.fadeMarginPx).toBe(CUTOUT_SCREEN_FADE_MARGIN_PX);
   });
 });
