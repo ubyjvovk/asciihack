@@ -39,24 +39,57 @@ export interface Cell {
   y: number;
 }
 
+/** Optional map bounds. When passed, `cellUnderRay` rejects hits that land
+ *  outside `[0, width) × [0, height)` — a ray grazing the horizon can pick a
+ *  cell hundreds of units off-map even after the distance clamp fires late. */
+export interface Bounds {
+  width: number;
+  height: number;
+}
+
+/**
+ * Ray-plane hits farther than this many cells are rejected. A NetHack level
+ * is 80×21, and even the ortho view frustum is <40 cells across; anything
+ * beyond this is a near-parallel-to-floor ray whose intersection is numerically
+ * meaningless (T-0061 rework: `y = -86` picks came from a click near the
+ * horizon in the third view).
+ */
+export const MAX_HIT_DIST_CELLS = 40;
+
+/** `|dir.y|` below this counts as parallel to the floor and rejected. Anything
+ *  in this band would push `t = -origin.y / dir.y` past `MAX_HIT_DIST_CELLS`
+ *  from a normal ~10-cell viewing origin, so the two checks reinforce each other. */
+const DY_PARALLEL_EPS = 1e-4;
+
 /**
  * Intersect a ray with the floor plane `y = 0`. Returns the map cell that
- * contains the hit, or `null` when the ray misses (looks up, is parallel to
- * the floor, or the intersection is behind the origin). Pure — no `three`.
+ * contains the hit, or `null` when the ray misses. Pure — no `three`.
+ *
+ * Miss conditions (`null`):
+ *   1. `|dir.y| < 1e-4` — ray parallel (or near-parallel) to the floor.
+ *   2. `t = -origin.y / dir.y` is not finite, ≤ 0 (behind the camera), or
+ *      > `MAX_HIT_DIST_CELLS` (grazing horizon — hit distance blows up).
+ *   3. `bounds` was provided and the hit falls outside `[0, width) × [0, height)`.
  *
  * The map cell is `(floor(hit.x), floor(hit.z))`; a click near the origin of
  * cell `(cx, cy)` lands on that cell, and a click at the far corner of the
  * same cell lands on the *next* one, which is what "click to move here"
- * expects. Off-map coordinates (negative or ≥ 80/21) are still returned;
- * `findPath` bounds-checks them and returns null naturally.
+ * expects. World-space convention: map `x` = world `x`, map `y` = world `z`
+ * (docs/architecture.md §7, docs/gpu.md §4).
  */
-export function cellUnderRay(origin: Vec3, dir: Vec3): Cell | null {
-  if (dir.y === 0) return null;
+export function cellUnderRay(origin: Vec3, dir: Vec3, bounds?: Bounds): Cell | null {
+  if (!Number.isFinite(dir.y) || Math.abs(dir.y) < DY_PARALLEL_EPS) return null;
   const t = -origin.y / dir.y;
-  if (!Number.isFinite(t) || t <= 0) return null;
+  if (!Number.isFinite(t) || t <= 0 || t > MAX_HIT_DIST_CELLS) return null;
   const hx = origin.x + t * dir.x;
   const hz = origin.z + t * dir.z;
-  return { x: Math.floor(hx), y: Math.floor(hz) };
+  if (!Number.isFinite(hx) || !Number.isFinite(hz)) return null;
+  const x = Math.floor(hx);
+  const y = Math.floor(hz);
+  if (bounds !== undefined) {
+    if (x < 0 || y < 0 || x >= bounds.width || y >= bounds.height) return null;
+  }
+  return { x, y };
 }
 
 /** Structural DOM shapes — kept here so this module compiles under the root
@@ -89,6 +122,7 @@ export function pickCellFromEvent(
   ev: MouseEventLike,
   canvas: CanvasLike,
   camera: THREE.Camera,
+  bounds?: Bounds,
 ): Cell | null {
   const rect = canvas.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0) return null;
@@ -100,5 +134,5 @@ export function pickCellFromEvent(
   RAYCASTER.setFromCamera(NDC, camera);
   const o = RAYCASTER.ray.origin;
   const d = RAYCASTER.ray.direction;
-  return cellUnderRay({ x: o.x, y: o.y, z: o.z }, { x: d.x, y: d.y, z: d.z });
+  return cellUnderRay({ x: o.x, y: o.y, z: o.z }, { x: d.x, y: d.y, z: d.z }, bounds);
 }

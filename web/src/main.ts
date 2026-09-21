@@ -20,6 +20,7 @@ import { App } from '../../src/ui/app.js';
 import { FpsMode, type MovementScheme } from '../../src/ui/modes/fps.js';
 import { poseFor, spritesFromMap, charKey, sendKey } from '../../src/ui/view3d.js';
 import { findPath, stepKey, type PathCell } from '../../src/ui/travel.js';
+import type { Cell } from './gpu/pick.js';
 import type { Theme } from '../../src/render/themes.js';
 import { DEFAULT_SETTINGS, type Settings } from '../../src/ui/settings.js';
 import { DomTerm } from './dom-term.js';
@@ -117,9 +118,6 @@ function boot(): void {
     // explicit `?view=` wins; failing that `?mode=ortho` still implies the
     // overhead camera, since that mode is asking for it.
     gl.setView(opts.viewExplicit ?? (opts.mode === 'ortho' ? 'ortho' : opts.view));
-    // Debug handle so the PM can diagnose the viewport from the page console:
-    // `window.__asciihack.gl.debugInfo()` (plain numbers, see gl-viewport.ts).
-    (window as unknown as { __asciihack: { gl: GlViewport } }).__asciihack = { gl };
     // Movement scheme follows the 3D view: fps is a first-person camera, so
     // arrows turn/walk relative to the facing; ortho and third-person are
     // top-down/behind, so arrows are compass moves and the avatar swings to
@@ -128,16 +126,37 @@ function boot(): void {
     syncMovement(app, gl.currentView);
     const traveler = createTraveler(session, app);
     const loop = createRenderLoop(gl, session, app, traveler);
+    // Debug handle so the PM can diagnose the viewport from the page console:
+    // `window.__asciihack.gl.debugInfo()` (plain numbers, see gl-viewport.ts)
+    // and `window.__asciihack.travel` (last pick, last path length, traveler
+    // state) — the click-to-move instrument the T-0061 rework asked for.
+    const travelDebug: TravelDebug = { lastPick: null, lastPathLength: null };
+    (window as unknown as {
+      __asciihack: {
+        gl: GlViewport;
+        travel: {
+          debug: TravelDebug;
+          state(): TravelerState;
+        };
+      };
+    }).__asciihack = {
+      gl,
+      travel: { debug: travelDebug, state: () => traveler.state() },
+    };
     // Click-to-move (T-0061). The GL canvas is `pointer-events: none` so the
     // DOM terminal keeps focus (docs/web.md); the terminal <pre> is where
     // clicks land, and `gl.pickCell` unprojects the event onto the floor plane
     // through the live camera.
     host.addEventListener('click', (ev) => {
-      const cell = gl.pickCell(ev);
+      const bounds = { width: session.map.width, height: session.map.height };
+      const cell = gl.pickCell(ev, bounds);
+      travelDebug.lastPick = cell;
+      travelDebug.lastPathLength = null;
       if (cell === null) return;
       const hero = session.hero;
       if (hero === null) return;
       const path = findPath(session.map, hero, cell);
+      travelDebug.lastPathLength = path === null ? null : path.length;
       if (path === null || path.length === 0) return;
       traveler.start(path);
       loop.mark();
@@ -151,7 +170,7 @@ function boot(): void {
       // the interrupt would walk the hero into whatever the player just
       // reacted to (T-0061). Modifier-only presses (Shift, Ctrl, …) do not
       // count as an override.
-      if (!isModifierOnly(ev)) traveler.abort();
+      if (!isModifierOnly(ev)) traveler.abort('user-key');
       if (ev.key === 'F5') {
         const step = ev.shiftKey ? -1 : 1;
         gl.cycleStyle(step);
@@ -304,10 +323,40 @@ interface Traveler {
   /** Begin walking a fresh path; replaces any in-flight walk. */
   start(path: readonly PathCell[]): void;
   /** Abandon the current walk (called on interrupt). No-op when idle. */
-  abort(): void;
+  abort(reason?: TravelAbortReason): void;
   /** Send at most one vi-key toward the next path cell, subject to the
    *  interrupt rules. Called once per rAF. */
   tick(): void;
+  /** Snapshot of the traveler's state — exposed on `window.__asciihack.travel`
+   *  so the PM can diagnose a stuck walk from the page console (T-0061 rework 2). */
+  state(): TravelerState;
+}
+
+/** Why a walk was aborted. `null` means either running or never started. */
+type TravelAbortReason =
+  | 'no-pending'
+  | 'not-key-or-pos'
+  | 'message-changed'
+  | 'no-hero'
+  | 'blocked'
+  | 'no-step-key'
+  | 'user-key'
+  | 'new-path'
+  | null;
+
+interface TravelerState {
+  pathLength: number;
+  expectedNext: PathCell | null;
+  msgSnapshot: number;
+  pending: string | null;
+  lastAbortReason: TravelAbortReason;
+}
+
+/** Debug snapshot for the click-to-move path — mutated on every click and read
+ *  through `window.__asciihack.travel.debug` (T-0061 rework 2). */
+interface TravelDebug {
+  lastPick: Cell | null;
+  lastPathLength: number | null;
 }
 
 /**
@@ -333,14 +382,17 @@ function createTraveler(session: NethackSession, _app: App): Traveler {
   let path: PathCell[] = [];
   let expectedNext: PathCell | null = null;
   let msgSnapshot = 0;
-  // Gate below guarantees we only call `sendKey` while a `key` request is
+  let lastAbortReason: TravelAbortReason = null;
+  // Gate below guarantees we only call `sendKey` while a `key`/`pos` request is
   // pending, so `sendKey`'s queue fallback never fires and this stays a no-op.
   const queueKey = (): void => {};
-  const abort = (): void => {
+  const abort = (reason: TravelAbortReason = null): void => {
+    if (path.length > 0) lastAbortReason = reason;
     path = [];
     expectedNext = null;
   };
   const start = (fresh: readonly PathCell[]): void => {
+    if (path.length > 0) lastAbortReason = 'new-path';
     path = [...fresh];
     expectedNext = null;
     msgSnapshot = session.messages.length;
@@ -348,27 +400,31 @@ function createTraveler(session: NethackSession, _app: App): Traveler {
   const tick = (): void => {
     if (path.length === 0) return;
     const pending = session.pending;
-    // Wait: the bridge is still processing the last turn. Anything other than
-    // a key ask (a menu, yn, display, pos cursor, …) is an interrupt.
+    // Wait: the bridge is still processing the last turn.
     if (pending === null) return;
-    if (pending.kind !== 'key') {
-      abort();
+    // Interrupt: anything other than a key/pos ask (a menu, yn, display,
+    // getlin, …) means the game wants something specific from the player.
+    // NetHack's `readchar_core` uses `nh_poskey` for the main gameplay input,
+    // so `pos` is the *normal* pending kind during play — earlier attempts
+    // only accepting `key` aborted every walk on the first tick (T-0061 rework 2).
+    if (pending.kind !== 'key' && pending.kind !== 'pos') {
+      abort('not-key-or-pos');
       return;
     }
     // Interrupt: a new message means NetHack wants the player to see it.
     if (session.messages.length > msgSnapshot) {
-      abort();
+      abort('message-changed');
       return;
     }
     const hero = session.hero;
     if (hero === null) {
-      abort();
+      abort('no-hero');
       return;
     }
     // Interrupt: the previous step did not land where we expected — something
     // blocked, staggered or otherwise interrupted the move.
     if (expectedNext !== null && (hero.x !== expectedNext.x || hero.y !== expectedNext.y)) {
-      abort();
+      abort('blocked');
       return;
     }
     const next = path[0]!;
@@ -376,7 +432,7 @@ function createTraveler(session: NethackSession, _app: App): Traveler {
     const dy = next.y - hero.y;
     const key = stepKey(dx, dy);
     if (key === null) {
-      abort();
+      abort('no-step-key');
       return;
     }
     // Advance state *before* the answer: `session.answer` fires listeners
@@ -386,7 +442,14 @@ function createTraveler(session: NethackSession, _app: App): Traveler {
     msgSnapshot = session.messages.length;
     sendKey(session, queueKey, charKey(key));
   };
-  return { start, abort, tick };
+  const state = (): TravelerState => ({
+    pathLength: path.length,
+    expectedNext: expectedNext === null ? null : { x: expectedNext.x, y: expectedNext.y },
+    msgSnapshot,
+    pending: session.pending === null ? null : session.pending.kind,
+    lastAbortReason,
+  });
+  return { start, abort, tick, state };
 }
 
 /** Read the active fps mode (if the App is in fps), or null. */

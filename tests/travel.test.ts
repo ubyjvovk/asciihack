@@ -119,6 +119,25 @@ describe('click-to-move — BFS over the remembered map', () => {
     expect(path).toBeNull();
   });
 
+  it('a path from the hero to an adjacent walkable cell is one step', () => {
+    // The live-game failure the rework was written to pin (T-0061 rework 2):
+    // clicking an adjacent walkable cell must produce a single-step path so
+    // the traveler sends exactly one vi-key. Hero at (5, 7); each cardinal
+    // and diagonal neighbour in an open 3×3 patch is one step away.
+    const level = makeLevel([
+      '.....',
+      '.....',
+      '.....',
+    ]);
+    // Cardinal neighbours (W, E, N, S).
+    expect(findPath(level, { x: 2, y: 1 }, { x: 1, y: 1 })).toEqual([{ x: 1, y: 1 }]);
+    expect(findPath(level, { x: 2, y: 1 }, { x: 3, y: 1 })).toEqual([{ x: 3, y: 1 }]);
+    expect(findPath(level, { x: 2, y: 1 }, { x: 2, y: 0 })).toEqual([{ x: 2, y: 0 }]);
+    expect(findPath(level, { x: 2, y: 1 }, { x: 2, y: 2 })).toEqual([{ x: 2, y: 2 }]);
+    // A diagonal neighbour with both cardinals open is also one step.
+    expect(findPath(level, { x: 2, y: 1 }, { x: 3, y: 2 })).toEqual([{ x: 3, y: 2 }]);
+  });
+
   it('cellUnderRay hits the floor plane under the cursor', () => {
     // Camera looks straight down at cell (5, 3): origin above the cell
     // centre, direction −y. The ray hits y=0 at (5.5, 0, 3.5); floor()
@@ -131,13 +150,28 @@ describe('click-to-move — BFS over the remembered map', () => {
     // At t=10 the hit is (10.5, 0, 20.5): floor → (10, 20).
     const oblique = cellUnderRay({ x: 10.5, y: 5, z: 25.5 }, { x: 0, y: -0.5, z: -0.5 });
     expect(oblique).toEqual({ x: 10, y: 20 });
+  });
 
-    // Miss: ray points up — the floor is behind the camera, never hit.
+  it('cellUnderRay returns null for a ray that misses the floor', () => {
+    // Ray points up — the floor is behind the camera, never hit.
     expect(cellUnderRay({ x: 0, y: 5, z: 0 }, { x: 0, y: 1, z: 0 })).toBeNull();
-    // Miss: ray parallel to the floor plane (dy = 0).
+    // Ray parallel to the floor plane (|dy| below the near-parallel epsilon):
+    // pre-rework this returned `{ x: floor(hz for t=Infinity), y: … }` = a
+    // garbage cell like `y = -86` in the third view.
     expect(cellUnderRay({ x: 0, y: 5, z: 0 }, { x: 1, y: 0, z: 0 })).toBeNull();
-    // Miss: origin below the plane looking down — the hit is at negative t
-    // (behind the camera), so no cell is picked.
+    // Origin below the plane looking further down — hit is behind the camera.
     expect(cellUnderRay({ x: 0, y: -3, z: 0 }, { x: 0, y: -1, z: 0 })).toBeNull();
+    // Grazing horizon: dy just above the epsilon but t past `MAX_HIT_DIST_CELLS`
+    // (40). Camera 10 units up, dy ≈ −0.01 → t = 1000: the pick must reject.
+    expect(cellUnderRay({ x: 0, y: 10, z: 0 }, { x: 0, y: -0.01, z: -1 })).toBeNull();
+    // Bounded pick: a valid ray whose hit falls outside the level rectangle
+    // must return null so `findPath` never sees an off-map coordinate.
+    expect(
+      cellUnderRay(
+        { x: -20, y: 10, z: -20 },
+        { x: -0.4, y: -0.5, z: -0.4 },
+        { width: 80, height: 21 },
+      ),
+    ).toBeNull();
   });
 });
