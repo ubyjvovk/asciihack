@@ -14,6 +14,10 @@ import { bloom } from 'three/addons/tsl/display/BloomNode.js';
 import { fxaa } from 'three/addons/tsl/display/FXAANode.js';
 import { ssr } from 'three/addons/tsl/display/SSRNode.js';
 import { clampQuality, createPipeline, type QualityName } from './gpu/pipeline.js';
+import { createVoxelMaterial, W } from './gpu/materials.js';
+import { Atmosphere, MOODS, type MoodId } from './gpu/moods.js';
+import { VoxelBuilder } from './voxel/kit.js';
+import { buildModelObject } from './voxel/mesh.js';
 
 interface ProbeResult {
   step: string;
@@ -36,6 +40,42 @@ const result: ProbeResult = {
   frameMs: 0,
   forced: '',
 };
+
+/**
+ * A scrap of dungeon built with the real voxel kit and lit with the real
+ * voxel node material — a stone floor, a chunk of wall and a small emissive
+ * torch head. This is what `?stack=voxel` renders, and it is the cheapest way
+ * to find out whether the ported TSL material actually compiles on a backend
+ * before the dungeon builder depends on it.
+ */
+function makeVoxelScene(): { scene: THREE.Scene; camera: THREE.PerspectiveCamera; material: THREE.Material } {
+  const scene = new THREE.Scene();
+  const b = new VoxelBuilder({ unit: 0.125, seed: 7 });
+  // floor slab (ground flag = puddles may form), 8x8 voxels = one cell
+  b.box(0, 0, 0, 8, 1, 8, 'basalt1', 'wetrock', {});
+  // a wall stub behind it
+  b.box(0, 1, 0, 8, 7, 1, 'basalt2', 'rock', {});
+  // a torch head: tiny emissive box with the flicker fx
+  b.box(3, 5, 1, 2, 2, 1, 'fire', 'ember', {});
+  const model = b.build('dungeon-scrap');
+  const material = createVoxelMaterial({ weather: true, sway: false });
+  const obj = buildModelObject(model, material);
+  scene.add(obj);
+  // `?light=<intensity>` puts a real point light at the torch head. An
+  // emissive box only glows — it does not light the stone around it (SSGI
+  // bounce aside), which is why the dungeon builder places real lights.
+  const lit = new URLSearchParams(window.location.search).get('light');
+  if (lit !== null) {
+    const torch = new THREE.PointLight(0xffb060, Number(lit), 6, 2);
+    torch.position.set(0.5, 0.72, 0.19);
+    torch.castShadow = true;
+    scene.add(torch);
+  }
+  const camera = new THREE.PerspectiveCamera(60, 16 / 9, 0.05, 60);
+  camera.position.set(0.5, 0.45, 1.6);
+  camera.lookAt(0.5, 0.35, 0.5);
+  return { scene, camera, material };
+}
 
 /** Build a trivial lit scene so the pass has something to shade. */
 function makeScene(): { scene: THREE.Scene; camera: THREE.PerspectiveCamera } {
@@ -81,7 +121,9 @@ async function probe(): Promise<void> {
     result.backend = backend.isWebGPUBackend === true ? 'webgpu' : 'webgl2';
 
     result.step = 'graph';
-    const { scene, camera } = makeScene();
+    const voxelMode = new URLSearchParams(window.location.search).get('stack') === 'voxel';
+    const built = voxelMode ? makeVoxelScene() : makeScene();
+    const { scene, camera } = built;
 
     // `?stack=ported` builds OUR ported pipeline (web/src/gpu/pipeline.ts) at
     // `?q=<tier>` instead of the hand-rolled minimal graph — this is the only
@@ -149,11 +191,23 @@ async function probe(): Promise<void> {
       const lookOverride: Record<string, number> = {};
       const focus = q.get('focus');
       if (focus !== null) { lookOverride['focus'] = Number(focus); lookOverride['focusRange'] = Number(q.get('focusRange') ?? '6'); }
+      if (voxelMode) {
+        // Drive the real Atmosphere so the mood's lights, fog and weather
+        // uniforms are what light the voxels.
+        const moodId = ((new URLSearchParams(window.location.search).get('mood') ?? 'torchlit') as MoodId);
+        result.nodes.push(`mood:${moodId in MOODS ? moodId : 'torchlit'}`);
+      }
       const handle = createPipeline({
         renderer, scene, camera, requested: tier, sun,
         override: off.length > 0 ? (override as Parameters<typeof createPipeline>[0]['override']) : null,
         look: lookOverride as Parameters<typeof createPipeline>[0]['look'],
       });
+      if (voxelMode) {
+        const moodId = ((new URLSearchParams(window.location.search).get('mood') ?? 'torchlit') as MoodId);
+        const atmos = new Atmosphere({ scene, look: handle.look, weather: W });
+        atmos.set(moodId in MOODS ? moodId : 'torchlit');
+        atmos.update(0.016);
+      }
       result.step = 'render';
       // TRAA accumulates history, so a single frame comes back black on every
       // tier that enables it. `?frames=N` (default 8) renders a short burst,

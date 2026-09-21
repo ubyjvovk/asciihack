@@ -133,6 +133,28 @@ tier that enables SSR already has (TRAA). Revisit when three fixes
 `SSRNode.js` (one character: `.max( int( 1 ) )` → `.max( 1 )`); the gate is
 deliberately one line so it can be deleted.
 
+### 3.1 Proof that the ported stack looks right
+
+`/gpu-probe.html?stack=voxel` builds a scrap of dungeon with the **real**
+pieces — `VoxelBuilder` geometry (T-0036), `createVoxelMaterial()` (T-0038),
+an `Atmosphere` mood, and the ported pipeline (T-0037) — so the three ports
+are exercised together before the dungeon builder depends on them. Result on
+the WebGL2 backend, `q=high`, mood `torchlit`: **zero shader errors**, and the
+frame in `.tigerteam/shots/reference-torch.png` — warm light pooling on wet
+stone, the wall catching the bounce, the floor falling into darkness, bloom on
+the torch head, AgX rolling the highlight. That is the target.
+
+Two numbers came out of it that the dungeon builder should start from:
+
+- **An emissive box does not light a room.** With only the emissive torch
+  head, the stone stays black (mean luminance 2/255). Real `PointLight`s are
+  what make the look.
+- **`PointLight(PAL.lamp, 8, 6, 2)`** — intensity 8, distance 6 cells,
+  decay 2 — gives the reference frame: mean luminance **52**, only **22.6 %**
+  of pixels under the black point. At intensity 2 it is mean 35 / 36 % black,
+  which is already usable but dimmer. Compare with the legacy path's
+  `before-amber.png`: mean **1.5**, **94.8 %** black.
+
 ## 4. Scene conventions (unchanged from `docs/web.md`)
 
 Map `x` grows east, map `y` grows south; three's `x` = east, `z` = south,
