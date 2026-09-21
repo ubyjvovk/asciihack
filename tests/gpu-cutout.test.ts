@@ -14,6 +14,7 @@ import {
   cutoutForwardFor,
   isCutCell,
 } from '../web/src/gpu/cutout.js';
+import { createVoxelMaterial } from '../web/src/gpu/materials.js';
 
 describe('gpu cutout — the Diablo cutout, in the material', () => {
   it('cutoutForwardFor points from the hero toward the camera and is horizontal', () => {
@@ -126,5 +127,28 @@ describe('gpu cutout — the Diablo cutout, in the material', () => {
     // `√(1² + 3²) ≈ 3.16 > 2.5`. This pins the radius against a subtle
     // regression where a rotation would bleed the cutout beyond its disk.
     expect(isCutCell(6, 0, hero, eastForward, CUTOUT_RADIUS_CELLS)).toBe(false);
+  });
+
+  it('the avatar material has the cutout disabled', () => {
+    // Rework: the hero and pet avatars share the voxel material with the
+    // walls (`docs/gpu-avatar.md`, `web/src/gpu/sprites.ts::ensureHeroAvatar`),
+    // so the per-fragment cutout the dungeon material installs would also
+    // discard the avatar's own fragments — the very thing the cutout exists
+    // to reveal. `createVoxelMaterial({ cutout: false })` is the avatar
+    // variant: same look, no discard. Assert on the material options via the
+    // shader-graph `maskNode` handle rather than a rendered frame — no GPU
+    // here (docs/gpu.md §9), but `maskNode` is what the T-0058 branch
+    // installs, so its presence/absence is a direct read of the option
+    // (`docs/gpu-cutout.md` §"What is exempt").
+    const dungeonMat = createVoxelMaterial(); // default: cutout enabled
+    const avatarMat = createVoxelMaterial({ cutout: false });
+    // The dungeon material has the discard branch, so its `maskNode` is set
+    // to the T-0058 `keep` node — a truthy Node instance.
+    expect(dungeonMat.maskNode).toBeTruthy();
+    // The avatar material must skip the branch entirely: `maskNode` stays at
+    // three.js's default (null). Anything else would mean the discard rule
+    // is still evaluated for the hero and pet fragments — the bug from
+    // rework attempt 1.
+    expect(avatarMat.maskNode).toBeNull();
   });
 });

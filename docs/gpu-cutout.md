@@ -72,6 +72,47 @@ therefore reads `dot > 0` for "camera side". Both files (`cutout.ts` and
 between the hero and the camera has `cell − hero` pointing along `forward`
 (same direction), so the dot product is positive.
 
+## What is exempt
+
+The hero and pet **avatars** are exempt from the cutout. Both are voxel models
+built from the same kit as the dungeon (`web/src/gpu/avatar.ts`,
+`docs/gpu-avatar.md`) and meshed with `createVoxelMaterial`, so a naive first
+attempt at this ticket applied the fragment discard rule to their voxels too:
+the hero sits **at** `CUTOUT.center`, above the floor, on the camera side of
+himself, so every avatar fragment satisfies the discard rule. The bug shot
+saved as `.tigerteam/shots/cutout-bug.png` shows exactly that — the wall
+opens as intended, but the hero has vanished with it, replaced by the bright
+dome of the cutout boundary.
+
+The fix is a separate material for the avatars. `createVoxelMaterial` takes
+an optional `cutout` flag (default `true`): the dungeon is built with the
+default, and `web/src/gl/gl-viewport.ts::GpuPath.build` builds a second
+material with `cutout: false` and hands it to `SpriteLayer`, which routes it
+to `createHeroAvatar` / `createPetAvatar`. The avatar material shares the
+whole appearance pipeline — colour, roughness, metalness, emissive, weather,
+sway — and simply omits the `maskNode` discard branch, so the hero and pet
+are never touched by the cutout.
+
+Two consequences worth stating:
+
+- **The inner keep-radius is now belt-and-braces.** With the avatar
+  material exempt, the per-fragment inner keep-zone is no longer the sole
+  guard on the hero avatar. It remains in place for the dungeon material
+  because it also covers any *future* voxel meshes that share the dungeon
+  material and happen to sit at `CUTOUT.center` (a floor decal, a portal
+  effect); removing it is a separate cleanup and out of scope here.
+- **The pet is exempt too.** The pet uses the same avatar material via
+  `createPetAvatar`, so a pet standing one cell from the hero — comfortably
+  inside the cutout radius on the camera side — is never sliced by the
+  cutout, which was the second half of the bug the rework calls out. This
+  replaces the "pet + monster avatars" caveat the earlier revision of this
+  document flagged as "could not verify"; the avatar material path makes it
+  unconditional.
+
+Monster sprites drawn as billboards (`buildSpriteMaterial` in
+`web/src/gpu/sprites.ts`) already used their own materials and were never
+subject to the cutout, so they need no change.
+
 ## Why an inner keep-radius
 
 The voxel material is shared with the hero avatar (`web/src/gpu/avatar.ts`
@@ -179,9 +220,10 @@ The worker container has no GPU and cannot look at a rendered frame. So:
   the wall into the G-buffer and the cutout would corrupt indirect light —
   a `?gpu=raw&q=high` shot with a wall in front of the hero is the
   diagnostic.
-- **Pet + monster avatars.** The pet uses the same voxel material and is
-  not inside the inner keep-radius (it sits in a neighbouring cell); the
-  parts of it on the camera side of the hero will be partially cut in
-  practice. This ticket's rule is a hero cutout, not an actor cutout;
-  extending the keep-zone to arbitrary sprite positions is a follow-up if
-  the PM's review shows the pet being sliced.
+- **The eyeball shot for the fix itself.** The rework moved the avatars
+  onto their own cutout-disabled material (`createVoxelMaterial({ cutout:
+  false })`), and the new test case pins that the avatar material's
+  `maskNode` stays null — but only the PM can re-shoot
+  `/scene.html?pose=7.5,6.5,0` and confirm the hero (and pet) are now
+  visible in the hole. The `.tigerteam/shots/cutout-bug.png` reference
+  makes the before/after obvious.

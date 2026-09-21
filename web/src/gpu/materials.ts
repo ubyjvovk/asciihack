@@ -16,6 +16,9 @@
  *   `docs/gpu-cutout.md`. Kept opaque on purpose: alpha blending would pull
  *   these surfaces out of the opaque pass and corrupt the G-buffer that
  *   SSGI and SSR read from, so this uses `discard` + screen-door dither.
+ *   Pass `cutout: false` to build the avatar variant, which shares this
+ *   material family but skips the discard so the hero and pet are never
+ *   cut along with the walls (`docs/gpu-cutout.md` §"What is exempt").
  *
  * Wetness/puddles darkening + roughness, the stone water film, the blocky
  * puddle noise, the emissive fx (`flicker`/`pulse`/`twinkle`), `lampGain`,
@@ -97,6 +100,14 @@ export interface VoxelMaterialOptions {
   weather?: boolean;
   /** Enable vertex sway for `FX_SWAY` boxes. */
   sway?: boolean;
+  /**
+   * Include the T-0058 hero-cutout `discard` branch (default `true` — the
+   * dungeon material). Set to `false` for the hero/pet avatar material: the
+   * avatars share this material and sit at `CUTOUT.center`, so the same
+   * per-fragment rule that clears the wall in front of the hero would also
+   * discard the hero itself. See `docs/gpu-cutout.md` §"What is exempt".
+   */
+  cutout?: boolean;
 }
 
 /**
@@ -104,9 +115,9 @@ export interface VoxelMaterialOptions {
  * (rgb + per-box rnd) and `aMat` (roughness, metalness, emissive,
  * fx|flags) and the shared `W` block.
  */
-export function createVoxelMaterial({ weather = true, sway = true }: VoxelMaterialOptions = {}): MeshStandardNodeMaterial {
+export function createVoxelMaterial({ weather = true, sway = true, cutout = true }: VoxelMaterialOptions = {}): MeshStandardNodeMaterial {
   const m = new MeshStandardNodeMaterial();
-  m.name = 'voxel';
+  m.name = cutout ? 'voxel' : 'voxel-nocut';
 
   const aColor = attribute<'vec4'>('aColor', 'vec4');
   const aMat = attribute<'vec4'>('aMat', 'vec4');
@@ -178,36 +189,39 @@ export function createVoxelMaterial({ weather = true, sway = true }: VoxelMateri
   // wall out of the G-buffer that SSGI/SSR read. Rule mirrors `isCutCell` in
   // `./cutout.ts` at cell resolution — same three conditions, plus an
   // inner keep-radius that protects the hero avatar (which sits at the
-  // cutout centre and shares this material).
-  const rel = positionWorld.sub(CUTOUT.center);
-  const dHoriz = length(vec2(rel.x, rel.z));
-  const dotFwd = rel.x.mul(CUTOUT.forward.x).add(rel.z.mul(CUTOUT.forward.z));
-  // Outer ramp: 1 inside `radius`, 0 at `radius + fade`, smoothstep between.
-  const outerRamp = float(1.0).sub(smoothstep(CUTOUT.radius, CUTOUT.radius.add(CUTOUT.fade), dHoriz));
-  // Inner keep-zone: no cut too close to the hero (protects the voxel
-  // avatar's own fragments — see `CUTOUT_INNER_KEEP_CELLS`). Hard step so
-  // adjacent walls at exactly 0.5 cells still receive the full cut.
-  const innerKeep = step(float(CUTOUT_INNER_KEEP_CELLS), dHoriz);
-  // Camera-side test — `dot > 0` because `cutoutForwardFor` returns the
-  // hero → camera direction. The small epsilon keeps the boundary line
-  // through the hero (dot = 0) from flickering.
-  const cameraSide = step(float(0.0001), dotFwd);
-  // Above the floor: never cut the ground plane out from under the hero.
-  const aboveFloor = step(float(CUTOUT_FLOOR_EPSILON), positionWorld.y);
-  // Combined discard strength ∈ [0, 1]. `enabled` is 0 (fps) or 1 (third/ortho).
-  const cutStrength = CUTOUT.enabled.mul(cameraSide).mul(aboveFloor).mul(outerRamp).mul(innerKeep);
-  // Screen-door dither: `interleavedGradientNoise(screenCoordinate.xy)` gives
-  // a 0..1 per-pixel value; `keep = step(cutStrength, dither)` returns 1
-  // (keep) when `dither >= cutStrength` — so a fraction `cutStrength` of
-  // the pixels in the fade band are discarded, and the shape stays opaque.
-  const dither = interleavedGradientNoise(screenCoordinate.xy);
-  const keep = step(cutStrength, dither);
-  // `MeshStandardNodeMaterial.maskNode` discards when the mask is false;
-  // `NodeMaterial.setup()` wraps this in `bool(maskNode).not().discard()`,
-  // so any non-zero value keeps the fragment and 0 discards it. Sole path
-  // used here — `Discard()` outside an `Fn()` scope has no stack to push
-  // onto, so it is not safe to call from module setup code.
-  m.maskNode = keep;
+  // cutout centre and shares this material). Skipped for the avatar
+  // material (`cutout: false`) — see `docs/gpu-cutout.md` §"What is exempt".
+  if (cutout) {
+    const rel = positionWorld.sub(CUTOUT.center);
+    const dHoriz = length(vec2(rel.x, rel.z));
+    const dotFwd = rel.x.mul(CUTOUT.forward.x).add(rel.z.mul(CUTOUT.forward.z));
+    // Outer ramp: 1 inside `radius`, 0 at `radius + fade`, smoothstep between.
+    const outerRamp = float(1.0).sub(smoothstep(CUTOUT.radius, CUTOUT.radius.add(CUTOUT.fade), dHoriz));
+    // Inner keep-zone: no cut too close to the hero (protects the voxel
+    // avatar's own fragments — see `CUTOUT_INNER_KEEP_CELLS`). Hard step so
+    // adjacent walls at exactly 0.5 cells still receive the full cut.
+    const innerKeep = step(float(CUTOUT_INNER_KEEP_CELLS), dHoriz);
+    // Camera-side test — `dot > 0` because `cutoutForwardFor` returns the
+    // hero → camera direction. The small epsilon keeps the boundary line
+    // through the hero (dot = 0) from flickering.
+    const cameraSide = step(float(0.0001), dotFwd);
+    // Above the floor: never cut the ground plane out from under the hero.
+    const aboveFloor = step(float(CUTOUT_FLOOR_EPSILON), positionWorld.y);
+    // Combined discard strength ∈ [0, 1]. `enabled` is 0 (fps) or 1 (third/ortho).
+    const cutStrength = CUTOUT.enabled.mul(cameraSide).mul(aboveFloor).mul(outerRamp).mul(innerKeep);
+    // Screen-door dither: `interleavedGradientNoise(screenCoordinate.xy)` gives
+    // a 0..1 per-pixel value; `keep = step(cutStrength, dither)` returns 1
+    // (keep) when `dither >= cutStrength` — so a fraction `cutStrength` of
+    // the pixels in the fade band are discarded, and the shape stays opaque.
+    const dither = interleavedGradientNoise(screenCoordinate.xy);
+    const keep = step(cutStrength, dither);
+    // `MeshStandardNodeMaterial.maskNode` discards when the mask is false;
+    // `NodeMaterial.setup()` wraps this in `bool(maskNode).not().discard()`,
+    // so any non-zero value keeps the fragment and 0 discards it. Sole path
+    // used here — `Discard()` outside an `Fn()` scope has no stack to push
+    // onto, so it is not safe to call from module setup code.
+    m.maskNode = keep;
+  }
 
   if (sway) {
     const wp = modelWorldMatrix.mul(vec4(positionGeometry, 1.0)).xyz;

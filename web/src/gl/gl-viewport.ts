@@ -1179,9 +1179,13 @@ class GpuPath {
 
     // Sprite billboards for monsters/items — camera-facing quads carrying
     // tile art, lit by the ported stack rather than pasted on top (T-0042).
-    // The hero and pet are routed to voxel avatars sharing the same voxel
-    // material as the dungeon (T-0056, docs/gpu-avatar.md).
-    const sprites = new SpriteLayer({ voxelMaterial: voxelMat });
+    // The hero and pet are routed to voxel avatars sharing the voxel
+    // material family (T-0056, docs/gpu-avatar.md), but with the cutout
+    // discard disabled — the avatars sit at `CUTOUT.center`, so the same
+    // per-fragment rule that clears the wall in front of the hero would
+    // otherwise discard the hero itself (`docs/gpu-cutout.md` §"What is exempt").
+    const avatarMat = createVoxelMaterial({ weather: true, sway: true, cutout: false });
+    const sprites = new SpriteLayer({ voxelMaterial: avatarMat });
     scene.add(sprites.root);
 
     // Ghost mesh scaffolding for the ortho cutaway (T-0043, docs/gpu-ortho.md).
