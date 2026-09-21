@@ -25,11 +25,11 @@ cell quantiser can show).
 ## 2. Shape of the port
 
 ```
-web/src/voxel/            ported from ~/afterburn/src/voxel/  (asciihack owns the copy)
+web/src/voxel/            ported from vendor/afterburn/src/voxel/  (asciihack owns the copy)
   kit.ts        VoxelBuilder + seeded rng/noise — pure data, no three.js
   palette.ts    PAL colours, MAT presets, FX codes
   mesh.ts       VoxelModel -> BufferGeometry (24 B/vertex, hidden-face cull)
-web/src/gpu/              ported from ~/afterburn/src/render/
+web/src/gpu/              ported from vendor/afterburn/src/render/
   renderer.ts   createRenderer(): WebGPURenderer + capability probe
   pipeline.ts   createPipeline(): the MRT -> ... -> grade node graph, QUALITY table
   materials.ts  createVoxelMaterial() + the shared `W` weather/mood uniforms
@@ -150,7 +150,7 @@ that already exist (PM-owned; **not in any ticket's scope**):
   cycle styles. It sets `window.__ready` after the second frame and exposes
   `window.__bench` (`viewport`, `setPose`, `debugInfo()`, `frames`).
 - **`scripts/web-shot.mjs`** — headless screenshot, ported from
-  `~/afterburn/tools/shot.mjs`. Playwright is deliberately **not** a
+  `vendor/afterburn/tools/shot.mjs`. Playwright is deliberately **not** a
   dependency: the script resolves it from `~/asciicity/node_modules` (or
   `$PLAYWRIGHT_DIR`), with the browsers in `~/.cache/ms-playwright`.
 
