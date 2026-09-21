@@ -100,6 +100,21 @@ with **`stochastic: true`** takes the other branch (`quality.clamp().mul(
 MAX_STEPS ).max( float( 1 ) )`, all floats) and compiles and renders fine
 (37.5 ms at 640×360 under SwiftShader).
 
+**God rays need a shadow-casting light.** `GodraysNode` reads the light's
+shadow map; handed a light with `castShadow = false` it throws
+`TypeError: Cannot read properties of null (reading 'depthTexture')` while
+building the graph and takes the whole pipeline down with it. So: **only pass
+`sun` to `createPipeline` when that light has `castShadow = true` and the
+renderer has `shadowMap.enabled = true`.** A dungeon usually has no sun at
+all, and `createPipeline` already skips the branch when `sun` is null — which
+is the normal case here. Verified with
+`/gpu-probe.html?stack=ported&q=high` (throws with `&noshadow=1`, clean
+without it).
+
+**SSGI builds and runs on the WebGL2 backend** — `gi`, `bloom`, `traa`,
+`dof`, `fxaa` and the whole grade block are all fine there. SSR is the only
+pass that needs a gate.
+
 **The rule:** SSR uses afterburn's `stochastic: false` on a **WebGPU**
 backend and `stochastic: true` on the **WebGL2** backend. Stochastic SSR is
 noisier by design and expects a temporal denoiser downstream — which every

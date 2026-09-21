@@ -121,8 +121,18 @@ async function probe(): Promise<void> {
       const requested = (q.get('q') ?? 'high') as QualityName;
       const tier = q.get('noclamp') === '1' ? requested : clampQuality(requested, caps);
       result.nodes.push(`ported:${tier}`);
+      // GodraysNode reads the light's shadow map, so a god-ray tier needs a
+      // shadow-casting light — without castShadow it throws on a null
+      // `shadow.map`. `?noshadow=1` reproduces that.
       const sun = new THREE.DirectionalLight(0xffd0a0, 2);
       sun.position.set(3, 5, 2);
+      if (q.get('noshadow') !== '1') {
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        sun.castShadow = true;
+        sun.shadow.mapSize.set(1024, 1024);
+        scene.traverse((o) => { if ((o as THREE.Mesh).isMesh === true) { o.castShadow = true; o.receiveShadow = true; } });
+      }
       scene.add(sun);
       const handle = createPipeline({ renderer, scene, camera, requested: tier, sun });
       result.step = 'render';
