@@ -89,10 +89,10 @@ describe('gpu compose — backend + option defaults', () => {
     // Missing search: every knob falls to `auto` / `null` so a bare
     // `new GlViewport({})` and `/scene.html` read identical defaults.
     const d = parseGpuQueryOptions('');
-    expect(d).toEqual({ gpu: 'auto', quality: 'auto', backend: 'auto', mood: null });
+    expect(d).toEqual({ gpu: 'raw', quality: 'auto', backend: 'auto', mood: null });
     // Invalid values fall to defaults, not to `undefined`.
     const bad = parseGpuQueryOptions('?gpu=maybe&q=insane&backend=vulkan&mood=cozy');
-    expect(bad).toEqual({ gpu: 'auto', quality: 'auto', backend: 'auto', mood: null });
+    expect(bad).toEqual({ gpu: 'raw', quality: 'auto', backend: 'auto', mood: null });
   });
 });
 

@@ -280,8 +280,11 @@ cannot run them. So the two renderers coexist:
    still owns the target, the quad and the uniforms. The quad's vertex shader
    writes clip space directly and ignores the camera, so the **real
    perspective camera** is passed in and `cameraNear`/`cameraFar` stay correct.
-3. Raw mode skips the style renderer: the GPU canvas is shown directly
-   (`F8` toggles, `?gpu=raw`), which is how the port gets eyeballed.
+3. Raw mode skips the style renderer: the GPU canvas is shown directly.
+   **This is the default** — `F8` toggles to the styled pass, `?gpu=auto`
+   starts there. Note the cost difference: styled renders at ≤ 640×360 (the
+   style's scene target) while raw renders at the full viewport with pixel
+   ratio capped at 1.5, so the default is the more expensive path.
 
 ### 6.1 The grade fights the quantiser — what styled mode sends
 
@@ -320,7 +323,9 @@ selecting a depth style switches the viewport back to the legacy WebGL path
 for as long as it is active.* This is a hard rule, not a TODO — it keeps the
 legacy path alive and honest.
 
-`?gpu=auto|off|raw` (default `auto`) selects the path. `auto` = GPU when it
+`?gpu=auto|off|raw` (**default `raw`** since 2026-09-21 — the user asked for
+the full afterburn frame out of the box; `auto` puts the ASCII style pass
+back and `F8` toggles at runtime) selects the path. `auto` = GPU when it
 initialises and the style allows it.
 
 ## 7. What stays

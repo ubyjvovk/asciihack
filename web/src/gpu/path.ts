@@ -203,7 +203,10 @@ const MOOD_IDS: readonly string[] = ['torchlit', 'deep_dark', 'flooded', 'lava',
 export function parseGpuQueryOptions(search: string): GpuQueryOptions {
   const p = new URLSearchParams(search);
   const rawGpu = p.get('gpu');
-  const gpu: GpuParam = rawGpu === 'off' || rawGpu === 'raw' || rawGpu === 'auto' ? rawGpu : 'auto';
+  // Default `raw`: the full afterburn frame, un-quantised (user, 2026-09-21).
+  // `?gpu=auto` puts the ASCII style pass back, `?gpu=off` drops to the
+  // legacy WebGL path, and F8 toggles raw <-> styled at runtime.
+  const gpu: GpuParam = rawGpu === 'off' || rawGpu === 'raw' || rawGpu === 'auto' ? rawGpu : 'raw';
   const rawQ = p.get('q');
   const quality: QualityName | 'auto' = rawQ !== null && QUALITY_NAMES.includes(rawQ)
     ? (rawQ as QualityName)

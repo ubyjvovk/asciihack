@@ -236,7 +236,7 @@ the quad ignores it.
 
 **Params, all defaulted from `window.location.search`**:
 
-- `?gpu=auto|off|raw` (default `auto`) — which path
+- `?gpu=auto|off|raw` (default **`raw`**: the full afterburn frame; `auto` adds the ASCII style pass) — which path
 - `?q=low|medium|high|ultra` (default `caps.maxQuality`) — pipeline tier
 - `?backend=webgpu|webgl2` (default: whatever three's `WebGPURenderer`
   reaches; `webgl2` forces `forceWebGL: true`)
