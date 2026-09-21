@@ -82,11 +82,12 @@ function benchLevel(): LevelView {
  * art — the renderer's generic figure is what we are checking here.
  * `?sprites=0` renders an empty dungeon.
  */
-function benchSprites(): Sprite[] {
+function benchSprites(pose: Pose): Sprite[] {
+  // The hero stands wherever the camera is looking, so `?pose=` frames him —
+  // which is what makes the wall cutout testable from the bench.
   return [
-    // the hero and the pet, so the voxel avatars are visible on the bench
-    { x: 7.5, y: 2.5, ch: '@', rgb: [0.9, 0.85, 0.75], cls: 'mon', height: 0.7 },
-    { x: 8.5, y: 2.5, ch: 'f', rgb: [0.75, 0.7, 0.6], cls: 'pet', height: 0.45 },
+    { x: pose.x, y: pose.y, ch: '@', rgb: [0.9, 0.85, 0.75], cls: 'mon', height: 0.7 },
+    { x: pose.x + 1, y: pose.y, ch: 'f', rgb: [0.75, 0.7, 0.6], cls: 'pet', height: 0.45 },
     { x: 9.5, y: 2.5, ch: 'd', rgb: [0.85, 0.75, 0.35], cls: 'mon', height: 0.6 },
     { x: 8.5, y: 4.5, ch: 'f', rgb: [0.55, 0.85, 0.95], cls: 'pet', height: 0.45 },
     { x: 11.5, y: 3.5, ch: 'T', rgb: [0.95, 0.35, 0.3], cls: 'mon', height: 1.2 },
@@ -145,7 +146,7 @@ function boot(): void {
     ev.preventDefault();
   });
 
-  const sprites = params.get('sprites') === '0' ? [] : benchSprites();
+  const sprites = params.get('sprites') === '0' ? [] : benchSprites(pose);
   let frames = 0;
   const loop = (): void => {
     viewport.render(level, pose, sprites, fov);
