@@ -160,15 +160,36 @@ avatar's facing (driven by the last movement) is untouched by `Q`/`E`.
 
 ## Minimap (`src/ui/minimap.ts`)
 
-`paintMinimap(grid, rect, session, facing?)` draws a 40×11 window of the
-classic map (`MINIMAP_WIDTH`/`MINIMAP_HEIGHT`), centred on the hero and
-clamped to the map bounds, top-right over the viewport. One-cell `-`/`|`
-border (dim grey, `+` corners), glyph colours from `clrToRgb`, unexplored
-cells as spaces, the hero cell inverse-video. When `facing` is given the hero
-prints its facing arrow (`↑ ↗ → ↘ ↓ ↙ ← ↖` for N…NW, all BMP one-cell) instead
-of `@`. Shown by default in fps/ortho; `F4` hides it. The fps mode passes its
-`Facing`, so the arrow matches the compass ribbon; ortho/classic pass none and
-stay `@`.
+`paintMinimap(grid, rect, session, facing?)` draws a 42×13 panel (inner
+40×11; `MINIMAP_WIDTH`/`MINIMAP_HEIGHT`) top-right over the viewport. Each
+minimap cell samples a **2×2 block** of the remembered map, so the inner
+window covers 80×22 map cells — the whole 80×21 NetHack level fits at a
+glance and the hero-centred scroll pins to a corner (the map stops moving
+under the player). One-cell `-`/`|` border (dim grey, `+` corners), glyph
+colours from `clrToRgb`, unexplored blocks as spaces, the hero cell
+inverse-video. When `facing` is given the hero prints its facing arrow
+(`↑ ↗ → ↘ ↓ ↙ ← ↖` for N…NW, all BMP one-cell) instead of `@`. Shown by
+default in fps/ortho; `F4` hides it. The fps mode passes its `Facing`, so
+the arrow matches the compass ribbon; ortho/classic pass none and stay `@`.
+
+Which glyph wins a 2×2 block. For each block the sampler picks the
+highest-priority cell (lower number wins), scanning the four cells
+top-left → top-right → bottom-left → bottom-right and breaking ties within
+a rank by that scan order. The winning cell's `top.ch` and colour are what
+the minimap paints; the hero always wins:
+
+1. the hero (so the player never loses themselves on their own map);
+2. a monster (`MapCell.top.cls` is `mon` or `pet`);
+3. an object (`obj`);
+4. a dungeon feature worth navigating toward — stairs / ladder, fountain,
+   altar, throne, or a door (`doorway` / `door_open` / `door_closed`);
+5. remembered passable terrain (`floor`, `corridor`);
+6. a wall;
+7. unexplored — painted as a space.
+
+If the panel does not fit the viewport (a narrow terminal), the panel
+clamps to `rect.width`/`rect.height` and shows less of the map, still
+hero-centred; the sampling stays 2×.
 
 ## Heading cues
 
