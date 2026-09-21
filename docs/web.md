@@ -186,6 +186,57 @@ The vendored render-style pipeline is in `web/src/asciicity/render/`
 (see the file's `README.md`; do not edit those files here — improve
 them in AsciiCity and re-copy).
 
+### Two paths, one viewport (T-0040)
+
+`GlViewport` owns both the legacy WebGL renderer described here and a
+GPU-backed path (ported afterburn stack — `web/src/gpu/**`, contract
+`docs/gpu.md`) and picks between them **per frame** via `choosePath`
+(`docs/gpu-compose.md`):
+
+| Path     | When                                                            |
+|----------|-----------------------------------------------------------------|
+| `legacy` | `?gpu=off`, GPU not ready, active style sets `needsDepth`, ortho view |
+| `styled` | `?gpu=auto`, GPU ready, style with no depth requirement         |
+| `raw`    | `?gpu=raw`, or F8 flipped `auto` into raw                       |
+
+The **depth-style rule** is hard: only `edges` sets `needsDepth`, and a
+blitted quad has no scene depth, so that style always runs through the
+legacy path. Cycling styles moves the viewport back to the GPU path
+automatically.
+
+**Composition** (`docs/gpu.md` §6): the GPU pipeline renders into its own
+detached canvas; `GpuCompositor` wraps it in a `THREE.CanvasTexture` on a
+one-mesh full-screen-quad scene and hands that scene to the untouched
+`StyleRenderer.render(scene, camera)`. The real perspective camera is
+passed in so the style prelude's `cameraNear`/`cameraFar` stay correct;
+the quad ignores it.
+
+**Params, all defaulted from `window.location.search`**:
+
+- `?gpu=auto|off|raw` (default `auto`) — which path
+- `?q=low|medium|high|ultra` (default `caps.maxQuality`) — pipeline tier
+- `?backend=webgpu|webgl2` (default: whatever three's `WebGPURenderer`
+  reaches; `webgl2` forces `forceWebGL: true`)
+- `?mood=<id>` — pin one of `torchlit|deep_dark|flooded|lava|ice`,
+  bypassing `moodFor`; without it the mood follows the hero's cell.
+
+**F8** flips styled ↔ raw at the document level, next to the existing
+F5/F2/F3 capture in `web/src/main.ts` (F1–F7 are taken in
+`src/ui/app.ts`; F8 is unbound).
+
+**Fallback** (`docs/gpu.md` §3): any of `createRenderer()` throwing,
+`init()` rejecting, the first `pipeline.render()` throwing (measured
+r185 WebGPU-side `swizzle` mismatch), `renderer.backend.device.lost`
+resolving, or an `uncapturederror` fires a single `console.warn` and
+pins the viewport on the legacy path for the rest of the session. A
+first-frame WebGPU throw retries once on the WebGL2 backend before
+giving up. `?gpu=off` proves the client works with the GPU path
+disabled.
+
+`debugInfo()` gains `path`, `gpuReady`, `backend`, `quality` and `mood`
+so `window.__asciihack.gl.debugInfo()` shows which path a frame actually
+ran through.
+
 **Transparency rule.** When the GL viewport is mounted, `App` runs with
 `externalViewport: true` and the fps/ortho modes skip their CPU dungeon
 render, leaving the viewport cells as spaces on black `(0,0,0)`.

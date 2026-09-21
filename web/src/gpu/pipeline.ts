@@ -230,6 +230,11 @@ export interface Look {
   grain: number;
   maxRadiance: number;
   fade: number;
+  /** Uniform scalar multiply applied *after* `fade` at the end of the grade
+   *  block. Styled mode sets `1 / styleExposure` so the AsciiCity style pass'
+   *  own exposure lands where it expects (docs/gpu.md §6.1); raw mode leaves
+   *  it at 1. Named separately from `fade` so a scene fader still works. */
+  outputScale: number;
 }
 
 const LOOK_DEFAULTS: Look = {
@@ -256,6 +261,7 @@ const LOOK_DEFAULTS: Look = {
   grain: 0.028,
   maxRadiance: 8.0,
   fade: 1.0,
+  outputScale: 1.0,
 };
 
 /** Fresh Look at afterburn's defaults, with optional per-field overrides. */
@@ -293,6 +299,7 @@ export interface LookUniforms {
   grain: UniformNode<'float', number>;
   maxRadiance: UniformNode<'float', number>;
   fade: UniformNode<'float', number>;
+  outputScale: UniformNode<'float', number>;
 }
 
 function wrapLook(l: Look): LookUniforms {
@@ -320,6 +327,7 @@ function wrapLook(l: Look): LookUniforms {
     grain: uniform(l.grain),
     maxRadiance: uniform(l.maxRadiance),
     fade: uniform(l.fade),
+    outputScale: uniform(l.outputScale),
   };
 }
 
@@ -523,7 +531,7 @@ export function createPipeline(opts: PipelineOptions): PipelineHandle {
       screenCoordinate.xy.add(time.mul(61.0).floor().mul(vec2(37.0, 17.0))),
     ).sub(0.5);
     c = c.add(n.mul(look.grain).mul(mix(1.0, 0.35, l)));
-    c = clamp(c, 0.0, 1.0).mul(look.fade);
+    c = clamp(c, 0.0, 1.0).mul(look.fade).mul(look.outputScale);
     pipeline.outputNode = vec4(c, 1.0);
     pipeline.needsUpdate = true;
     state.nodes['scenePass'] = scenePass;

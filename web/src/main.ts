@@ -76,6 +76,9 @@ function boot(): void {
 
   // GL viewport — only for the 3D modes; if present the App skips its CPU
   // dungeon render so the WebGL canvas below shows through (T-0031 rework 2).
+  // GPU-path knobs (`?gpu`/`?q`/`?backend`/`?mood`) default from the query
+  // inside `GlViewport`, so /scene.html and this entry share defaults
+  // (T-0040, docs/gpu-compose.md).
   const gl = opts.mode === 'fps' || opts.mode === 'ortho'
     ? new GlViewport({ parent: document.body, initialStyle: opts.render ?? undefined })
     : null;
@@ -116,6 +119,16 @@ function boot(): void {
       if (ev.key === 'F2') {
         gl.setView('fps');
         loop.mark();
+        return;
+      }
+      if (ev.key === 'F8') {
+        // T-0040: flip between raw GPU output and the styled composite.
+        // Verified F1..F7 are the only F-key bindings in `src/ui/app.ts`, so
+        // F8 is unbound and safe to grab here.
+        gl.toggleRaw();
+        loop.mark();
+        ev.preventDefault();
+        ev.stopPropagation();
         return;
       }
     }, { capture: true });
