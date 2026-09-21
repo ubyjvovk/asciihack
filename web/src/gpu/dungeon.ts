@@ -307,8 +307,8 @@ function buildLava(b: VoxelBuilder): void {
 }
 
 function buildIce(b: VoxelBuilder): void {
-  b.box(0, 0, 0, CELL_UNITS, 0.8, CELL_UNITS, 'crystalCold1', {
-    rough: 0.1, metal: 0.1, dry: true,
+  b.box(0, 0, 0, CELL_UNITS, 0.8, CELL_UNITS, 'crystalCold0', {
+    rough: 0.18, metal: 0.1, dry: true,
   });
   markGround(b);
 }
@@ -548,8 +548,8 @@ export function bakeLevel(level: LevelView, opts?: BakeOptions): BakeResult {
       y: 0.65,
       z: t.y + 0.5 + off.dz,
       color: 0xffb060,
-      intensity: 6,
-      distance: 8,
+      intensity: 3.5,
+      distance: 7,
       flicker: 0.3,
       side: t.side,
     });

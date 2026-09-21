@@ -77,12 +77,12 @@ export type MoodId = 'torchlit' | 'deep_dark' | 'flooded' | 'lava' | 'ice';
  */
 export const MOODS: Readonly<Record<MoodId, Mood>> = {
   torchlit: {
-    key:     { color: 0xffb060, intensity: 2.4 },
+    key:     { color: 0xffb060, intensity: 1.4 },
     fill:    { sky: 0x263140, ground: 0x080a0d, intensity: 0.05 },
     fog:     { color: 0x0b0d10, density: 0.10 },
     weather: { wetness: 0.5, puddles: 0.25, wind: 0.0 },
     look:    { exposure: 1.0, contrast: 1.08, saturation: 1.0, tintAmount: 0.18, vignette: 0.42, grain: 0.03, bloomStrength: 0.22, ssrIntensity: 0.6, giIntensity: 8.0 },
-    glow: 1.0, lampGain: 1.4,
+    glow: 1.0, lampGain: 1.0,
   },
   deep_dark: {
     key:     { color: 0xffb060, intensity: 0.0 },
@@ -98,7 +98,7 @@ export const MOODS: Readonly<Record<MoodId, Mood>> = {
     fog:     { color: 0x0c1416, density: 0.14 },
     weather: { wetness: 1.0, puddles: 1.0, wind: 0.2 },
     look:    { exposure: 1.0, contrast: 1.06, saturation: 0.95, tintAmount: 0.22, vignette: 0.45, grain: 0.028, bloomStrength: 0.28, ssrIntensity: 1.4, giIntensity: 8.0 },
-    glow: 1.0, lampGain: 1.4,
+    glow: 1.0, lampGain: 1.0,
   },
   lava: {
     key:     { color: 0xff6a2a, intensity: 3.2 },
@@ -109,8 +109,8 @@ export const MOODS: Readonly<Record<MoodId, Mood>> = {
     glow: 1.4, lampGain: 1.8,
   },
   ice: {
-    key:     { color: 0xbfe4ff, intensity: 2.6 },
-    fill:    { sky: 0x9fc8ea, ground: 0x2a3a48, intensity: 0.20 },
+    key:     { color: 0xbfe4ff, intensity: 1.2 },
+    fill:    { sky: 0x9fc8ea, ground: 0x2a3a48, intensity: 0.10 },
     fog:     { color: 0x8ca8bc, density: 0.09 },
     weather: { wetness: 0.3, puddles: 0.10, wind: 0.2 },
     look:    { exposure: 1.05, contrast: 1.02, saturation: 0.92, tintAmount: 0.08, vignette: 0.30, grain: 0.010, bloomStrength: 0.24, ssrIntensity: 0.4, giIntensity: 9.0 },
