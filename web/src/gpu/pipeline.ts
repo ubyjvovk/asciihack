@@ -104,6 +104,20 @@ export interface QualitySettings {
 const RANK: Record<QualityName, number> = { low: 0, medium: 1, high: 2, ultra: 3 };
 
 /**
+ * Whether SSR must take the stochastic path on the current backend.
+ *
+ * three r185's `SSRNode.js` builds its step count as `trunc(...).max( int(1) )`,
+ * which the GLSL backend emits as an `int`/`float` mismatch that GLSL ES 3.0
+ * rejects — the fragment shader never links, so on WebGL2 the pass silently
+ * contributes nothing while spewing `INVALID_OPERATION`. WGSL coerces it, so
+ * WebGPU is unaffected. The stochastic branch is all floats and links on both.
+ * Delete this gate when three fixes `SSRNode.js` (`.max( int( 1 ) )` → `.max( 1 )`).
+ */
+export function ssrStochastic(isWebGPU: boolean): boolean {
+  return !isWebGPU;
+}
+
+/**
  * The four tiers, ported one-for-one from
  * `vendor/afterburn/src/render/pipeline.js` `QUALITY`. Do not renumber:
  * the SSGI slice/step counts, SSR quality/scale, ray step counts and
@@ -425,10 +439,15 @@ export function createPipeline(opts: PipelineOptions): PipelineHandle {
     if (q.ssr && pNormal !== null) {
       const mr = scenePass.getTextureNode('metalrough');
       // SSR reads the *base* color pass, not the GI-composited node; the composite is done below.
+      // `stochastic: true` on WebGL2 dodges the three r185 SSRNode.js link bug (see `ssrStochastic`);
+      // `reflectNonMetals` is only consulted on the non-stochastic (WebGPU) path.
+      const rendererBackend = (renderer as unknown as { backend?: { isWebGPUBackend?: boolean } }).backend;
+      const isWebGPU = rendererBackend?.isWebGPUBackend === true;
       const r = ssr(pColor, pDepth, pNormal, {
         metalnessNode: mr.r,
         roughnessNode: mr.g,
         reflectNonMetals: true,
+        stochastic: ssrStochastic(isWebGPU),
         camera,
       });
       r.maxDistance.value = 40;
