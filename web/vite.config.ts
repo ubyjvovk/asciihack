@@ -31,6 +31,9 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, 'index.html'),
         scene: resolve(__dirname, 'scene.html'),
+        // shipped so the WebGPU backend can be checked on a real browser /
+        // real GPU, which headless chromium here cannot do (docs/gpu.md §3)
+        gpuProbe: resolve(__dirname, 'gpu-probe.html'),
       },
     },
   },
