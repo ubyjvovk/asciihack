@@ -593,7 +593,7 @@ export class GlViewport {
       ? this.stepThirdPose({ x: smoothedPose.x - 0.5, y: smoothedPose.y - 0.5 }, dt)
       : null;
     try {
-      gpu.render(level, smoothedPose, sprites, vFovDeg, path, size, viewportPx, this.pinnedMood, this.view, this.cols, this.rows, thirdFrame);
+      gpu.render(level, smoothedPose, sprites, vFovDeg, path, size, viewportPx, this.pinnedMood, this.view, this.cols, this.rows, thirdFrame, dt);
     } catch (err) {
       this.fallbackToLegacy(err);
       // Re-run this frame on the legacy path so the user gets something.
@@ -1376,6 +1376,7 @@ class GpuPath {
     viewportCols: number,
     viewportRows: number,
     thirdFrame: ThirdPersonFrame | null,
+    frameDt: number,
   ): void {
     // 1. Camera. The pipeline was built against `this.camera` (perspective)
     //    at boot; F3 rebuilds the graph against the real `OrthographicCamera`
@@ -1473,8 +1474,11 @@ class GpuPath {
     // 2b. Update sprite billboards (monsters, items, hero) — camera-facing
     //     quads lit by the same stack as the terrain (T-0042). Face whichever
     //     camera the graph is currently rebuilt against so billboards yaw
-    //     toward the ortho camera in ortho mode too.
-    this.sprites.update(sprites, view === 'ortho' ? this.orthoCamera : this.camera, pose);
+    //     toward the ortho camera in ortho mode too. `pose` here is the
+    //     smoothed hero world position (T-0062, docs/gpu-thirdperson.md
+    //     "Motion") so the hero avatar/quad glides; `dt` drives the same
+    //     per-sprite ease `SpriteLayer` applies to every other sprite.
+    this.sprites.update(sprites, view === 'ortho' ? this.orthoCamera : this.camera, pose, frameDt);
 
     // 3. Mood: pinned via `?mood=` or derived from the hero's cell.
     const cellX = Math.floor(pose.x);
