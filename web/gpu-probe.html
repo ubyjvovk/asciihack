@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>AsciiHack — WebGPU probe</title>
+    <style>
+      body { margin: 0; background: #0b0d10; color: #ffcf8a; font: 14px/1.4 monospace; }
+      #gpu { display: block; width: 640px; height: 360px; }
+      pre#out { padding: 12px; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <canvas id="gpu" width="640" height="360"></canvas>
+    <pre id="out">probing…</pre>
+    <script type="module" src="./src/gpu-probe.ts"></script>
+  </body>
+</html>

@@ -61,6 +61,29 @@ If `createRenderer()` throws or `renderer.init()` rejects, the viewport keeps
 the existing WebGL path (§6) and logs one line. The GPU path is never
 required for the browser client to work.
 
+**Measured on this host (2026-09-21, `/gpu-probe.html`, see §9).** A
+`WebGPURenderer` reaches the **WebGPU backend** in headless Chromium, but
+`pipeline.render()` then dies inside three r185 with
+
+```
+TypeError: Failed to execute 'createView' on 'GPUTexture': Failed to read the
+'swizzle' property from 'GPUTextureViewDescriptor'
+```
+
+— a Chromium-vs-three version skew, not our bug. Forcing three's **WebGL2
+fallback backend** (`new WebGPURenderer({ forceWebGL: true })`) builds and
+renders the same TSL graph (`pass` + MRT → `bloom` → `fxaa` → `renderOutput`
+AgX → vignette) in ~80 ms at 640×360 under SwiftShader. Consequences:
+
+- the WebGL2 fallback is not theoretical — it is the path headless
+  verification runs on, so it must work, and `?gpu=` needs a way to force it
+  (`?backend=webgl2`, mirroring the probe);
+- that headless adapter reports `maxColorAttachmentBytesPerSample = 32`, so
+  `clampQuality` lands on `medium` there. A real GPU in the user's browser
+  should reach 64 and `ultra`;
+- `pipeline.renderAsync()` is deprecated in r185 — use `pipeline.render()`
+  after `await renderer.init()` (afterburn already does).
+
 ## 4. Scene conventions (unchanged from `docs/web.md`)
 
 Map `x` grows east, map `y` grows south; three's `x` = east, `z` = south,
@@ -149,6 +172,11 @@ that already exist (PM-owned; **not in any ticket's scope**):
   whatever the viewport reads (`?gpu=`, `?q=`). Arrow keys/WASD walk, `[`/`]`
   cycle styles. It sets `window.__ready` after the second frame and exposes
   `window.__bench` (`viewport`, `setPose`, `debugInfo()`, `frames`).
+- **`/gpu-probe.html`** — `web/src/gpu-probe.ts`, a standalone capability
+  probe: adapter limits, backend actually reached, which TSL nodes built, and
+  whether one frame rendered, reported in `window.__probe` and painted as
+  text. `?backend=webgl2` forces the fallback. This is what §3's measured
+  numbers come from; re-run it after any three upgrade.
 - **`scripts/web-shot.mjs`** — headless screenshot, ported from
   `vendor/afterburn/tools/shot.mjs`. Playwright is deliberately **not** a
   dependency: the script resolves it from `~/asciicity/node_modules` (or

@@ -15,6 +15,7 @@
     "src/dom-term.ts",
     "src/ws-bridge.ts",
     "src/scene-bench.ts",
+    "src/gpu-probe.ts",
     "src/gl/**/*.ts",
     "src/voxel/**/*.ts",
     "src/gpu/**/*.ts",

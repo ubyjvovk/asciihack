@@ -107,6 +107,7 @@ const gpu = await page.evaluate(() => {
   const info = { webgpu: typeof navigator !== 'undefined' && 'gpu' in navigator };
   const b = window.__bench;
   if (b && typeof b.debugInfo === 'function') { try { info.debug = b.debugInfo(); } catch (e) { info.debug = String(e); } }
+  if (window.__probe) info.probe = window.__probe;
   return info;
 });
 console.log('page:', JSON.stringify(gpu));
