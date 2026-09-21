@@ -39,9 +39,10 @@ import {
   SRGBColorSpace,
   UnsignedByteType,
 } from 'three/webgpu';
-import type { Camera } from 'three/webgpu';
+import type { Camera, Material, Object3D } from 'three/webgpu';
 import { float, texture as textureNode, uniform, vec3 } from 'three/tsl';
-import type { GlyphClass, Sprite, Tile } from '../../../src/model/types.js';
+import type { GlyphClass, Pose, Sprite, Tile } from '../../../src/model/types.js';
+import { applyAvatarFacing, createHeroAvatar, createPetAvatar } from './avatar.js';
 
 /** Fallback height for sprites without a `height` field (cells). */
 const DEFAULT_HEIGHT = 0.7;
@@ -62,11 +63,27 @@ const GLOW_CLASSES: ReadonlySet<GlyphClass> = new Set<GlyphClass>([
   'zap', 'explosion', 'warning', 'swallow',
 ]);
 
+/** Options for `new SpriteLayer(...)`. */
+export interface SpriteLayerOptions {
+  /**
+   * If given, the hero (`ch === '@'`) and pet (`cls === 'pet'`) sprites are
+   * rendered as voxel avatars sharing this material (T-0056, docs/gpu-avatar.md)
+   * instead of camera-facing quads. Omit it and every sprite is a billboard,
+   * as on the legacy path.
+   */
+  voxelMaterial?: Material;
+}
+
 /**
  * Owns a pool of camera-facing quads under `root`, plus caches of
  * `DataTexture`s (per tile key) and `MeshStandardNodeMaterial`s (per tile +
  * tint + glow key). Attach `root` to the GPU scene, call `update(sprites,
  * camera)` every frame, `dispose()` to free every GPU resource.
+ *
+ * Given a `voxelMaterial`, the hero and pet sprites are routed to voxel
+ * models (`createHeroAvatar` / `createPetAvatar`) instead. Each avatar object
+ * is built the first time it is needed and reused on every subsequent frame —
+ * only position and rotation change.
  */
 export class SpriteLayer {
   readonly root: Group;
@@ -74,23 +91,54 @@ export class SpriteLayer {
   private readonly textureCache = new Map<string, DataTexture>();
   private readonly materialCache = new Map<string, MeshStandardNodeMaterial>();
   private readonly meshes = new Map<string, Mesh>();
+  private readonly voxelMaterial: Material | undefined;
+  private heroAvatar: Object3D | null = null;
+  private petAvatar: Object3D | null = null;
+  private heroInScene = false;
+  private petInScene = false;
 
-  constructor() {
+  constructor(opts: SpriteLayerOptions = {}) {
     this.root = new Group();
     this.root.name = 'gpu-sprites';
     this.geometry = makeSpriteGeometry();
+    this.voxelMaterial = opts.voxelMaterial;
   }
 
   /**
-   * Reconcile the mesh pool with `sprites`: reuse cached meshes/materials/
-   * textures across frames, position each quad at its cell centre with feet on
-   * the floor, yaw it toward `camera`, and drop meshes whose sprite no longer
-   * appears. Returns the meshes present after the call, in `sprites` order.
+   * Reconcile the scene with `sprites`: reuse cached meshes/materials/textures
+   * across frames, position each entry at its cell centre with feet on the
+   * floor, yaw it toward `camera`, and drop meshes whose sprite no longer
+   * appears. When constructed with a `voxelMaterial`, the hero
+   * (`ch === '@'`) and pet (`cls === 'pet'`) become voxel avatars rotated
+   * about Y using `pose.yaw` (radians, 0 = north — architecture.md §7); the
+   * pet borrows the hero's facing because sprites carry no direction. Returns
+   * the objects present after the call, in `sprites` order. Avatars' roots
+   * are `Mesh`es at runtime (all boxes live in the "root" part), so the
+   * declared `Mesh[]` return type reads correctly through the cast.
    */
-  update(sprites: readonly Sprite[], camera: Camera): Mesh[] {
+  update(sprites: readonly Sprite[], camera: Camera, pose?: Pose): Mesh[] {
     const keep = new Set<string>();
     const out: Mesh[] = [];
+    let heroSeen = false;
+    let petSeen = false;
+    const facing = pose?.yaw ?? 0;
     for (const s of sprites) {
+      if (this.voxelMaterial !== undefined && s.ch === '@') {
+        const obj = this.ensureHeroAvatar();
+        obj.position.set(s.x + 0.5, 0, s.y + 0.5);
+        applyAvatarFacing(obj, facing);
+        heroSeen = true;
+        out.push(obj as unknown as Mesh);
+        continue;
+      }
+      if (this.voxelMaterial !== undefined && s.cls === 'pet') {
+        const obj = this.ensurePetAvatar();
+        obj.position.set(s.x + 0.5, 0, s.y + 0.5);
+        applyAvatarFacing(obj, facing);
+        petSeen = true;
+        out.push(obj as unknown as Mesh);
+        continue;
+      }
       const key = spriteInstanceKey(s);
       keep.add(key);
       let mesh = this.meshes.get(key);
@@ -116,6 +164,14 @@ export class SpriteLayer {
       this.root.remove(mesh);
       this.meshes.delete(key);
     }
+    if (!heroSeen && this.heroInScene && this.heroAvatar !== null) {
+      this.root.remove(this.heroAvatar);
+      this.heroInScene = false;
+    }
+    if (!petSeen && this.petInScene && this.petAvatar !== null) {
+      this.root.remove(this.petAvatar);
+      this.petInScene = false;
+    }
     return out;
   }
 
@@ -128,6 +184,38 @@ export class SpriteLayer {
     for (const tex of this.textureCache.values()) tex.dispose();
     this.textureCache.clear();
     this.geometry.dispose();
+    if (this.heroAvatar !== null) {
+      this.root.remove(this.heroAvatar);
+      this.heroAvatar = null;
+      this.heroInScene = false;
+    }
+    if (this.petAvatar !== null) {
+      this.root.remove(this.petAvatar);
+      this.petAvatar = null;
+      this.petInScene = false;
+    }
+  }
+
+  private ensureHeroAvatar(): Object3D {
+    if (this.heroAvatar === null) {
+      this.heroAvatar = createHeroAvatar(this.voxelMaterial as Material);
+    }
+    if (!this.heroInScene) {
+      this.root.add(this.heroAvatar);
+      this.heroInScene = true;
+    }
+    return this.heroAvatar;
+  }
+
+  private ensurePetAvatar(): Object3D {
+    if (this.petAvatar === null) {
+      this.petAvatar = createPetAvatar(this.voxelMaterial as Material);
+    }
+    if (!this.petInScene) {
+      this.root.add(this.petAvatar);
+      this.petInScene = true;
+    }
+    return this.petAvatar;
   }
 
   private materialFor(s: Sprite): MeshStandardNodeMaterial {

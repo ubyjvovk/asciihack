@@ -1176,9 +1176,11 @@ class GpuPath {
     const dungeon = new DungeonScene({ material: voxelMat, ceilingMaterial: voxelMat });
     scene.add(dungeon.root);
 
-    // Sprite billboards for monsters/items/hero — camera-facing quads carrying
+    // Sprite billboards for monsters/items — camera-facing quads carrying
     // tile art, lit by the ported stack rather than pasted on top (T-0042).
-    const sprites = new SpriteLayer();
+    // The hero and pet are routed to voxel avatars sharing the same voxel
+    // material as the dungeon (T-0056, docs/gpu-avatar.md).
+    const sprites = new SpriteLayer({ voxelMaterial: voxelMat });
     scene.add(sprites.root);
 
     // Ghost mesh scaffolding for the ortho cutaway (T-0043, docs/gpu-ortho.md).
@@ -1381,7 +1383,7 @@ class GpuPath {
     //     quads lit by the same stack as the terrain (T-0042). Face whichever
     //     camera the graph is currently rebuilt against so billboards yaw
     //     toward the ortho camera in ortho mode too.
-    this.sprites.update(sprites, view === 'ortho' ? this.orthoCamera : this.camera);
+    this.sprites.update(sprites, view === 'ortho' ? this.orthoCamera : this.camera, pose);
 
     // 3. Mood: pinned via `?mood=` or derived from the hero's cell.
     const cellX = Math.floor(pose.x);
