@@ -153,6 +153,35 @@ export function rawLook(): LookGradeOverride {
   return {};
 }
 
+/**
+ * Structural shape of anything exposing an `environment` field. Generic
+ * over the texture type so the helper stays free of `three` imports —
+ * `tests/gpu-compose.test.ts` (compiled under the root tsconfig, no DOM
+ * lib) hands in a plain sentinel while `GpuPath.create` passes the real
+ * `Atmosphere` (whose `.environment` is a `DataTexture | null`), and the
+ * caller keeps its type.
+ */
+export interface AtmosphereEnv<E = unknown> {
+  readonly environment: E;
+}
+
+/**
+ * Attach the active mood's env map to a `createPipeline` options bag so
+ * SSR receives it at construction. Without it the stochastic path (used on
+ * the WebGL2 backend) throws
+ * `TypeError: Cannot read properties of null (reading 'sampleEnvironmentBRDF')`
+ * every frame at `SSRNode.js:1051` (T-0048 note in `docs/gpu-pipeline.md`).
+ * Extracted from `GpuPath.create` so `tests/gpu-compose.test.ts` can inject
+ * a stub factory and inspect the option bag without instantiating a real
+ * `WebGPURenderer` (which needs a browser).
+ */
+export function pipelineOptionsWithEnv<Opts extends object, E>(
+  base: Opts,
+  atmosphere: AtmosphereEnv<E>,
+): Opts & { environment: E } {
+  return { ...base, environment: atmosphere.environment };
+}
+
 /** Fully-resolved GPU options after query-string parsing. */
 export interface GpuQueryOptions {
   gpu: GpuParam;

@@ -95,6 +95,66 @@ bypassing the table (used from `/scene.html` and the WS entry alike —
 `GpuPath` reads it from `GlViewportOptions.mood`, which defaults to the
 query string via `parseGpuQueryOptions`).
 
+## Mood environment map — the two wiring points (T-0049)
+
+Stochastic SSR (the branch used on the WebGL2 backend, `docs/gpu-pipeline.md`
+"SSR backend gate") calls `sampleEnvironmentBRDF` on every screen-space miss
+and throws `TypeError: Cannot read properties of null (reading
+'sampleEnvironmentBRDF')` at `SSRNode.js:1051` when `environmentNode` is
+null. T-0048 added `moodEnvironment(mood)` in `moods.ts` and an
+`environment` option on `createPipeline` — this section is how `GpuPath`
+hands one over.
+
+Two places touch it, in exactly the order below:
+
+1. **`GpuPath.create` — one option into the factory.** The atmosphere is
+   constructed *before* the pipeline so `atmosphere.environment` (the
+   torchlit env, built by `_rebuildEnv` in the constructor) already exists.
+   The `pipelineOptionsWithEnv(base, atmosphere)` helper in
+   `web/src/gpu/path.ts` spreads the atmosphere's env onto the options bag
+   the factory receives:
+
+   ```ts
+   const handle = createPipeline(pipelineOptionsWithEnv(
+     { renderer, scene, camera, requested: quality, sun: null },
+     atmosphere,
+   ));
+   ```
+
+   The helper stays pure (structural `AtmosphereEnv` type, no `three`
+   import) so `tests/gpu-compose.test.ts` can inject a stub factory and
+   verify the option bag without instantiating a WebGPU renderer.
+
+   Chicken-and-egg fix: `Atmosphere` needs a `look` bag to write mood grade
+   values to (exposure, vignette, ...) but the pipeline's real
+   `LookUniforms` don't exist yet. `GpuPath.create` hands the atmosphere a
+   shared empty proxy object, then, after `createPipeline`, does
+   `Object.assign(lookProxy, handle.look)` and calls `atmosphere.set(...)`
+   once so torchlit's look values propagate. The atmosphere holds the
+   reference (not a snapshot), so the copy is transparent — no
+   private-field surgery on `moods.ts` (which is out of scope).
+
+2. **After every `atmosphere.set` / `blendTo` — one `setEnvMap` on the SSR
+   node.** `SSRNode` reads `environmentNode` at construction, so a later
+   mood change does not reach it: `Atmosphere._rebuildEnv` disposes the old
+   env and builds a new one, but SSR still points at the disposed texture
+   until the caller swaps it. Immediately after the render loop's mood swap
+   block, `GlViewport` runs:
+
+   ```ts
+   const ssr = this.handle.state.nodes['ssr'] as
+     { setEnvMap?: (t: unknown) => void } | undefined;
+   if (ssr !== undefined && typeof ssr.setEnvMap === 'function') {
+     try { ssr.setEnvMap(this.atmosphere.environment); } catch { /* swallow */ }
+   }
+   ```
+
+   The guards matter: `state.nodes['ssr']` is absent on the `low` tier
+   (SSR turned off, docs/gpu-pipeline.md `QUALITY` table) and `setEnvMap`
+   is a newer three r185 addition that older builds don't expose. A
+   failure here must **never** throw from the render loop — a missing SSR
+   swap is a visual regression at worst; a thrown frame is a game crash.
+
 ## Backends and fallback (`docs/gpu.md` §3)
 
 `GpuPath.create` constructs a `WebGPURenderer` with `forceWebGL: true`

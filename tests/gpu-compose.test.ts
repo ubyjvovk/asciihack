@@ -16,8 +16,10 @@ import {
   gpuCanvasSize,
   moodFor,
   parseGpuQueryOptions,
+  pipelineOptionsWithEnv,
   rawLook,
   styledLook,
+  type AtmosphereEnv,
 } from '../web/src/gpu/path.js';
 import type { CellKind, LevelView, MapCell } from '../src/model/types.js';
 
@@ -118,6 +120,31 @@ describe('gpu compose — sizing and grade', () => {
     // Raw mode leaves vignette/grain alone (mood values win) and does not
     // touch outputScale — this contract is what `docs/gpu.md` §6.1 pins down.
     expect(rawLook()).toEqual({});
+  });
+});
+
+describe('gpu compose — mood environment wiring', () => {
+  it('the pipeline is built with the active mood\'s environment', () => {
+    // Fake atmosphere and factory so the T-0049 wiring can be pinned without
+    // a real `WebGPURenderer` (needs a browser). The `sentinel` stands in
+    // for the per-mood `DataTexture` `moodEnvironment(MOODS[current])` would
+    // return; the stub factory captures what `createPipeline` would receive.
+    const sentinel = { __brand: 'moodEnv-sentinel' };
+    const atmosphere: AtmosphereEnv = { environment: sentinel };
+    const base = {
+      renderer: {}, scene: {}, camera: {}, requested: 'medium' as const, sun: null,
+    };
+    let receivedOpts: unknown = null;
+    const factory = (opts: unknown): {} => { receivedOpts = opts; return {}; };
+    factory(pipelineOptionsWithEnv(base, atmosphere));
+    // The bag the factory sees carries every base field plus `environment`
+    // pointing at the atmosphere's current texture — this is the whole
+    // ticket: without it, SSR throws every frame on the WebGL2 backend.
+    expect(receivedOpts).toEqual({ ...base, environment: sentinel });
+    // And a null atmosphere env (e.g. before the first mood snap) flows
+    // through unchanged, so the pipeline can decide not to install SSR.
+    factory(pipelineOptionsWithEnv(base, { environment: null }));
+    expect(receivedOpts).toEqual({ ...base, environment: null });
   });
 });
 
