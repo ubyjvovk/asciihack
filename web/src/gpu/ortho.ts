@@ -22,6 +22,13 @@
  *   metres out, and afterburn's DOF blurs everything beyond `focus + focusRange`
  *   metres from the camera, so the fps values render the whole board out of
  *   focus.
+ * - `pipelineCameraForView(view, cams)` picks which of the two cameras the
+ *   pipeline is rebuilt against on a view change (T-0050). The previous
+ *   T-0043 approach copied the ortho projection onto a `PerspectiveCamera`,
+ *   which produced a black frame because the graph derived its own uniforms
+ *   from the still-perspective reference — this helper hands the graph the
+ *   real `OrthographicCamera` so `isOrthographicCamera` is true where three
+ *   checks it.
  *
  * Pure: no `three` / `three/webgpu` import, no DOM. `tests/gpu-ortho.test.ts`
  * exercises every case in node under the root tsconfig.
@@ -98,4 +105,33 @@ export function orthoDofFocus(p: OrthoPlacement): OrthoDof {
   const dz = p.position.z - p.target.z;
   const focus = Math.sqrt(dx * dx + dy * dy + dz * dz);
   return { focus, focusRange: focus };
+}
+
+/** The pair of cameras `GpuPath` keeps — one perspective for fps, one
+ *  orthographic for the 3/4 overhead view. Generic so the pure test can hand
+ *  in plain sentinels while the runtime hands in real `three/webgpu`
+ *  cameras. */
+export interface ViewCameras<P, O> {
+  perspective: P;
+  orthographic: O;
+}
+
+/**
+ * Which of the two cameras the GPU pipeline is rebuilt against for a given
+ * view (T-0050). Ortho gets the `OrthographicCamera` so `pass(scene, camera)`
+ * and every projection-aware node (SSGI/SSR/TRAA/DOF) read a real ortho
+ * projection — the previous "copy the projection matrix onto a perspective
+ * camera" trick produced a black frame because the graph derived its own
+ * uniforms from the still-`isPerspectiveCamera === true` reference. Fps takes
+ * the perspective camera back so the projection is restored on F3-back.
+ *
+ * Pure — same shape as `pipelineOptionsWithEnv` in `web/src/gpu/path.ts`, so
+ * `tests/gpu-ortho.test.ts` can inject a `setCamera` stub and pin the wiring
+ * without instantiating a `WebGPURenderer`.
+ */
+export function pipelineCameraForView<P, O>(
+  view: 'fps' | 'ortho',
+  cams: ViewCameras<P, O>,
+): P | O {
+  return view === 'ortho' ? cams.orthographic : cams.perspective;
 }

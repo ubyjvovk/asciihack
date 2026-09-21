@@ -37,7 +37,7 @@ import { GpuCompositor } from '../gpu/compose.js';
 import { DungeonScene } from '../gpu/dungeon.js';
 import { createVoxelMaterial, W } from '../gpu/materials.js';
 import { Atmosphere, type MoodId } from '../gpu/moods.js';
-import { applyOrthoPlacementTo, cutawayKey, orthoDofFocus } from '../gpu/ortho.js';
+import { applyOrthoPlacementTo, cutawayKey, orthoDofFocus, pipelineCameraForView } from '../gpu/ortho.js';
 import {
   clampQuality,
   createPipeline,
@@ -979,9 +979,10 @@ class GpuPath {
     camera.position.set(0, EYE_HEIGHT, 0);
     scene.add(camera);
     // Dedicated `OrthographicCamera` for the T-0043 3/4 overhead view. The
-    // pipeline is built with the perspective camera; each ortho frame the
-    // path copies this camera's projection + world matrices onto it so the
-    // graph renders with an ortho projection without a full rebuild.
+    // pipeline is built against the perspective camera on boot; F3 rebuilds
+    // the graph against this ortho camera (T-0050 — the "projection copy"
+    // trick T-0043 shipped produced a black frame because the TSL nodes
+    // derived their uniforms from the still-perspective reference).
     const orthoCamera = new WG.OrthographicCamera(-1, 1, 1, -1, 0.1, 200);
     scene.add(orthoCamera);
     // The hero's lantern — reuses the same constants as the legacy path so
@@ -1110,29 +1111,24 @@ class GpuPath {
     viewportCols: number,
     viewportRows: number,
   ): void {
-    // 1. Camera. The pipeline is built with `this.camera` (perspective), so
-    //    the ortho branch drives an `OrthographicCamera` and copies its
-    //    projection + world matrices onto `this.camera` — no pipeline rebuild
-    //    when the player toggles F3, and afterburn's TSL graph reads the same
-    //    reference either way. Docs/gpu-ortho.md §"the projection copy".
+    // 1. Camera. The pipeline was built against `this.camera` (perspective)
+    //    at boot; F3 rebuilds the graph against the real `OrthographicCamera`
+    //    via `handle.setCamera` — only on a view change, never per frame
+    //    (docs/gpu-ortho.md "The camera rebuild"). The previous "copy the
+    //    ortho projection onto the perspective camera" trick rendered a
+    //    black frame because the TSL nodes derived their uniforms from the
+    //    still-`isPerspectiveCamera === true` reference (T-0050).
     const heroCell = { x: Math.floor(pose.x), y: Math.floor(pose.y) };
     let orthoPlace: OrthoPlacement | null = null;
     if (view === 'ortho') {
       orthoPlace = orthoPlacement(heroCell, viewportCols, viewportRows, 2);
       applyOrthoPlacementTo(this.orthoCamera, orthoPlace);
-      // Copy pose + projection to the pipeline camera.
       this.orthoCamera.updateMatrixWorld(true);
-      this.camera.position.copy(this.orthoCamera.position);
-      this.camera.quaternion.copy(this.orthoCamera.quaternion);
-      this.camera.updateMatrixWorld(true);
-      this.camera.projectionMatrix.copy(this.orthoCamera.projectionMatrix);
-      this.camera.projectionMatrixInverse.copy(this.orthoCamera.projectionMatrixInverse);
     } else {
-      // fps: perspective driven from the pose.
       this.camera.position.set(pose.x, EYE_HEIGHT, pose.y);
       this.camera.rotation.set(CAMERA_PITCH, -pose.yaw, 0, 'YXZ');
       const aspect = viewportPx.cssW / Math.max(1, viewportPx.cssH);
-      if (this.camera.fov !== vFovDeg || this.camera.aspect !== aspect || this.lastView === 'ortho') {
+      if (this.camera.fov !== vFovDeg || this.camera.aspect !== aspect) {
         this.camera.fov = vFovDeg;
         this.camera.aspect = aspect;
         this.camera.updateProjectionMatrix();
@@ -1143,10 +1139,17 @@ class GpuPath {
     // the light with it (T-0043).
     this.lantern.position.set(pose.x, EYE_HEIGHT, pose.y);
 
-    // 1b. View-change side effects: hide the ceiling for the overhead view
-    //     (`docs/gpu.md` §4 kept it in its own group precisely for this);
-    //     drop the ghost mesh on the way out; force a rebuild on the way in.
+    // 1b. View-change side effects: rebuild the pipeline graph against the
+    //     view's real camera (T-0050), hide the ceiling for the overhead
+    //     view (`docs/gpu.md` §4 kept it in its own group precisely for
+    //     this), drop the ghost mesh on the way out, force a rebuild on the
+    //     way in. `handle.setCamera` is a graph rebuild — cheap on paper,
+    //     never called per frame, only when F3 flips `view`.
     if (view !== this.lastView) {
+      this.handle.setCamera(pipelineCameraForView(view, {
+        perspective: this.camera,
+        orthographic: this.orthoCamera,
+      }));
       this.dungeon.ceiling.visible = view === 'fps';
       if (view === 'fps') this.disposeGhostMesh();
       this.lastGhostKey = '';
@@ -1159,8 +1162,10 @@ class GpuPath {
     this.dungeon.updateLights(Math.floor(pose.x), Math.floor(pose.y));
 
     // 2b. Update sprite billboards (monsters, items, hero) — camera-facing
-    //     quads lit by the same stack as the terrain (T-0042).
-    this.sprites.update(sprites, this.camera);
+    //     quads lit by the same stack as the terrain (T-0042). Face whichever
+    //     camera the graph is currently rebuilt against so billboards yaw
+    //     toward the ortho camera in ortho mode too.
+    this.sprites.update(sprites, view === 'ortho' ? this.orthoCamera : this.camera);
 
     // 3. Mood: pinned via `?mood=` or derived from the hero's cell.
     const cellX = Math.floor(pose.x);

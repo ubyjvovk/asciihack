@@ -10,7 +10,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { HERO_SPRITE_HEIGHT, orthoPlacement, ORTHO_DISTANCE_CELLS } from '../web/src/gl/ortho-camera.js';
-import { applyOrthoPlacementTo, cutawayKey, orthoDofFocus } from '../web/src/gpu/ortho.js';
+import { applyOrthoPlacementTo, cutawayKey, orthoDofFocus, pipelineCameraForView } from '../web/src/gpu/ortho.js';
 
 /** In-memory stand-in for an `OrthographicCamera` — records everything
  *  `applyOrthoPlacementTo` writes, so the test can assert against it without
@@ -102,6 +102,33 @@ describe('gpu ortho — the ported afterburn view over the ortho camera', () => 
     // between neighbouring cells and their sums or diagonals.
     expect(cutawayKey({ x: 1, y: 20 })).not.toBe(cutawayKey({ x: 20, y: 1 }));
     expect(cutawayKey({ x: 2, y: 3 })).not.toBe(cutawayKey({ x: 23, y: 0 }));
+  });
+
+  it('switching to the ortho view rebuilds the graph against an orthographic camera', () => {
+    // T-0050: the T-0043 approach copied the ortho projection matrix onto the
+    // pipeline's perspective camera; the graph derived its own uniforms from
+    // the still-`isPerspectiveCamera === true` reference and rendered a black
+    // frame. The fix hands the graph the real `OrthographicCamera` on F3 —
+    // `pipelineCameraForView('ortho', ...)` returns it, `GpuPath` passes that
+    // to `PipelineHandle.setCamera`, and `build()` rebinds `pass(scene, ...)`
+    // against it so `camera.isOrthographicCamera` is true where three checks
+    // it (SSR/TRAA branch on it, SSGI is demoted to GTAO in `build()`).
+    //
+    // Stub `setCamera` in place of the real handle, the same way
+    // `tests/gpu-compose.test.ts` stubs the pipeline factory for the mood
+    // environment wiring — the assertion is that ortho hands over the
+    // orthographic camera reference and fps hands the perspective one back.
+    const perspective = { isPerspectiveCamera: true as const };
+    const orthographic = { isOrthographicCamera: true as const };
+    let received: unknown = null;
+    const setCamera = (cam: unknown): void => { received = cam; };
+    setCamera(pipelineCameraForView('ortho', { perspective, orthographic }));
+    expect(received).toBe(orthographic);
+    expect((received as { isOrthographicCamera?: boolean }).isOrthographicCamera).toBe(true);
+    // The fps direction hands back the perspective camera — without this, F3
+    // would leave an ortho projection in the graph after returning to fps.
+    setCamera(pipelineCameraForView('fps', { perspective, orthographic }));
+    expect(received).toBe(perspective);
   });
 
   it('DOF focus follows the ortho camera distance', () => {

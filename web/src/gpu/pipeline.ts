@@ -22,6 +22,7 @@ import type {
   Renderer,
   Scene,
   PerspectiveCamera,
+  OrthographicCamera,
   DirectionalLight,
   PointLight,
   Texture,
@@ -340,7 +341,12 @@ function wrapLook(l: Look): LookUniforms {
 export interface PipelineOptions {
   renderer: Renderer;
   scene: Scene;
-  camera: PerspectiveCamera;
+  /** Bound into the graph at build time via `pass(scene, camera)` and passed
+   *  to every projection-aware node (SSGI/SSR/TRAA/godrays/DOF viewZ). Both
+   *  camera flavours are accepted so the ortho view can rebuild the graph
+   *  against a real `OrthographicCamera` on F3 (T-0050) — the fps view still
+   *  uses a `PerspectiveCamera` at build time. */
+  camera: PerspectiveCamera | OrthographicCamera;
   requested?: QualityName;
   override?: Partial<QualitySettings> | null;
   sun?: DirectionalLight | PointLight | null;
@@ -361,6 +367,14 @@ export interface PipelineHandle {
   look: LookUniforms;
   state: PipelineState;
   setQuality: (q: QualityName) => void;
+  /** Rebuild the graph against a different camera reference. A no-op when the
+   *  reference is unchanged; otherwise identical in cost to `setQuality` (it
+   *  reuses `build()`). The ortho view calls this on F3 so the graph binds a
+   *  real `OrthographicCamera` — SSGI/SSR/TRAA read `isOrthographicCamera`
+   *  from the bound camera and derive their projection maths from it (T-0050,
+   *  docs/gpu-ortho.md "The camera rebuild"). Not a hot path — a graph
+   *  rebuild on a mode switch is fine; never call this per frame. */
+  setCamera: (camera: PerspectiveCamera | OrthographicCamera) => void;
   render: () => void;
 }
 
@@ -377,7 +391,11 @@ export interface PipelineState {
  * `docs/gpu-pipeline.md` before touching it.
  */
 export function createPipeline(opts: PipelineOptions): PipelineHandle {
-  const { renderer, scene, camera } = opts;
+  const { renderer, scene } = opts;
+  // Mutable so `setCamera` can rebuild the graph against a different camera
+  // reference (F3 in the browser viewport swaps a PerspectiveCamera for an
+  // OrthographicCamera and vice versa — T-0050).
+  let camera: PerspectiveCamera | OrthographicCamera = opts.camera;
   const sun = opts.sun ?? null;
   const overlay = opts.overlay ?? null;
   const override = opts.override ?? null;
@@ -398,10 +416,17 @@ export function createPipeline(opts: PipelineOptions): PipelineHandle {
     state.quality = qName;
     state.nodes = {};
 
+    // SSGI reads `camera.fov` in `setSize()` (`SSGINode.js:348`), so binding an
+    // orthographic camera produces NaN in `_halfProjScale` and a black frame.
+    // Demote to GTAO on the ortho path — same MRT footprint (still needs
+    // normals, no diffuseColor) and GTAO is projection-agnostic in three r185.
+    const cameraIsOrtho = (camera as { isOrthographicCamera?: boolean }).isOrthographicCamera === true;
+    const giMode: QualitySettings['gi'] = cameraIsOrtho && q.gi === 'ssgi' ? 'ao' : q.gi;
+
     const scenePass = pass(scene, camera);
-    const needNormal = q.gi !== 'none' || q.ssr;
+    const needNormal = giMode !== 'none' || q.ssr;
     const targets: Record<string, WGNode> = { output };
-    if (q.gi === 'ssgi') targets['diffuseColor'] = diffuseColor;
+    if (giMode === 'ssgi') targets['diffuseColor'] = diffuseColor;
     if (needNormal) targets['normal'] = packNormalToRGB(normalView);
     if (q.ssr) targets['metalrough'] = vec2(metalness, roughness);
     if (q.aa === 'traa') targets['velocity'] = velocity;
@@ -421,8 +446,9 @@ export function createPipeline(opts: PipelineOptions): PipelineHandle {
 
     let node: WGNode<'vec4'> = pColor;
 
-    if (q.gi === 'ssgi' && pNormal !== null) {
-      const gi = ssgi(pColor, pDepth, pNormal, camera);
+    if (giMode === 'ssgi' && pNormal !== null) {
+      // Narrowed by `giMode` — an ortho camera would have been demoted above.
+      const gi = ssgi(pColor, pDepth, pNormal, camera as PerspectiveCamera);
       gi.sliceCount.value = q.slices ?? 1;
       gi.stepCount.value = q.steps ?? 12;
       gi.radius = look.giRadius;
@@ -445,7 +471,7 @@ export function createPipeline(opts: PipelineOptions): PipelineHandle {
         pColor.a,
       );
       state.nodes['gi'] = gi;
-    } else if (q.gi === 'ao' && pNormal !== null) {
+    } else if (giMode === 'ao' && pNormal !== null) {
       const aoPass = gtao(pDepth, pNormal, camera);
       aoPass.resolutionScale = 0.5;
       node = vec4(pColor.rgb.mul(aoPass.getTextureNode().r), pColor.a);
@@ -554,6 +580,11 @@ export function createPipeline(opts: PipelineOptions): PipelineHandle {
     state,
     setQuality(q: QualityName): void {
       if (q !== state.quality) build(q);
+    },
+    setCamera(cam: PerspectiveCamera | OrthographicCamera): void {
+      if (cam === camera) return;
+      camera = cam;
+      build(state.quality);
     },
     render(): void {
       pipeline.render();

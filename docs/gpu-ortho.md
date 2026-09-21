@@ -30,34 +30,79 @@ three helpers on top, in `web/src/gpu/ortho.ts`:
 All three are pure (no `three`, no DOM) so `tests/gpu-ortho.test.ts` pins
 them down in node.
 
-## The projection copy
+## The camera rebuild
 
-`createPipeline` binds one camera at construction time: swapping cameras
-mid-flight means rebuilding the whole TSL graph, which would drop TRAA's
-temporal history and stall the frame. Instead, the GPU path keeps two
-cameras and copies one onto the other every ortho frame:
+*Superseded by T-0050. T-0043 shipped a "copy the ortho projection matrix
+onto the pipeline's `PerspectiveCamera`" trick that rendered a completely
+black frame at every quality tier — the PM's eyeball review of
+`?gpu=raw&view=ortho` caught it after the accept. The section below
+describes what actually ships now; the "projection copy" approach is kept
+here only long enough to explain why it does not work.*
 
-- `GpuPath.camera` — the `WG.PerspectiveCamera` the pipeline was built with,
-  and the reference every TSL node holds.
-- `GpuPath.orthoCamera` — a dedicated `WG.OrthographicCamera` the ortho
-  path drives via `applyOrthoPlacementTo(orthoCamera, orthoPlacement(hero, cols, rows))`.
+`createPipeline` binds one camera at construction time — `pass(scene,
+camera)` and every projection-aware TSL node (SSGI/SSR/TRAA/DOF/godrays)
+hold that reference and derive their own uniforms (projection, inverse,
+`isPerspectiveCamera`-dependent depth maths) from it. Hand-copying the
+projection matrix onto a camera that still reports itself as perspective
+is not a supported configuration:
 
-Each ortho frame, after placement, the path does:
+- `pass(scene, camera)` re-reads the projection from that reference every
+  frame — a `Camera.updateProjectionMatrix()` call anywhere in three's
+  internals silently throws the copy away;
+- SSR reads `camera.isPerspectiveCamera` (`SSRNode.js:833`, `:1036`,
+  `:1079`) and picks the perspective depth-reconstruction branch, which
+  produces NaN when the actual projection is ortho;
+- TRAA reads `camera.isOrthographicCamera` (`TRAANode.js:544`) and takes
+  the perspective velocity branch for the same reason.
+
+Zero of these check `projectionMatrix` directly, so the perspective
+reference wins and the ortho projection sitting inside it is never used.
+Result: a completely black frame at `q=low` (only bloom, FXAA, grade — no
+depth reconstruction at all), and the same at every richer tier.
+
+**The fix — stop faking it, rebuild the graph against the real camera on
+F3.** `createPipeline`'s `build()` was already rebuild-friendly (that is
+what `setQuality` uses). `PipelineHandle.setCamera(cam)` rebinds `camera`
+in the closure and calls `build(state.quality)` — a no-op when the
+reference is unchanged, otherwise identical in cost to a quality change.
+`PipelineOptions.camera` widens from `PerspectiveCamera` to
+`PerspectiveCamera | OrthographicCamera` so both flavours are valid at
+construction and at rebuild.
+
+`GpuPath` keeps two cameras — `this.camera` (`WG.PerspectiveCamera`) for
+fps, `this.orthoCamera` (`WG.OrthographicCamera`) for the overhead view.
+Only on a view change (F3), before the next `handle.render()`:
 
 ```ts
-this.orthoCamera.updateMatrixWorld(true);
-this.camera.position.copy(this.orthoCamera.position);
-this.camera.quaternion.copy(this.orthoCamera.quaternion);
-this.camera.updateMatrixWorld(true);
-this.camera.projectionMatrix.copy(this.orthoCamera.projectionMatrix);
-this.camera.projectionMatrixInverse.copy(this.orthoCamera.projectionMatrixInverse);
+if (view !== this.lastView) {
+  this.handle.setCamera(pipelineCameraForView(view, {
+    perspective: this.camera,
+    orthographic: this.orthoCamera,
+  }));
+  // ceiling toggle, ghost mesh reset, lastView = view …
+}
 ```
 
-three's `Camera.updateProjectionMatrix()` is manual — nothing else calls it
-per frame — so overwriting `projectionMatrix` directly persists until the
-fps branch calls `updateProjectionMatrix()` on the way back. The
-`lastView` guard forces that re-derive on the F3-back-to-fps frame so the
-perspective projection is not left behind.
+Per-frame the ortho branch just runs `applyOrthoPlacementTo(this.orthoCamera,
+orthoPlacement(hero, cols, rows))` — the placement math is unchanged. A
+graph rebuild when the player presses F3 is fine; it is a mode switch, not a
+hot path. Never call `setCamera` per frame.
+
+`pipelineCameraForView(view, cams)` is a pure helper in
+`web/src/gpu/ortho.ts` — its whole shape mirrors `pipelineOptionsWithEnv`
+so `tests/gpu-ortho.test.ts`' "switching to the ortho view rebuilds the
+graph against an orthographic camera" can inject a `setCamera` stub, hand
+it the value the helper returns, and pin the wiring without a real
+`WebGPURenderer`.
+
+**SSGI vs. an ortho camera.** `SSGINode.setSize` reads `camera.fov`
+(`SSGINode.js:348`) and would compute NaN on an `OrthographicCamera`, so
+`build()` demotes SSGI to GTAO when the bound camera is orthographic — same
+MRT footprint (still needs the normal target, no `diffuseColor`), and GTAO
+is projection-agnostic in three r185. `q=high` and `q=ultra` on the ortho
+view therefore render through GTAO + SSR + TRAA + DOF + bloom instead of
+SSGI + SSR + …; the frame is one bounce dimmer than fps, which is a look
+tuning question, not a black-frame one.
 
 `orthoPlacement`'s `left/right/top/bottom/near/far` land byte-for-byte on
 the `OrthographicCamera` — that is what `tests/gpu-ortho.test.ts`'s "the
@@ -184,32 +229,31 @@ watching that field will see.
 ## Verification
 
 Everything in this ticket that runs in node is exercised by
-`tests/gpu-ortho.test.ts` (three cases, one per acceptance line):
+`tests/gpu-ortho.test.ts` (four cases):
 
 1. `the ortho frustum from placeOrthoCamera is applied unchanged to the GPU camera`
 2. `the cutaway set changes only when the hero cell changes`
-3. `DOF focus follows the ortho camera distance`
+3. `switching to the ortho view rebuilds the graph against an orthographic camera` (T-0050)
+4. `DOF focus follows the ortho camera distance`
 
 ## What I could not verify
 
 The rules `docs/gpu.md` §9 sets on this whole wave apply here too. The
 worker container has no GPU and cannot look at a rendered frame, so:
 
-- **No visual verification.** The ceiling-hide, ghost overlay,
-  projection-matrix copy from the ortho camera to the pipeline camera,
-  and the DOF override running through the full afterburn stack are
-  written to specification and unit-tested at their pure boundaries; the
-  actual frame is the PM's eyeball review, through `/scene.html?view=ortho`
-  and `scripts/web-shot.mjs` (`docs/gpu.md` §9).
-- **No confirmation that the projection-copy trick sidesteps every TSL
-  reprojection assumption.** SSGI, SSR, TRAA and DOF all read
-  `camera.projectionMatrix` and `matrixWorldInverse`; the ortho projection
-  is a valid affine transform, so they *should* cope, but three r185's
-  behaviour with an ortho matrix on a `PerspectiveCamera`-typed reference
-  is not exercised in this worker.
+- **No visual verification.** The ceiling-hide, ghost overlay, F3 pipeline
+  rebuild against the real `OrthographicCamera`, and the DOF override
+  running through the full afterburn stack are written to specification and
+  unit-tested at their pure boundaries; the actual frame — including
+  whether `?gpu=raw&view=ortho` now renders anything at all — is the PM's
+  eyeball review, through `/scene.html?view=ortho` and `scripts/web-shot.mjs`
+  (`docs/gpu.md` §9).
 - **No timing.** `docs/gpu.md` §8's 16 ms/frame budget still stands
-  unverified; the ghost-mesh + ortho-branch cost is trivial on paper
-  (at most 7 boxes, plus a `Matrix4.copy` per frame) but not measured.
+  unverified. The F3 rebuild is one `build()` call — a full graph
+  reconstruction, on par with a quality change — which is fine as a one-off
+  on a mode switch but has not been measured; if a real device shows a
+  visible hitch on F3, holding two pipelines (one per camera) is the
+  fallback the ticket accepted.
 - **The ghost overlay is not a real cutaway** (see "What (a) does not
   deliver" above). If the PM's review shows a hero fully occluded behind
   cutaway walls in the ortho view, the follow-up ticket for option (b) is
