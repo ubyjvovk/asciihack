@@ -43,6 +43,29 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   2026-09-01). Worktrees get it via `scripts/nethack-src.sh` (T-0001).
 
 ## Decision log (append-only)
+- 2026-09-21 — User: "a sibling project in ~/afterburn has a really really
+  cool renderer, pls port it for asciihack; copy code and resources from
+  there freely, and make it look as good; prefer opus workers". Decision:
+  **port afterburn's WebGPU/TSL stack into the browser viewport**, contract
+  written as **`docs/gpu.md`** (PM-owned; tickets cite it). The shape: vendor
+  the voxel kit (`web/src/voxel/`), port renderer + post pipeline + voxel
+  material + moods (`web/src/gpu/`), bake the dungeon as voxels, and compose
+  the GPU frame into the *untouched* vendored AsciiCity style pass by blitting
+  its canvas through a full-screen quad (a WebGPURenderer cannot run their
+  raw GLSL). Hard rules: no new npm dependency (three r185 already ships
+  `three/webgpu` + `three/tsl` + the TSL display addons — verified); the
+  legacy WebGL path stays as the fallback and serves `needsDepth` styles
+  (only `edges`); `?gpu=auto|off|raw`, `?q=`, F8 for raw. Wave: T-0036..T-0040,
+  all `capability: [frontier]` (opus).
+- 2026-09-21 — **opus lane was dead and the cause was ours**: the board's
+  scaffolded `.tigerteam/scripts/in-container.sh` predated tigerteam T-0201
+  (prompt off argv → stdin transport), so `docker run` never got `-i` and
+  every claude attempt died in 0.6 s with "Input must be provided either
+  through stdin or as a prompt argument when using --print". Fixed by
+  copying the current asset over the board copy. `ds`/`muse` (pi engine,
+  `at_file` transport) were unaffected — which is why only opus broke.
+  **Refresh the board shims from the tigerteam assets after upgrading the
+  tool.**
 - 2026-09-04 — User went to bed with "fix the renderer, then monster/object
   polish, then browser, then idk" and left the browser architecture to the
   PM. Decision: **browser wave = WebSocket thin client first** (browser
@@ -73,6 +96,15 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   before the first ticket.
 
 ## Board snapshot
+- 2026-09-21 01:50 — T-0035 (raycaster refinement) accepted after
+  re-running the full suite in its worktree: 248 pass, docs updated, in
+  scope. **35 done.** Queued the afterburn port wave T-0036..T-0040 and
+  committed `docs/gpu.md` + the AGENTS.md `web/` layout note. Running:
+  T-0036 (opus-1), T-0037 (opus-2). Note on T-0035's tests: the
+  `corridor cell beyond a doorway is visible` case measures any cell at
+  depth 2..3, which ordinary floor also satisfies — it passes but does not
+  actually pin the corridor colour. Not worth a rework; fold a real
+  assertion into the next raycaster ticket.
 - 2026-09-04 06:40 — T-0032 (browser ortho camera; one rework: per-view
   fog, debug handle `window.__asciihack.gl.debugInfo()`), T-0033 (lattice
   fade + docs), T-0034 (lit/dark rooms) accepted; **34 done, board empty**.
@@ -181,45 +213,27 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   yet.
 
 ## Next actions
-- Night plan (2026-09-04): (1) land T-0028/T-0029/T-0024/T-0026/T-0027 —
-  renderer look, tone curve, sprites, FOV keys; (2) sprite polish
-  follow-ups from the playtest; (3) browser wave T-0030 (web scaffold +
-  WS server + classic mode in a <pre> grid) → T-0031 (three.js dungeon scene
-  + AsciiCity styles as the fps viewport) → T-0032 (ortho camera) →
-  later T-0033 (WASM transport for static hosting). Push + refresh README
-  screenshots after each visible step.
-- Wave 4 needs a user decision before planning: browser build as static
-  WASM (emscripten build of libnethack + three.js/AsciiCity styles, no
-  server) vs thin client (browser talks WebSocket to the native bridge on
-  a host). Candidate wave-3b tickets meanwhile: ortho textures; lit/dark
-  room lighting (needs a `lit` flag on MapCell — PM type change); tutorial
-  prompt handling in the UI; docs/ui.md `--playground` doc sync;
-  `nethack-build.sh` excluding the submodule's `.git` file from src-tree;
-  message history overlay polish; performance pass on the 215-col loop.
-0a. (done 19:09) Before T-0007 can be claimed (i.e. right after accepting T-0004 while no
-    attempt runs): restart the supervisor so it loads `OPENROUTER_KEY`
-    (`.env` changed 18:36, supervisor started 17:03) — `tigerteam down
-    --keep-services`, then `tmux split-window -v -t tigerteam-asciihack:0.1 -c
-    /home/d/asciihack 'tigerteam up'`. Then the muse lane (scale 1) claims
-    T-0007 on its own.
-0. Review checklist addition (2026-09-03): run `npx tsc --noEmit` (or
-   `bash scripts/check.sh`) in the worktree before accepting any ticket that
-   touches TypeScript — vitest does not type-check, and T-0009 slipped a
-   TS2345 through (fixed by T-0013).
-1. Review T-0006 and the T-0005 rework when they land.
-2. Note for T-0004/T-0007: `libnethack.a` bakes `SYSCF_FILE` and `HACKDIR`
-   as absolute paths into `build/nethack/lib/playground/`; the bridge's
-   playground copy under `~/.asciihack/` must keep the build dir's `sysconf`
-   reachable (or pass `-d`/`NETHACKDIR` and confirm SYSCF still resolves).
-   Also `nethack-build.sh` copies the submodule's `.git` file into src-tree
-   (harmless; exclude it in a later cleanup).
-3. (done) §3 reconciled with `docs/bridge.md`; T-0003's Context carries
-   the live-bridge observations.
-4. Wave 2 tickets to write once T-0004 + T-0005 land: T-0007 fps mode
-   (viewport painter + controls §6.4 + minimap overlay), T-0008 ortho
-   renderer + mode (§5.3), T-0009 ssh serving (`ForceCommand`/login-shell
-   script + docs), T-0010 render styles (gloom/amber/matrix in the
-   quantizer), T-0011 lit/dark room lighting from NetHack glyph info.
+- **The afterburn port (T-0036..T-0040) is the live wave.** Order:
+  T-0036 (voxel kit) ∥ T-0037 (renderer + pipeline) → T-0038 (material +
+  moods) → T-0039 (dungeon bake) → T-0040 (compose + viewport wiring).
+  Review each against `docs/gpu.md`; nobody in the fleet can see a frame,
+  so every report must carry a "what I could not verify" section and the
+  **eyeball review is the PM's**.
+- PM to write (outside every ticket's scope): `scripts/web-shot.mjs` — the
+  headless screenshot instrument, ported from `~/afterburn/tools/shot.mjs`.
+  Playwright is NOT a dependency here; resolve it from
+  `~/asciicity/node_modules` (browsers are in `~/.cache/ms-playwright`).
+  Without it the port cannot be judged.
+- After first light (T-0040 accepted): screenshot the fps view in raw mode
+  and in the amber ASCII style, then send a tuning ticket (mood numbers,
+  torch density, DOF focus, grain) — the look will need one or two passes.
+- Deferred to later tickets, in rough order: monster/item sprites in the
+  GPU scene; the ortho camera + cutaway on the GPU path; a weather overlay
+  (drips, dust motes) from `~/afterburn/src/render/weather.js`; then the
+  open question the user still owes an answer on — static WASM build for
+  GitHub-Pages hosting vs. keeping the ws thin client.
+- Housekeeping: `.tigerteam/logs/workers/` is **16 GB** (one 9.4 GB
+  `ds-1.log`). Truncate the old per-worker logs before the next long run.
 
 ## How to resume
 1. Read this file.

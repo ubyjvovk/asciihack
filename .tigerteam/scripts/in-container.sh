@@ -18,6 +18,8 @@
 #        GROK_HOME + KIMI_CODE_HOME into ${WORKER_AGENTS_HOME}/<engine>),
 #      TIGERTEAM_CNAME, WORKER_CTR_MEMORY (3g), WORKER_CTR_CPUS (2),
 #      WORKER_DOCKER_ARGS,
+#      TIGERTEAM_STDIN (set to 1 to pass `docker run -i` so a piped prompt
+#        reaches the engine; never -t),
 #      TIGERTEAM_RW_ROOT (PM-only: set to 1 to restore a single rw root
 #        mount for merged-tree verification whose workdir IS the root;
 #        the runner never sets it).
@@ -70,9 +72,15 @@ else
   [ -d "$ROOT/.tigerteam" ] && ROOT_MOUNTS+=(-v "$ROOT/.tigerteam:$ROOT/.tigerteam")
 fi
 
+# Prompt-on-stdin: the runner sets TIGERTEAM_STDIN=1 for engines whose
+# prompt is piped into docker run. Never -t (a TTY would steal the pipe).
+STDIN_FLAG=()
+[ "${TIGERTEAM_STDIN:-}" = "1" ] && STDIN_FLAG=(-i)
+
 # tini as PID 1 reaps reparented zombies; engine CLIs are not init.
 # shellcheck disable=SC2086
 exec docker run --rm --init \
+  ${STDIN_FLAG[@]+"${STDIN_FLAG[@]}"} \
   ${TIGERTEAM_CNAME:+--name "$TIGERTEAM_CNAME"} \
   --user "$(id -u):$(id -g)" \
   ${ROOT_MOUNTS[@]+"${ROOT_MOUNTS[@]}"} \

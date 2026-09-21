@@ -28,6 +28,13 @@ the doc disagree, flag it in your report instead of guessing.
 - `src/engine/` — bridge process + session model; `src/render/` — pure
   renderers (raycast, ortho, ascii quantizer); `src/term/` — screen writer,
   key parser, tty adapter; `src/ui/` — modes and overlays; `src/cli.ts`.
+- `web/` — the browser client (vite): `web/src/gl/` legacy WebGL viewport +
+  the vendored, **do-not-edit** `web/src/asciicity/` style shaders;
+  `web/src/voxel/` + `web/src/gpu/` the GPU render path ported from
+  `~/afterburn` — its contract is **`docs/gpu.md`** (PM-owned, cited by
+  tickets). `web/` is typechecked by `npx tsc --noEmit -p web/tsconfig.json`;
+  the root `npx tsc --noEmit` does **not** cover it, but it does compile
+  anything `tests/` imports (with `noUncheckedIndexedAccess` and no DOM lib).
 - `tests/` — vitest, `tests/<module>.test.ts`; `tests/fixtures/` (recorded
   bridge streams, synthetic levels). `docs/` — architecture + module notes.
 - `scripts/` — `test.sh` (unit entry), `check.sh` (full gate),
