@@ -43,6 +43,13 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   2026-09-01). Worktrees get it via `scripts/nethack-src.sh` (T-0001).
 
 ## Decision log (append-only)
+- 2026-09-21 — **Process lesson, learned the hard way: verify the frame
+  BEFORE the accept, not in the same breath.** I ran `tigerteam accept
+  T-0043` and the verification screenshot in one command; the shot came back
+  black, but the merge had already landed, so the fix had to be a new ticket
+  (T-0050) instead of a rework. For any ticket whose value is visual, the
+  order is: gate in the worktree → **shoot it** → accept. A green unit suite
+  over pure helpers says nothing about whether anything is on screen.
 - 2026-09-21 — Three PM decisions written into `docs/gpu.md` that the
   tickets now cite, each made to stop two workers diverging:
   (1) **§6.1 the grade fights the quantiser** — styled mode keeps AgX,
