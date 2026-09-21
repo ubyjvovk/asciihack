@@ -49,68 +49,88 @@ export function buildHeroModel(): VoxelModel {
   const b = new VoxelBuilder({ unit: HERO_UNIT_CELLS, seed: 7, jitter: 0.04 });
 
   // Legs (symmetric): pants from ankle to hip; boot around the ankle; sole
-  // slightly wider so the boot reads on a mid-tone floor.
+  // slightly wider so the boot reads on a mid-tone floor. Depths ~+25% over
+  // the pre-T-0064 rig so the leg silhouette is no longer a slab from the side.
   b.bothX(() => {
-    b.box(0.3, 2.0, -1.5, 2.6, 11.0, 3.0, 'strap', 'fabric'); // pant leg
-    b.box(0.2, 12.5, -1.7, 2.8, 1.2, 3.4, 'wood0', 'fabric'); // pant hem cuffed over boot
-    b.box(0.15, 0.5, -1.9, 2.9, 2.3, 3.9, 'wood0', 'fabric'); // boot upper
-    b.box(0.1, 0.0, -2.0, 3.0, 0.6, 4.0, 'rubber', 'rubber'); // sole
-    b.box(0.5, 0.4, 1.7, 2.4, 0.6, 0.4, 'brass', 'brass'); // toe cap glint
+    b.box(0.3, 2.0, -1.5, 2.6, 11.0, 3.8, 'strap', 'fabric'); // pant leg
+    b.box(0.2, 12.5, -1.7, 2.8, 1.2, 4.2, 'wood0', 'fabric'); // pant hem cuffed over boot
+    b.box(0.15, 0.5, -1.9, 2.9, 2.3, 4.9, 'wood0', 'fabric'); // boot upper
+    b.box(0.1, 0.0, -2.0, 3.0, 0.6, 5.0, 'rubber', 'rubber'); // sole
+    b.box(0.5, 0.4, 2.7, 2.4, 0.6, 0.4, 'brass', 'brass'); // toe cap glint
   });
 
-  // Hips and belt — the horizontal band that anchors the eye.
-  b.box(-3.2, 13.5, -2.0, 6.4, 1.3, 4.0, 'wood0', 'fabric'); // belt leather
-  b.box(-0.5, 13.65, 1.9, 1.0, 1.0, 0.25, 'brass', 'brass'); // buckle
-  b.box(-0.2, 13.85, 2.02, 0.4, 0.55, 0.1, 'wood1', 'fabric'); // buckle tongue
+  // Hips and belt — the horizontal band that anchors the eye. Belt depth
+  // 4.0→5.0 to hug the deeper tunic.
+  b.box(-3.2, 13.5, -2.0, 6.4, 1.3, 5.0, 'wood0', 'fabric'); // belt leather
+  b.box(-0.5, 13.65, 2.9, 1.0, 1.0, 0.25, 'brass', 'brass'); // buckle
+  b.box(-0.2, 13.85, 3.02, 0.4, 0.55, 0.1, 'wood1', 'fabric'); // buckle tongue
 
-  // Torso — moss-green tunic over a lighter canvas undershirt hem. The vertical
-  // wood-tone strip is the tunic's lace panel; hides the plane between chest
-  // boxes and gives the front a readable "adventurer" note.
-  b.box(-3.0, 14.8, -1.9, 6.0, 7.2, 3.8, 'moss1', 'fabric'); // tunic
-  b.box(-3.1, 14.8, -2.0, 6.2, 0.5, 4.0, 'canvas', 'fabric'); // undershirt hem
-  b.box(-0.6, 15.3, 1.88, 1.2, 5.5, 0.18, 'wood1', 'fabric'); // lace panel
+  // Torso — moss-green tunic over a lighter canvas undershirt hem. T-0064
+  // lifted the depth from 3.8 to 4.8 (a 0.80 depth-to-width ratio, up from
+  // 0.63) so the chest reads as a body from the 42° diorama camera, not a
+  // cardboard slab. The vertical wood-tone strip is the tunic's lace panel;
+  // hides the plane between chest boxes and gives the front a readable
+  // "adventurer" note.
+  b.box(-3.0, 14.8, -1.9, 6.0, 7.2, 4.8, 'moss1', 'fabric'); // tunic
+  b.box(-3.1, 14.8, -2.0, 6.2, 0.5, 5.0, 'canvas', 'fabric'); // undershirt hem
+  b.box(-0.6, 15.3, 2.88, 1.2, 5.5, 0.18, 'wood1', 'fabric'); // lace panel
   for (let i = 0; i < 4; i++) {
-    b.box(-0.5, 15.6 + i * 1.35, 1.99, 1.0, 0.15, 0.08, 'brass', 'brass'); // lace hooks
+    b.box(-0.5, 15.6 + i * 1.35, 2.99, 1.0, 0.15, 0.08, 'brass', 'brass'); // lace hooks
   }
 
-  // Shoulders and arms.
+  // Chamfer boxes at the tunic's four vertical corners: full-height 1.2 × 1.2
+  // columns straddling each corner (their inner face 0.6 inside the tunic,
+  // outer face 0.6 beyond it on both horizontal axes) so the top-down
+  // silhouette gains a stair-stepped extension at every corner instead of a
+  // hard 90° edge. ART_BIBLE.md §2, "curves are stair-stepped".
   b.bothX(() => {
-    b.box(2.9, 20.5, -1.6, 1.9, 1.5, 3.2, 'moss1', 'fabric'); // shoulder pad
-    b.box(3.0, 17.4, -1.5, 1.7, 3.4, 3.0, 'moss1', 'fabric'); // upper arm
-    b.box(2.95, 14.2, -1.4, 1.8, 3.3, 2.8, 'canvas', 'fabric'); // forearm / rolled sleeve
-    b.box(2.9, 13.4, -1.4, 1.9, 0.9, 2.8, 'wood0', 'fabric'); // sleeve hem
-    b.box(2.95, 12.2, -1.2, 1.85, 1.3, 2.4, 'wood0', 'fabric'); // glove
-    b.box(2.9, 12.2, 1.1, 1.9, 0.9, 0.5, 'wood0', 'fabric'); // thumb front
+    b.box(2.4, 14.8, 2.3, 1.2, 7.2, 1.2, 'moss1', 'fabric'); // front corner (mirrors to FL)
+    b.box(2.4, 14.8, -2.5, 1.2, 7.2, 1.2, 'moss1', 'fabric'); // back corner (mirrors to BL)
+  });
+
+  // Shoulders and arms. Shoulder depth is chest + 0.4 (4.8 → 5.2) so the
+  // figure has a real silhouette from the side; the arms are ~+25% deeper.
+  b.bothX(() => {
+    b.box(2.9, 20.5, -2.1, 1.9, 1.5, 5.2, 'moss1', 'fabric'); // shoulder pad
+    b.box(3.0, 17.4, -1.5, 1.7, 3.4, 3.8, 'moss1', 'fabric'); // upper arm
+    b.box(2.95, 14.2, -1.4, 1.8, 3.3, 3.5, 'canvas', 'fabric'); // forearm / rolled sleeve
+    b.box(2.9, 13.4, -1.4, 1.9, 0.9, 3.5, 'wood0', 'fabric'); // sleeve hem
+    b.box(2.95, 12.2, -1.2, 1.85, 1.3, 3.0, 'wood0', 'fabric'); // glove
+    b.box(2.9, 12.2, 1.7, 1.9, 0.9, 0.5, 'wood0', 'fabric'); // thumb front
   });
 
   // Cloak / cape draped down the back (-Z side). One tall slab plus a slightly
   // shorter, offset second slab so it reads as folded fabric, not a plank.
-  b.box(-3.4, 14.8, -2.5, 6.8, 8.2, 0.35, 'wood0', 'fabric'); // main drape
-  b.box(-3.3, 14.8, -2.15, 6.6, 5.5, 0.3, 'wood1', 'fabric'); // inner lining, slightly ahead
-  b.box(-3.5, 22.5, -2.55, 7.0, 0.5, 0.5, 'wood0', 'fabric'); // shoulder yoke
-  b.box(-2.7, 22.95, -2.45, 5.4, 0.35, 0.35, 'brass', 'brass'); // clasp band
+  // Shifted back 0.7 with the pack to clear the deeper tunic and its back-
+  // corner chamfers.
+  b.box(-3.4, 14.8, -3.2, 6.8, 8.2, 0.35, 'wood0', 'fabric'); // main drape
+  b.box(-3.3, 14.8, -2.85, 6.6, 5.5, 0.3, 'wood1', 'fabric'); // inner lining, slightly ahead
+  b.box(-3.5, 22.5, -3.25, 7.0, 0.5, 0.5, 'wood0', 'fabric'); // shoulder yoke
+  b.box(-2.7, 22.95, -3.15, 5.4, 0.35, 0.35, 'brass', 'brass'); // clasp band
 
   // Small travel pack strapped to the back — the courier note kept from the
-  // pilot, but muted (no parcel graphics).
-  b.box(-2.0, 16.5, -3.05, 4.0, 4.0, 0.6, 'wood1', 'fabric'); // pack body
-  b.box(-2.1, 16.5, -3.15, 4.2, 0.4, 0.8, 'strap', 'fabric'); // bottom strap
-  b.box(-2.1, 20.1, -3.15, 4.2, 0.4, 0.8, 'strap', 'fabric'); // top strap
-  b.box(-0.4, 18.2, -3.2, 0.8, 0.4, 0.15, 'brass', 'brass'); // pack buckle
-  b.box(-1.3, 19.5, -3.2, 2.6, 0.35, 0.15, 'wood0', 'fabric'); // flap fold
+  // pilot, but muted (no parcel graphics). Shifted back 0.7 with the cloak.
+  b.box(-2.0, 16.5, -3.75, 4.0, 4.0, 0.6, 'wood1', 'fabric'); // pack body
+  b.box(-2.1, 16.5, -3.85, 4.2, 0.4, 0.8, 'strap', 'fabric'); // bottom strap
+  b.box(-2.1, 20.1, -3.85, 4.2, 0.4, 0.8, 'strap', 'fabric'); // top strap
+  b.box(-0.4, 18.2, -3.9, 0.8, 0.4, 0.15, 'brass', 'brass'); // pack buckle
+  b.box(-1.3, 19.5, -3.9, 2.6, 0.35, 0.15, 'wood0', 'fabric'); // flap fold
 
   // Neck.
-  b.box(-1.1, 22.0, -1.1, 2.2, 1.0, 2.2, 'canvas', 'plastic');
+  b.box(-1.1, 22.0, -1.4, 2.2, 1.0, 2.8, 'canvas', 'plastic');
 
   // Head — a boxy skull with a hair cap. Skin uses `canvas` (warm tan) since
   // the palette has no explicit skin tone; the hair cap is `wood0` (dark
-  // brown), and eyes are small `black` inserts at brow height.
-  b.box(-2.2, 23.0, -2.0, 4.4, 4.5, 4.0, 'canvas', 'plastic'); // face
-  b.box(-2.3, 26.2, -2.1, 4.6, 1.8, 4.2, 'wood0', 'fabric'); // hair cap
-  b.box(-2.5, 25.6, -2.2, 0.4, 1.2, 4.4, 'wood0', 'fabric'); // side hair L
-  b.box(2.1, 25.6, -2.2, 0.4, 1.2, 4.4, 'wood0', 'fabric'); // side hair R
-  b.box(-1.35, 25.0, 1.95, 0.7, 0.6, 0.12, 'black', 'plastic'); // eye L
-  b.box(0.65, 25.0, 1.95, 0.7, 0.6, 0.12, 'black', 'plastic'); // eye R
-  b.box(-0.9, 24.1, 2.0, 1.8, 0.25, 0.1, 'wood0', 'fabric'); // mouth line
+  // brown), and eyes are small `black` inserts at brow height. Depth
+  // matches the torso within ~0.2 (face 4.6, hair cap 4.8) so the head no
+  // longer sits on the deeper chest like a coin on its edge.
+  b.box(-2.2, 23.0, -2.0, 4.4, 4.5, 4.6, 'canvas', 'plastic'); // face
+  b.box(-2.3, 26.2, -2.1, 4.6, 1.8, 4.8, 'wood0', 'fabric'); // hair cap
+  b.box(-2.5, 25.6, -2.2, 0.4, 1.2, 5.0, 'wood0', 'fabric'); // side hair L
+  b.box(2.1, 25.6, -2.2, 0.4, 1.2, 5.0, 'wood0', 'fabric'); // side hair R
+  b.box(-1.35, 25.0, 2.55, 0.7, 0.6, 0.12, 'black', 'plastic'); // eye L
+  b.box(0.65, 25.0, 2.55, 0.7, 0.6, 0.12, 'black', 'plastic'); // eye R
+  b.box(-0.9, 24.1, 2.6, 1.8, 0.25, 0.1, 'wood0', 'fabric'); // mouth line
 
   b.anchor('feet', 0, 0, 0);
   b.anchor('head', 0, 28, 0);
