@@ -24,6 +24,7 @@ import type {
   PerspectiveCamera,
   DirectionalLight,
   PointLight,
+  Texture,
 } from 'three/webgpu';
 import { Color } from 'three';
 import {
@@ -346,6 +347,12 @@ export interface PipelineOptions {
   look?: Partial<Look>;
   /** Scene of additive unlit effects (rain, motes) composited after the lighting stack. */
   overlay?: Scene | null;
+  /** Equirectangular HDR environment (`DataTexture`, `HalfFloatType`) sampled
+   *  by SSR when a screen-space ray misses. Passed on **both** backends — the
+   *  stochastic path throws `sampleEnvironmentBRDF on null` without it (T-0048
+   *  / three r185 `SSRNode.js:1051`) and the mirror path treats it as an
+   *  edge/miss fallback. `moods.ts` builds one per mood via `moodEnvironment`. */
+  environment?: Texture | null;
 }
 
 /** Handle returned by `createPipeline` — owns the graph and the tier state. */
@@ -374,6 +381,7 @@ export function createPipeline(opts: PipelineOptions): PipelineHandle {
   const sun = opts.sun ?? null;
   const overlay = opts.overlay ?? null;
   const override = opts.override ?? null;
+  const environment = opts.environment ?? null;
   const look = wrapLook(createLook(opts.look));
 
   const pipeline = new THREE.RenderPipeline(renderer);
@@ -457,6 +465,7 @@ export function createPipeline(opts: PipelineOptions): PipelineHandle {
         reflectNonMetals: true,
         stochastic: ssrStochastic(isWebGPU),
         camera,
+        ...(environment !== null ? { environmentNode: environment } : {}),
       });
       r.maxDistance.value = 40;
       r.thickness.value = 0.4;
