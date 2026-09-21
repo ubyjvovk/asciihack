@@ -131,6 +131,33 @@ to the overlay/prompt exactly as in classic mode:
   toggles the minimap, `F5` cycles the theme, `F6`/`F7` narrow/widen the fps
   FOV (see Settings), `Ctrl+L` redraws.
 
+### Fps movement scheme (`'facing'` vs `'absolute'`, T-0057)
+
+`FpsMode` carries a movement scheme selected at construction and switchable
+at runtime via `setMovement(scheme)`:
+
+- **`'facing'`** (default, the terminal `npm start`): the arrow-key handling
+  described above — a genuine first-person camera where `Left`/`Right` turn
+  on the spot, `Up` walks forward, `Down` walks backwards.
+- **`'absolute'`**: every direction key is sent to NetHack as its usual
+  compass direction — arrows are translated to their compass vi-key
+  (`Up`→`k`, `Right`→`l`, `Down`→`j`, `Left`→`h`), vi-keys and numpad digits
+  pass through unchanged, and nothing is remapped, strafed or reversed. The
+  facing still exists but it *follows* the movement: sending a direction key
+  sets the facing to that compass direction and runs the 120 ms turn
+  animation, so the avatar swings round to face where it is walking instead
+  of snapping.
+- Non-direction keys are unaffected in both schemes.
+
+The browser (`web/src/main.ts`) picks the scheme from the live 3D view: the
+first-person view uses `'facing'`, the ortho and third-person diorama views
+use `'absolute'`. `F2` (fps), `F3` (ortho) and `F9` (third) switch the view
+and re-apply the matching scheme; the terminal client keeps `'facing'` at
+all times. Independently of the avatar, `Q`/`E` rotate the third-person
+camera in 45° steps (see `docs/gpu-thirdperson.md`) — those keys move the
+camera around a fixed avatar and do not send anything to NetHack, so the
+avatar's facing (driven by the last movement) is untouched by `Q`/`E`.
+
 ## Minimap (`src/ui/minimap.ts`)
 
 `paintMinimap(grid, rect, session, facing?)` draws a 40×11 window of the

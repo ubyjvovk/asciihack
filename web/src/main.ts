@@ -17,7 +17,7 @@
  */
 import { NethackSession, runSession } from '../../src/engine/session.js';
 import { App } from '../../src/ui/app.js';
-import { FpsMode } from '../../src/ui/modes/fps.js';
+import { FpsMode, type MovementScheme } from '../../src/ui/modes/fps.js';
 import { poseFor, spritesFromMap } from '../../src/ui/view3d.js';
 import type { Theme } from '../../src/render/themes.js';
 import { DEFAULT_SETTINGS, type Settings } from '../../src/ui/settings.js';
@@ -119,6 +119,12 @@ function boot(): void {
     // Debug handle so the PM can diagnose the viewport from the page console:
     // `window.__asciihack.gl.debugInfo()` (plain numbers, see gl-viewport.ts).
     (window as unknown as { __asciihack: { gl: GlViewport } }).__asciihack = { gl };
+    // Movement scheme follows the 3D view: fps is a first-person camera, so
+    // arrows turn/walk relative to the facing; ortho and third-person are
+    // top-down/behind, so arrows are compass moves and the avatar swings to
+    // face the direction (T-0057). Applied once at boot and again below on
+    // every F2/F3/F9 view switch.
+    syncMovement(app, gl.currentView);
     const loop = createRenderLoop(gl, session, app);
     // Capture F5 (style cycle) and F2/F3 (view switch) at the document level
     // so the WebGL viewport reacts before the App consumes them, and mark the
@@ -136,11 +142,15 @@ function boot(): void {
       if (ev.key === 'F3') {
         gl.setView('ortho');
         loop.mark();
+        // App also handles F3 (switches to ortho mode); defer so the
+        // FpsMode we're targeting reflects the post-switch active mode.
+        queueMicrotask(() => syncMovement(app, gl.currentView));
         return;
       }
       if (ev.key === 'F2') {
         gl.setView('fps');
         loop.mark();
+        queueMicrotask(() => syncMovement(app, gl.currentView));
         return;
       }
       if (ev.key === 'F9') {
@@ -148,6 +158,7 @@ function boot(): void {
         // third-person view lands on F9 per the ticket's fallback rule.
         gl.setView('third');
         loop.mark();
+        syncMovement(app, gl.currentView);
         ev.preventDefault();
         ev.stopPropagation();
         return;
@@ -263,6 +274,23 @@ function getFps(app: App): FpsMode | null {
   const mode = app.activeMode as unknown as { name: string };
   if (mode.name !== 'fps') return null;
   return app.activeMode as unknown as FpsMode;
+}
+
+/** Movement scheme that goes with each 3D view. */
+function movementFor(view: 'fps' | 'ortho' | 'third'): MovementScheme {
+  return view === 'fps' ? 'facing' : 'absolute';
+}
+
+/**
+ * Push the movement scheme onto the active FpsMode (if any). When the App is
+ * currently in classic/ortho mode this is a no-op — the FpsMode instance is
+ * still inside App's registry, but it will pick up its scheme on the next
+ * `syncMovement` after F2 activates it (T-0057).
+ */
+function syncMovement(app: App, view: 'fps' | 'ortho' | 'third'): void {
+  const fps = getFps(app);
+  if (fps === null) return;
+  fps.setMovement(movementFor(view));
 }
 
 /** Snapshot the session/pose/sprites and hand them to the GL viewport. In
