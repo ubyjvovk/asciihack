@@ -57,6 +57,7 @@ import {
   type GpuParam,
   type ViewportPath,
 } from '../gpu/path.js';
+import { SpriteLayer } from '../gpu/sprites.js';
 
 /** Distance in cells the hero's lantern reaches before falling to black. */
 export const LANTERN_DISTANCE = 14;
@@ -412,7 +413,7 @@ export class GlViewport {
       viewportPx,
     );
     try {
-      gpu.render(level, pose, vFovDeg, path, size, viewportPx, this.pinnedMood);
+      gpu.render(level, pose, sprites, vFovDeg, path, size, viewportPx, this.pinnedMood);
     } catch (err) {
       this.fallbackToLegacy(err);
       // Re-run this frame on the legacy path so the user gets something.
@@ -860,6 +861,7 @@ class GpuPath {
   readonly handle: PipelineHandle;
   readonly compositor: GpuCompositor;
   readonly backend: BackendChoice;
+  readonly sprites: SpriteLayer;
   quality: QualityName;
   mood: MoodId;
   private lastTime = 0;
@@ -877,6 +879,7 @@ class GpuPath {
     handle: PipelineHandle;
     compositor: GpuCompositor;
     backend: BackendChoice;
+    sprites: SpriteLayer;
     quality: QualityName;
     mood: MoodId;
   }) {
@@ -891,6 +894,7 @@ class GpuPath {
     this.handle = init.handle;
     this.compositor = init.compositor;
     this.backend = init.backend;
+    this.sprites = init.sprites;
     this.quality = init.quality;
     this.mood = init.mood;
   }
@@ -968,6 +972,11 @@ class GpuPath {
     const dungeon = new DungeonScene({ material: voxelMat, ceilingMaterial: voxelMat });
     scene.add(dungeon.root);
 
+    // Sprite billboards for monsters/items/hero — camera-facing quads carrying
+    // tile art, lit by the ported stack rather than pasted on top (T-0042).
+    const sprites = new SpriteLayer();
+    scene.add(sprites.root);
+
     // Build `Atmosphere` *before* the pipeline so its per-mood env map is
     // available at SSR construction (T-0048/T-0049; stochastic SSR throws on
     // `sampleEnvironmentBRDF` when `environmentNode` is null). The rig needs
@@ -1009,7 +1018,7 @@ class GpuPath {
 
     const path = new GpuPath({
       canvas, renderer, caps, scene, camera, lantern, dungeon, atmosphere,
-      handle, compositor, backend, quality, mood: 'torchlit',
+      handle, compositor, backend, sprites, quality, mood: 'torchlit',
     });
 
     // Attach loss listeners for backends that surface them. Both are best-
@@ -1051,6 +1060,7 @@ class GpuPath {
   render(
     level: LevelView,
     pose: Pose,
+    sprites: readonly Sprite[],
     vFovDeg: number,
     mode: 'styled' | 'raw',
     size: { w: number; h: number },
@@ -1071,6 +1081,10 @@ class GpuPath {
     // 2. Refresh the dungeon geometry if the level changed.
     this.dungeon.refresh(level);
     this.dungeon.updateLights(Math.floor(pose.x), Math.floor(pose.y));
+
+    // 2b. Update sprite billboards (monsters, items, hero) — camera-facing
+    //     quads lit by the same stack as the terrain (T-0042).
+    this.sprites.update(sprites, this.camera);
 
     // 3. Mood: pinned via `?mood=` or derived from the hero's cell.
     const cellX = Math.floor(pose.x);
@@ -1130,6 +1144,7 @@ class GpuPath {
   /** Free every GPU-side resource the path owns. */
   dispose(): void {
     try { this.compositor.dispose(); } catch { /* ignore */ }
+    try { this.sprites.dispose(); } catch { /* ignore */ }
     try { this.dungeon.dispose(); } catch { /* ignore */ }
     try { this.renderer.dispose(); } catch { /* ignore */ }
   }
