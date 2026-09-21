@@ -1,34 +1,44 @@
 /**
- * Hero cutout — pure geometry for the "see through the wall in front of the
- * hero" rule (T-0058, docs/gpu-cutout.md). The material-side discard lives in
+ * Hero cutout — pure geometry for the "cut only what actually blocks the hero"
+ * rule (T-0063, `docs/gpu-cutout.md`). The material-side discard lives in
  * `createVoxelMaterial` (`materials.ts`); this file only holds the shared
- * predicate — the same rule the fragment shader evaluates, restated in cell
- * terms — plus the two constants the shader defaults to. Pure: no `three`,
- * no DOM, so `tests/gpu-cutout.test.ts` exercises it in node without a
- * renderer.
+ * predicate — the same test the fragment shader evaluates, restated at cell
+ * resolution — plus the two constants the shader defaults to. Pure: no
+ * `three`, no DOM, so `tests/gpu-cutout.test.ts` exercises it in node without
+ * a renderer.
  *
- * The rule. The camera sits south of the hero at a 42° pitch (docs/
- * gpu-thirdperson.md §"Pose"); any wall between the two occludes the player.
- * Options were sketched in `docs/gpu-ortho.md` §"What (a) does not deliver":
- * this ticket ships option (b), a per-fragment discard driven by the hero
- * cell — the wall stays opaque everywhere except a small "keyhole" the hero
- * reads through. Fragments are cut when **all** of:
+ * The rule (T-0063): cut only fragments that are (a) **nearer the camera than
+ * the hero** and (b) **projected within a screen-space radius** of the hero's
+ * projected position. The previous version compared a world-space distance
+ * from the hero cell and clipped anything on the camera side, which cut walls
+ * that never occluded the player: walk near a wall and a hole opened, whether
+ * or not the wall was between the hero and the camera. Iso games get this
+ * right with the depth + screen test — a wall beside or behind the hero is
+ * never in the camera's line to the hero, so it is never nearer than the
+ * hero along that ray, so it is never cut. See `docs/gpu-cutout.md` §"Why
+ * the world-space proximity version was wrong".
  *
- *   1. the fragment is on the camera side of the hero, so the wall between
- *      them clears and the wall behind the hero stays (`dot > 0` — since
- *      `cutoutForwardFor` returns the hero → camera direction);
- *   2. the fragment's horizontal distance to the hero cell is under
- *      `cutoutRadius` (default `CUTOUT_RADIUS_CELLS = 2.5`);
- *   3. the fragment's world Y is above the floor (`> CUTOUT_FLOOR_EPSILON =
- *      0.05`) — we never cut the floor out from under the hero, only what
- *      stands up in the way.
+ * The pure helper `isCutCell` restates the shader test in cell space:
  *
- * A soft screen-door fade extends past `cutoutRadius` by `CUTOUT_FADE_CELLS =
- * 0.8` cells: a per-pixel dither sample (`interleavedGradientNoise`) versus a
- * 1 → 0 ramp across that band, then `Discard()`. Alpha blending would pull
- * these surfaces out of the opaque pass and corrupt the G-buffer that SSGI
- * and SSR read from; a `discard` keeps the material opaque and simply makes
- * the wall genuinely absent for those rays, which is what we want.
+ *   1. **Depth.** The cell's centre must be strictly closer to the camera
+ *      than the hero is, minus `depthBiasCells` — a small bias so the hero's
+ *      own cell does not flicker in and out under fp noise.
+ *   2. **Screen radius (cone).** The cell must project inside a cone whose
+ *      apex is the camera and whose radius at the hero's depth is
+ *      `screenRadiusCells`. In world units that is a perspective cone: a
+ *      cell at half the hero's depth is inside the cut iff its lateral
+ *      offset from the camera → hero ray is under `screenRadius / 2`.
+ *
+ * `screenRadiusCells` is the cell-space stand-in for the shader's pixel
+ * radius (`heroScreenPx` in `materials.ts`): the fragment shader compares
+ * `screenCoordinate.xy` against `heroScreen` in pixels, and this helper
+ * compares the perspective-projected cell centre against the same cone
+ * expressed in cells at the hero's depth. Both agree on which cells are
+ * inside the cone; the shader gets a soft edge via the screen-door dither.
+ *
+ * `aboveFloor` (the shader guards the ground plane) and the fade band are
+ * not modelled here — a cell is either "in" the cone or "not"; the shader
+ * owns the per-pixel fade.
  */
 
 /** Minimal 3D vector shape used by the pure helpers — plain numbers so
@@ -40,15 +50,23 @@ export interface Vec3Lite {
   readonly z: number;
 }
 
-/** Default cutout radius in cells — the "core" fully-discarded zone around
- *  the hero. Matches the material uniform default; kept here so the docs and
- *  the tests state one number. */
-export const CUTOUT_RADIUS_CELLS = 2.5;
+/** Default depth bias in cells: how much closer than the hero a fragment
+ *  must be before the cut fires. The hero's own cell centre reads the same
+ *  depth as the hero itself; without a bias every ambient wobble in the
+ *  fragment's view-space z would flicker the hero's own voxels. `0.15` cells
+ *  is comfortably wider than any fp noise and strictly less than the 0.5
+ *  cells that separate the hero cell centre from the nearest adjacent-wall
+ *  fragment, so adjacent walls in front of the hero still receive the full
+ *  cut. */
+export const CUTOUT_DEPTH_BIAS_CELLS = 0.15;
 
-/** Soft outer band, in cells, past `CUTOUT_RADIUS_CELLS` where the screen-
- *  door dither ramps from 1 to 0. Total effective footprint is
- *  `CUTOUT_RADIUS_CELLS + CUTOUT_FADE_CELLS`. */
-export const CUTOUT_FADE_CELLS = 0.8;
+/** Fade-band fraction of `screenRadius` for the screen-door dither. The
+ *  shader keeps the ring `[screenRadius, screenRadius · (1 + fade)]` soft
+ *  via `interleavedGradientNoise(screenCoordinate.xy)`. `0.35` matches the
+ *  ticket's "35 % of the radius" number. Not used by the pure helper — a
+ *  cell is either inside the cone or not; the fade is a per-pixel effect
+ *  the shader owns. */
+export const CUTOUT_SCREEN_FADE_FRACTION = 0.35;
 
 /** World Y (cells) below which the discard never fires. Guards the floor —
  *  cutting the floor plane leaves a hole under the hero. Anything standing
@@ -56,54 +74,65 @@ export const CUTOUT_FADE_CELLS = 0.8;
 export const CUTOUT_FLOOR_EPSILON = 0.05;
 
 /**
- * Horizontal unit vector pointing **from the hero toward the camera**. Only
- * the (x, z) components carry information; `y` is forced to 0 so the rule is
- * indifferent to the camera's pitch — every fragment above the floor within
- * the horizontal disk is subject to the discard regardless of camera height.
- *
- * Degenerate case: `camera === hero` (or the two share the same horizontal
- * position) returns the zero vector. The material's fragment rule then reads
- * `dot(anything, 0) = 0`, which is not `> 0`, so nothing is cut — the sane
- * behaviour when the camera sits on top of the hero (there is no wall in
- * front to see through).
- */
-export function cutoutForwardFor(cameraPos: Vec3Lite, heroPos: Vec3Lite): Vec3Lite {
-  const dx = cameraPos.x - heroPos.x;
-  const dz = cameraPos.z - heroPos.z;
-  const len = Math.hypot(dx, dz);
-  if (len === 0) return { x: 0, y: 0, z: 0 };
-  return { x: dx / len, y: 0, z: dz / len };
-}
-
-/**
  * Whether the wall cell at `(cellX, cellY)` is inside the hero cutout: the
  * same predicate the fragment shader evaluates, restated at cell resolution
- * so the docs pin down a rerunnable example and the tests can catch a sign
- * flip without a GPU. Both cell coordinates and the hero position are in the
- * game's map axes (`x` = column, `y` = row / world-z), the same axes
- * `LevelView.kindAt` uses.
+ * so the docs pin down a rerunnable example and the tests can catch a
+ * regression without a GPU. `cellX`/`cellY` and `hero` are in the game's map
+ * axes (`x` = column, `y` = row / world-z, the same axes `LevelView.kindAt`
+ * uses); `camera` is a world position (map-y → world-z) so callers can pass
+ * `THREE.Camera.position` in.
  *
- * `forward` is the (x, z) vector `cutoutForwardFor` produced (any `y` on it
- * is ignored — the predicate is horizontal by construction). `radius` is in
- * cells; the outer soft fade is not modelled here because a cell is either
- * "in" the cutout or "not" — the dither band is a per-pixel effect the
- * shader owns, not a per-cell one.
+ * A cell is cut iff both:
  *
- * A cell exactly at the hero's position (`cellX === hero.x && cellY ===
- * hero.y`) reads `dist === 0`, `dot === 0` and is **not** cut — the hero's
- * own cell is left alone.
+ *  - it is strictly closer to the camera than the hero (measured along the
+ *    horizontal camera → hero direction), minus `depthBiasCells` — a wall
+ *    at or behind the hero's plane, or exactly at the hero's cell, is never
+ *    cut;
+ *  - its projected offset from the camera → hero ray falls inside a cone
+ *    whose radius at the hero's depth is `screenRadiusCells`. This is a
+ *    perspective cone: the same on-screen radius covers less world lateral
+ *    at shallower depths, so cells nearer the camera need a tighter
+ *    lateral offset to be cut.
+ *
+ * Degenerate: `camera` sits at the hero's horizontal position → the camera →
+ * hero direction is undefined. Nothing is cut (there is no wall "in front of
+ * the hero" from a camera on top of him).
  */
 export function isCutCell(
   cellX: number,
   cellY: number,
   hero: { readonly x: number; readonly y: number },
-  forward: Vec3Lite,
-  radius: number,
+  camera: Vec3Lite,
+  screenRadiusCells: number,
+  depthBiasCells: number,
 ): boolean {
-  const dx = cellX - hero.x;
-  const dz = cellY - hero.y;
-  const dist = Math.hypot(dx, dz);
-  if (dist >= radius) return false;
-  const dot = dx * forward.x + dz * forward.z;
-  return dot > 0;
+  const heroWorldX = hero.x + 0.5;
+  const heroWorldZ = hero.y + 0.5;
+  const cellWorldX = cellX + 0.5;
+  const cellWorldZ = cellY + 0.5;
+
+  const toHeroX = heroWorldX - camera.x;
+  const toHeroZ = heroWorldZ - camera.z;
+  const heroDepth = Math.hypot(toHeroX, toHeroZ);
+  if (heroDepth === 0) return false;
+  const fwdX = toHeroX / heroDepth;
+  const fwdZ = toHeroZ / heroDepth;
+
+  const cellRelX = cellWorldX - camera.x;
+  const cellRelZ = cellWorldZ - camera.z;
+  const cellDepth = cellRelX * fwdX + cellRelZ * fwdZ;
+
+  // Depth: strictly nearer camera than hero, minus the bias.
+  if (cellDepth <= 0) return false;
+  if (cellDepth >= heroDepth - depthBiasCells) return false;
+
+  // Lateral offset from the camera → hero ray.
+  const latX = cellRelX - cellDepth * fwdX;
+  const latZ = cellRelZ - cellDepth * fwdZ;
+  const lateral = Math.hypot(latX, latZ);
+
+  // Screen-space cone: the cell is inside the cut iff its lateral offset
+  // is under `screenRadius · cellDepth / heroDepth` (the perspective radius
+  // at the cell's depth). Rearranged to avoid the divide.
+  return lateral * heroDepth < screenRadiusCells * cellDepth;
 }

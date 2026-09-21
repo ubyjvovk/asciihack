@@ -40,11 +40,11 @@ import {
   SceneBuilder,
   type SceneMaterials,
 } from './scene-builder.js';
-import { cutawayCellsFor, orthoPlacement, placeOrthoCamera, type OrthoPlacement } from './ortho-camera.js';
+import { cutawayCellsFor, HERO_SPRITE_HEIGHT, orthoPlacement, placeOrthoCamera, type OrthoPlacement } from './ortho-camera.js';
 import { GpuCompositor } from '../gpu/compose.js';
 import { DungeonScene } from '../gpu/dungeon.js';
 import { CUTOUT, createVoxelMaterial, W } from '../gpu/materials.js';
-import { cutoutForwardFor } from '../gpu/cutout.js';
+import { CUTOUT_DEPTH_BIAS_CELLS } from '../gpu/cutout.js';
 import { Atmosphere, type MoodId } from '../gpu/moods.js';
 import {
   applyOrthoPlacementTo,
@@ -1242,9 +1242,10 @@ class GpuPath {
     // tile art, lit by the ported stack rather than pasted on top (T-0042).
     // The hero and pet are routed to voxel avatars sharing the voxel
     // material family (T-0056, docs/gpu-avatar.md), but with the cutout
-    // discard disabled — the avatars sit at `CUTOUT.center`, so the same
-    // per-fragment rule that clears the wall in front of the hero would
-    // otherwise discard the hero itself (`docs/gpu-cutout.md` §"What is exempt").
+    // discard disabled — the avatars project onto the same screen pixel as
+    // the hero and can dip below the depth bias under smoothing, so the
+    // rule that clears the wall in front of the hero would otherwise flicker
+    // the avatar itself (`docs/gpu-cutout.md` §"What is exempt").
     const avatarMat = createVoxelMaterial({ weather: true, sway: true, cutout: false });
     const sprites = new SpriteLayer({ voxelMaterial: avatarMat });
     scene.add(sprites.root);
@@ -1418,29 +1419,65 @@ class GpuPath {
     // the light with it (T-0043).
     this.lantern.position.set(pose.x, EYE_HEIGHT, pose.y);
 
-    // 1c. Hero cutout (T-0058, docs/gpu-cutout.md). Third and ortho enable
-    //     the material-side discard so any wall between the camera and the
-    //     hero clears; fps disables it — the camera IS the hero there, so
-    //     nothing is ever between them. `cutoutCenter` uses the hero cell
-    //     centre (matches `sprites.ts::update` for the hero avatar), and
-    //     `cutoutForward` is the horizontal hero → camera direction, from
-    //     whichever camera drew the last frame.
+    // 1c. Hero cutout (T-0063, docs/gpu-cutout.md). Third and ortho enable
+    //     the material-side discard so a wall actually blocking the hero
+    //     clears; fps disables it — the camera IS the hero there, so
+    //     nothing is ever between them. The rule is depth + screen-space
+    //     (replacing T-0058's world-space proximity, which cut walls that
+    //     were never in the way): a fragment is cut when it is closer to
+    //     the camera than the hero (view-space z) AND within a pixel radius
+    //     of the hero's projected screen position. Both numbers are
+    //     computed CPU-side against whichever camera is drawing this frame.
     const cutoutOn = view === 'third' || view === 'ortho';
     CUTOUT.enabled.value = cutoutOn ? 1.0 : 0.0;
     if (cutoutOn) {
-      const heroWorldX = heroCell.x + 0.5;
-      const heroWorldZ = heroCell.y + 0.5;
-      CUTOUT.center.value.set(heroWorldX, 0, heroWorldZ);
-      const camPos = view === 'ortho' && orthoPlace !== null
-        ? orthoPlace.position
-        : view === 'third' && thirdFrame !== null
-          ? thirdFrame.position
-          : { x: heroWorldX, y: EYE_HEIGHT, z: heroWorldZ };
-      const fwd = cutoutForwardFor(
-        { x: camPos.x, y: 0, z: camPos.z },
-        { x: heroWorldX, y: 0, z: heroWorldZ },
-      );
-      CUTOUT.forward.value.set(fwd.x, fwd.y, fwd.z);
+      // Project the smoothed hero position with the live camera. The active
+      // camera's `matrixWorldInverse` may not have been refreshed yet this
+      // frame (the renderer normally does it during draw), so update it
+      // explicitly before reading it — otherwise the first frame after a
+      // view flip reads last frame's transform.
+      const activeCam = view === 'ortho' ? this.orthoCamera : this.camera;
+      activeCam.updateMatrixWorld(true);
+      // Hero centre in world coords: smoothed cell position (map y → world
+      // z) lifted to the avatar's mid-height so the projected pixel lands
+      // on the hero's torso rather than its feet or the ceiling.
+      const heroCentreY = HERO_SPRITE_HEIGHT * 0.5;
+      const heroWorld = new THREE.Vector3(pose.x, heroCentreY, pose.y);
+      // Camera-space depth: `-viewZ` is the positive distance in front of
+      // the camera along the viewing direction. The shader compares
+      // `-positionView.z` against this uniform.
+      const heroView = heroWorld.clone().applyMatrix4(activeCam.matrixWorldInverse);
+      const heroCamDist = -heroView.z;
+      CUTOUT.heroCamDist.value = heroCamDist;
+      // Projected pixel position — NDC (y up) → pixels with a top-left
+      // origin (y down) so the units match TSL `screenCoordinate.xy`,
+      // which follows the WebGPU convention (top-left origin) on both
+      // backends via `builder.isFlipY()` (three/nodes/display/ScreenNode).
+      const heroNDC = heroWorld.clone().project(activeCam);
+      const canvasW = this.canvas.width;
+      const canvasH = this.canvas.height;
+      const heroPxX = (heroNDC.x * 0.5 + 0.5) * canvasW;
+      const heroPxY = (1.0 - (heroNDC.y * 0.5 + 0.5)) * canvasH;
+      CUTOUT.heroScreen.value.set(heroPxX, heroPxY);
+      // Avatar on-screen height in pixels — derived from the camera and
+      // hero distance rather than hard-coded so the cutout scales with
+      // zoom (`docs/gpu-cutout.md` §"Numbers"). Perspective: the vertical
+      // span of one world unit at depth `d` is `canvasH / (2·d·tan(fov/2))`
+      // pixels. Ortho: it's `canvasH / (top − bottom)`, independent of
+      // depth. The `Math.max(..., 0.001)` guards a degenerate `d ≈ 0` (the
+      // hero briefly coincident with the camera during a pose blend);
+      // without it the pixel value blows up and `heroScreenPx` becomes NaN.
+      let pixelsPerWorldUnit: number;
+      if (view === 'ortho') {
+        const viewHeightWorld = (this.orthoCamera.top - this.orthoCamera.bottom) / this.orthoCamera.zoom;
+        pixelsPerWorldUnit = canvasH / Math.max(0.001, viewHeightWorld);
+      } else {
+        const fovRad = (this.camera.fov * Math.PI) / 180;
+        pixelsPerWorldUnit = (canvasH * 0.5) / Math.max(0.001, heroCamDist * Math.tan(fovRad * 0.5));
+      }
+      const avatarPx = HERO_SPRITE_HEIGHT * pixelsPerWorldUnit;
+      CUTOUT.heroScreenPx.value = 1.4 * avatarPx;
+      CUTOUT.depthBias.value = CUTOUT_DEPTH_BIAS_CELLS;
     }
 
     // 1b. View-change side effects: rebuild the pipeline graph against the

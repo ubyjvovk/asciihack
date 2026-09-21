@@ -1,5 +1,5 @@
 /**
- * Pure-function tests for the hero cutout (T-0058, docs/gpu-cutout.md). Every
+ * Pure-function tests for the hero cutout (T-0063, docs/gpu-cutout.md). Every
  * case exercises `web/src/gpu/cutout.ts`, whose helpers stay `three`-free so
  * this file compiles under the root tsconfig (no DOM lib) — the material-side
  * discard is `MeshStandardNodeMaterial.maskNode` in `web/src/gpu/materials.ts`
@@ -10,145 +10,79 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
-  CUTOUT_RADIUS_CELLS,
-  cutoutForwardFor,
+  CUTOUT_DEPTH_BIAS_CELLS,
   isCutCell,
 } from '../web/src/gpu/cutout.js';
-import { createVoxelMaterial } from '../web/src/gpu/materials.js';
 
-describe('gpu cutout — the Diablo cutout, in the material', () => {
-  it('cutoutForwardFor points from the hero toward the camera and is horizontal', () => {
-    // The ticket's third-person camera sits south of the hero at a 42° pitch
-    // (docs/gpu-thirdperson.md §"Pose"), i.e. `camera.z > hero.z` and lifted
-    // in world y. `cutoutForwardFor` must return the horizontal unit vector
-    // pointing from the hero back to that camera so the fragment discard
-    // rule reads "same direction" as `frag − hero` for anything on the
-    // camera side of the hero — see the JSDoc for the sign convention.
-    const hero = { x: 5, y: 0, z: 3 };
-    const camera = { x: 5, y: 6, z: 15 };
-    const f = cutoutForwardFor(camera, hero);
-    // Horizontal: y = 0 regardless of the camera pitch. The 42° tilt of the
-    // camera would otherwise leak into the discard geometry and make it
-    // pitch-dependent — the whole point of a horizontal cutout is that a
-    // steeper camera does not enlarge the hole under the hero.
-    expect(f.y).toBe(0);
-    // Unit magnitude in the horizontal plane. Bare `Math.hypot(dx, dz)`
-    // catches a missing divide (the vector would then scale with distance,
-    // breaking the dot-product predicate — 12 cells south should read the
-    // same as 6 cells south).
-    expect(Math.hypot(f.x, f.z)).toBeCloseTo(1);
-    // Direction check: same signs as `camera − hero`. Anything else means
-    // the vector points into the wall the ticket wants cut, and the discard
-    // rule fires on the opposite side of the hero (walls behind, hero
-    // still occluded). Camera due south → forward.z > 0; camera and hero
-    // share x → forward.x = 0.
-    expect(f.x).toBeCloseTo(0);
-    expect(f.z).toBeGreaterThan(0);
-    // A camera due east of the hero → forward.x > 0, forward.z = 0.
-    const east = cutoutForwardFor({ x: 20, y: 4, z: 3 }, hero);
-    expect(east.x).toBeGreaterThan(0);
-    expect(east.z).toBeCloseTo(0);
-    expect(east.y).toBe(0);
-    // Degenerate case: camera and hero share a horizontal position. Returns
-    // the zero vector so the shader's `dot(rel, 0) = 0` predicate produces
-    // no cut. Anything else (e.g. NaN from a naive `/ 0`) corrupts the
-    // uniform and takes the whole frame down with it.
-    const same = cutoutForwardFor({ x: 5, y: 10, z: 3 }, hero);
-    expect(same.x).toBe(0);
-    expect(same.z).toBe(0);
-    expect(same.y).toBe(0);
-  });
+// Radius used by the pure helper's tests: cell-space stand-in for the shader's
+// pixel radius. 1.5 cells is comfortably larger than 1 cell (the minimum
+// horizontal separation between the hero cell centre and an adjacent-wall
+// cell centre — 1 cell), and smaller than the depth to any of the "beside"
+// or "behind" cases below, so the tests pin the depth test and the cone
+// test independently rather than incidentally.
+const SCREEN_RADIUS_CELLS = 1.5;
 
-  it('a cell between the hero and the camera within the radius is cut', () => {
-    // Layout: hero at (5, 3), camera south of the hero. `cutoutForwardFor`
-    // returns (0, 0, +1) — one unit toward +z (south, toward camera). Cells
-    // on the camera side of the hero have `cellY > hero.y`; those inside
-    // the default radius (2.5 cells) must be cut. Two representative cells
-    // are pinned here: a cell directly south (aligned with the camera line)
-    // and a diagonal south-east cell, both well inside the radius.
+describe('gpu cutout — cut only what actually blocks the hero', () => {
+  it('a cell nearer the camera than the hero and near him on screen is cut', () => {
+    // Hero at map cell (5, 3); camera south of the hero, world (5.5, 4, 10)
+    // (matches `docs/gpu-thirdperson.md` §"Pose" — south + lifted). A cell
+    // between the hero and the camera is closer to the camera AND aligned
+    // with the camera → hero ray, so it satisfies both the depth test and
+    // the screen-radius cone: the wall clears.
     const hero = { x: 5, y: 3 };
-    const forward = cutoutForwardFor({ x: 5, y: 4, z: 10 }, { x: 5, y: 0, z: 3 });
-    // Sanity: forward is due south (+z), zero on x. If this ever regresses,
-    // the two `isCutCell` calls below silently fail against a wrong axis.
-    expect(forward.z).toBeGreaterThan(0);
-    expect(forward.x).toBeCloseTo(0);
-    // Cell one south of the hero: distance 1, direction matches forward → cut.
-    expect(isCutCell(5, 4, hero, forward, CUTOUT_RADIUS_CELLS)).toBe(true);
-    // Cell two south + one east: distance √5 ≈ 2.24 (< 2.5), still on the
-    // camera side (positive `dz`) → cut. This pins the disk-shaped extent,
-    // not just the axis line.
-    expect(isCutCell(6, 5, hero, forward, CUTOUT_RADIUS_CELLS)).toBe(true);
+    const camera = { x: 5.5, y: 4, z: 10 };
+    // Cell one step south of the hero → depth ≈ 5.5, hero depth ≈ 6.5,
+    // lateral offset ≈ 0. Well under `heroDepth − depthBias`, well inside
+    // the cone.
+    expect(isCutCell(5, 4, hero, camera, SCREEN_RADIUS_CELLS, CUTOUT_DEPTH_BIAS_CELLS)).toBe(true);
   });
 
-  it('a cell behind the hero or outside the radius is not cut', () => {
-    // Same layout as above. Two "not cut" cases the ticket rule requires:
-    //   1. On the opposite side of the hero from the camera (`dz < 0`),
-    //      even if within the radius — otherwise walls behind the hero
-    //      would also be cut, hiding the room the hero came from.
-    //   2. Outside the radius on the camera side (`dz > radius`), so the
-    //      cutout is a keyhole, not a fog band that eats the whole level.
+  it('a cell beside the hero at the same depth is not cut', () => {
+    // Same camera as above. A cell **beside** the hero (east/west) at the
+    // hero's own row projects onto (or past) the hero's depth — it is not
+    // strictly closer to the camera, so the depth test fails and the cell
+    // is not cut. This is the case the previous world-space proximity rule
+    // got wrong: a wall beside the hero triggered a hole even though it
+    // never occluded him.
     const hero = { x: 5, y: 3 };
-    const forward = cutoutForwardFor({ x: 5, y: 4, z: 10 }, { x: 5, y: 0, z: 3 });
-    // 1: cell one north of the hero (opposite side). Distance 1 (< 2.5),
-    // but `dz = −1` gives `dot(cell − hero, forward) < 0` → not cut.
-    expect(isCutCell(5, 2, hero, forward, CUTOUT_RADIUS_CELLS)).toBe(false);
-    // 2: cell three south of the hero. On the camera side, but distance 3
-    // is beyond the 2.5-cell radius. If this fires, `CUTOUT_RADIUS_CELLS`
-    // is not being respected and the whole southern corridor gets cut.
-    expect(isCutCell(5, 6, hero, forward, CUTOUT_RADIUS_CELLS)).toBe(false);
-    // The hero's own cell — a wall inside the hero cell shouldn't exist
-    // in practice, but the predicate must be well-defined: `dist = 0`,
-    // `dot = 0`, not strictly greater than zero → not cut.
-    expect(isCutCell(5, 3, hero, forward, CUTOUT_RADIUS_CELLS)).toBe(false);
+    const camera = { x: 5.5, y: 4, z: 10 };
+    // Cell one east of the hero at the same row. Its projected depth
+    // ≈ 6.6 (marginally past the hero's plane) — the depth test rejects.
+    expect(isCutCell(6, 3, hero, camera, SCREEN_RADIUS_CELLS, CUTOUT_DEPTH_BIAS_CELLS)).toBe(false);
   });
 
-  it('the cut set follows the camera as it rotates', () => {
+  it('a cell behind the hero is never cut', () => {
+    // Same camera. A cell **behind** the hero (further from the camera
+    // than the hero) is at a greater view-space depth and never satisfies
+    // "closer than the hero" — the depth test rejects even if the cell
+    // is directly in the camera → hero ray. This is the rule that keeps
+    // the room the hero came from opaque behind him.
+    const hero = { x: 5, y: 3 };
+    const camera = { x: 5.5, y: 4, z: 10 };
+    // Cell one step north of the hero (opposite side from the camera).
+    // Camera → hero is +z, cell is at hero.y − 1 (smaller z) → cellDepth
+    // > heroDepth → not cut.
+    expect(isCutCell(5, 2, hero, camera, SCREEN_RADIUS_CELLS, CUTOUT_DEPTH_BIAS_CELLS)).toBe(false);
+  });
+
+  it('the cut follows the camera as it rotates', () => {
     // The third-person camera can yaw around the hero (docs/gpu-thirdperson.md
-    // §"The spring"); every yaw step reorients `cutoutForward` toward the
-    // new camera position, so the cutout keyhole rotates with the camera.
-    // Pin the rotation from "camera south" to "camera east": the *same*
-    // wall cell moves from "cut" to "not cut" (rotates out of the keyhole)
-    // and a different cell moves into it — the property that gives the
-    // "cutout follows the camera" behaviour the ticket asks for.
+    // §"The spring"); the depth test evaluates against the *live* camera →
+    // hero direction, so a cell that was in the cone becomes safe and a
+    // different cell rotates into it once the camera moves. Pin that
+    // property with two orthogonal cameras and the same hero.
     const hero = { x: 5, y: 3 };
-    // Camera south → walls south of the hero get cut, east walls don't.
-    const southForward = cutoutForwardFor({ x: 5, y: 4, z: 10 }, { x: 5, y: 0, z: 3 });
-    expect(isCutCell(5, 4, hero, southForward, CUTOUT_RADIUS_CELLS)).toBe(true);
-    expect(isCutCell(6, 3, hero, southForward, CUTOUT_RADIUS_CELLS)).toBe(false);
-    // Rotate camera 90° to due east — same hero, same radius. Now the east
-    // wall gets cut and the south wall does not: the cut set is a function
-    // of the (camera relative to hero) direction, exactly the invariant
-    // that makes the third-person view read the same at every yaw step.
-    const eastForward = cutoutForwardFor({ x: 12, y: 4, z: 3 }, { x: 5, y: 0, z: 3 });
-    expect(isCutCell(6, 3, hero, eastForward, CUTOUT_RADIUS_CELLS)).toBe(true);
-    expect(isCutCell(5, 4, hero, eastForward, CUTOUT_RADIUS_CELLS)).toBe(false);
-    // And nothing outside the radius rotates in — a wall three cells north-
-    // east of the hero stays uncut even with the camera east, since
-    // `√(1² + 3²) ≈ 3.16 > 2.5`. This pins the radius against a subtle
-    // regression where a rotation would bleed the cutout beyond its disk.
-    expect(isCutCell(6, 0, hero, eastForward, CUTOUT_RADIUS_CELLS)).toBe(false);
-  });
-
-  it('the avatar material has the cutout disabled', () => {
-    // Rework: the hero and pet avatars share the voxel material with the
-    // walls (`docs/gpu-avatar.md`, `web/src/gpu/sprites.ts::ensureHeroAvatar`),
-    // so the per-fragment cutout the dungeon material installs would also
-    // discard the avatar's own fragments — the very thing the cutout exists
-    // to reveal. `createVoxelMaterial({ cutout: false })` is the avatar
-    // variant: same look, no discard. Assert on the material options via the
-    // shader-graph `maskNode` handle rather than a rendered frame — no GPU
-    // here (docs/gpu.md §9), but `maskNode` is what the T-0058 branch
-    // installs, so its presence/absence is a direct read of the option
-    // (`docs/gpu-cutout.md` §"What is exempt").
-    const dungeonMat = createVoxelMaterial(); // default: cutout enabled
-    const avatarMat = createVoxelMaterial({ cutout: false });
-    // The dungeon material has the discard branch, so its `maskNode` is set
-    // to the T-0058 `keep` node — a truthy Node instance.
-    expect(dungeonMat.maskNode).toBeTruthy();
-    // The avatar material must skip the branch entirely: `maskNode` stays at
-    // three.js's default (null). Anything else would mean the discard rule
-    // is still evaluated for the hero and pet fragments — the bug from
-    // rework attempt 1.
-    expect(avatarMat.maskNode).toBeNull();
+    // Camera south of the hero → the cell south of the hero is cut, the
+    // cell east of the hero (same depth) is not.
+    const southCam = { x: 5.5, y: 4, z: 10 };
+    expect(isCutCell(5, 4, hero, southCam, SCREEN_RADIUS_CELLS, CUTOUT_DEPTH_BIAS_CELLS)).toBe(true);
+    expect(isCutCell(6, 3, hero, southCam, SCREEN_RADIUS_CELLS, CUTOUT_DEPTH_BIAS_CELLS)).toBe(false);
+    // Rotate camera 90° to due east. Now the cell east of the hero (closer
+    // to the east camera than the hero) is cut, and the cell south of the
+    // hero is at the same depth as the hero → not cut. Same hero, same
+    // helper, same radius: the cutout follows the camera.
+    const eastCam = { x: 12, y: 4, z: 3.5 };
+    expect(isCutCell(6, 3, hero, eastCam, SCREEN_RADIUS_CELLS, CUTOUT_DEPTH_BIAS_CELLS)).toBe(true);
+    expect(isCutCell(5, 4, hero, eastCam, SCREEN_RADIUS_CELLS, CUTOUT_DEPTH_BIAS_CELLS)).toBe(false);
   });
 });
