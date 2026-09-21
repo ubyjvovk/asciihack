@@ -173,6 +173,63 @@ per-fragment `discard` inside the box. That ticket touches
 uniform through). It composes on top of option (a) without discarding
 anything shipped here.
 
+## Fog scales with the view
+
+*T-0050 rework 3.* After the camera rebuild landed and `debugInfo()` was
+honest, the ortho view was **still black at every quality tier** — including
+`q=low`, which runs only `pass` + bloom + FXAA + grade. The camera was
+placed correctly, the frustum was sane, the geometry was there. The mood's
+fog was eating the scene.
+
+`FogExp2` survival is `e^(−density · distance)`. The mood table's
+densities are tuned for the fps camera, which sits at the hero cell:
+
+| distance | density | scene survives |
+|---|---|---|
+| 6 cells  (fps close-up) | 0.10 | 54.9 % |
+| 40 units (ortho at ORTHO_DISTANCE_CELLS) | 0.10 | **1.8 %** |
+| 40 units (ortho, scaled) | 0.01 | 67.0 % |
+
+At 1.8 % against a near-black fog colour (torchlit's `0x0b0d10`), every
+pixel lands under the black point. Every richer tier's post stack takes
+that black frame as input, so the fix cannot live in the pipeline.
+
+The **legacy path already solved this** in T-0032 — a scene-level
+`FogExp2` whose density switches between `FPS_FOG_DENSITY = 0.10` and
+`ORTHO_FOG_DENSITY = 0.01` on `setView`. The GPU path now reuses those two
+constants (moved into `web/src/gpu/ortho.ts` so a pure test can reach them)
+and applies the same scale after every mood blend:
+
+```ts
+// web/src/gpu/ortho.ts
+export function moodFogDensityForView(view: 'fps' | 'ortho', moodDensity: number): number {
+  return view === 'ortho' ? moodDensity * (ORTHO_FOG_DENSITY / FPS_FOG_DENSITY) : moodDensity;
+}
+```
+
+The scale is **multiplicative**, so `deep_dark`'s heavier fog stays
+proportionally heavier than `torchlit`'s — the mood table's expressive
+range is preserved, just relocated for the far camera.
+
+**Where it wires in.** `moods.ts` is not in this ticket's scope, and its
+`Atmosphere` writes to *its own* private fog uniforms every `_apply()`. So
+`GpuPath.create()` **replaces `scene.fogNode`** with a fresh
+`fog(fogColor, densityFogFactor(fogDensity))` bound to uniforms `GpuPath`
+owns; the atmosphere's writes into its now-orphaned uniforms are harmless.
+Each `GpuPath.render()` frame, after `atmosphere.update(dt)` has run its
+blend, we drive our uniforms from `atmosphere.state`:
+
+```ts
+this.fogColor.value.setHex(currentMood.fog.color);
+this.fogDensity.value = moodFogDensityForView(view, currentMood.fog.density);
+```
+
+`tests/gpu-ortho.test.ts`' "the ortho view scales the mood fog density by
+the ortho/fps ratio" pins the arithmetic at the pure boundary, both views
+and two moods with different densities, so a future retune cannot flatten
+the proportional heaviness or push the ortho survival back under the
+visibility threshold.
+
 ## DOF follows the ortho camera
 
 Afterburn's DOF (`three/addons/tsl/display/DepthOfFieldNode`) blurs
@@ -276,13 +333,14 @@ independent of a renderer.
 ## Verification
 
 Everything in this ticket that runs in node is exercised by
-`tests/gpu-ortho.test.ts` (five cases):
+`tests/gpu-ortho.test.ts` (six cases):
 
 1. `the ortho frustum from placeOrthoCamera is applied unchanged to the GPU camera`
 2. `the cutaway set changes only when the hero cell changes`
 3. `switching to the ortho view rebuilds the graph against an orthographic camera` (T-0050 attempt 1)
 4. `the camera bound to the graph carries the ortho placement` (T-0050 rework 2)
-5. `DOF focus follows the ortho camera distance`
+5. `the ortho view scales the mood fog density by the ortho/fps ratio` (T-0050 rework 3)
+6. `DOF focus follows the ortho camera distance`
 
 ## What I could not verify
 

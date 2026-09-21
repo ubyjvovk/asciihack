@@ -10,7 +10,15 @@
  */
 import { describe, expect, it } from 'vitest';
 import { HERO_SPRITE_HEIGHT, orthoPlacement, ORTHO_DISTANCE_CELLS } from '../web/src/gl/ortho-camera.js';
-import { applyOrthoPlacementTo, cutawayKey, orthoDofFocus, pipelineCameraForView } from '../web/src/gpu/ortho.js';
+import {
+  applyOrthoPlacementTo,
+  cutawayKey,
+  FPS_FOG_DENSITY,
+  moodFogDensityForView,
+  orthoDofFocus,
+  ORTHO_FOG_DENSITY,
+  pipelineCameraForView,
+} from '../web/src/gpu/ortho.js';
 
 /** In-memory stand-in for an `OrthographicCamera` — records everything
  *  `applyOrthoPlacementTo` writes, so the test can assert against it without
@@ -204,6 +212,45 @@ describe('gpu ortho — the ported afterburn view over the ortho camera', () => 
     // And `updateProjectionMatrix` fired once — so downstream projection
     // maths on the graph read the fresh matrix, not the constructor default.
     expect(fake.updateCalls).toBe(1);
+  });
+
+  it('the ortho view scales the mood fog density by the ortho/fps ratio', () => {
+    // T-0050 rework 3: even after the camera-rebuild fix and the honest
+    // `debugInfo()` snapshot, the ortho view rendered black at every quality
+    // tier — including `q=low` (bloom + FXAA + grade only, no SSGI/SSR/god
+    // rays/DOF/TRAA). The camera was placed correctly and the geometry was
+    // there; the mood's fog was eating the scene. `FogExp2` survival is
+    // `e^(−density·distance)`: at torchlit's density 0.10 and the ortho
+    // camera's ~40-unit stand-off, only 1.8 % of the scene reaches the eye,
+    // and against the near-black fog colour (`0x0b0d10`) every pixel lands
+    // under the black point. Scaling by `ORTHO_FOG_DENSITY / FPS_FOG_DENSITY`
+    // (= 0.1) is exactly what the legacy path already does for the same
+    // reason (T-0032). `moodFogDensityForView` is applied *after* the mood
+    // blend, so deep_dark's heavier fog stays proportionally heavier than
+    // torchlit's — the scale is multiplicative, not a clamp.
+    const torchlit = 0.10;   // MOODS.torchlit.fog.density
+    const deepDark = 0.20;   // MOODS.deep_dark.fog.density — visibly heavier
+    // The fps view passes both densities through unchanged: the mood table's
+    // values are already tuned for a camera at the hero cell.
+    expect(moodFogDensityForView('fps', torchlit)).toBe(torchlit);
+    expect(moodFogDensityForView('fps', deepDark)).toBe(deepDark);
+    // The ortho view scales by `ORTHO_FOG_DENSITY / FPS_FOG_DENSITY` — the
+    // exact ratio T-0032 established for the legacy 3/4 camera at the same
+    // distance. Reuses the two exported constants; no third number introduced.
+    const ratio = ORTHO_FOG_DENSITY / FPS_FOG_DENSITY;
+    expect(moodFogDensityForView('ortho', torchlit)).toBeCloseTo(torchlit * ratio);
+    expect(moodFogDensityForView('ortho', deepDark)).toBeCloseTo(deepDark * ratio);
+    // Proportional heaviness preserved: `deep_dark / torchlit` is the same
+    // in both views. Without this the ortho scale would flatten the mood
+    // table's expressive range — deep_dark would look the same as torchlit.
+    const fpsRatio = moodFogDensityForView('fps', deepDark) / moodFogDensityForView('fps', torchlit);
+    const orthoRatio = moodFogDensityForView('ortho', deepDark) / moodFogDensityForView('ortho', torchlit);
+    expect(orthoRatio).toBeCloseTo(fpsRatio);
+    // And the scale actually pulls the frame back into visible territory:
+    // e^(−0.01·40) ≈ 67 %, vs e^(−0.10·40) ≈ 1.8 % before. Pinned as an
+    // integer percentage so a future retune keeps the ortho view visible.
+    const survivalPct = Math.exp(-moodFogDensityForView('ortho', torchlit) * ORTHO_DISTANCE_CELLS) * 100;
+    expect(survivalPct).toBeGreaterThan(50);
   });
 
   it('DOF focus follows the ortho camera distance', () => {

@@ -37,7 +37,16 @@ import { GpuCompositor } from '../gpu/compose.js';
 import { DungeonScene } from '../gpu/dungeon.js';
 import { createVoxelMaterial, W } from '../gpu/materials.js';
 import { Atmosphere, type MoodId } from '../gpu/moods.js';
-import { applyOrthoPlacementTo, cutawayKey, orthoDofFocus, pipelineCameraForView } from '../gpu/ortho.js';
+import {
+  applyOrthoPlacementTo,
+  cutawayKey,
+  FPS_FOG_DENSITY,
+  moodFogDensityForView,
+  orthoDofFocus,
+  ORTHO_FOG_DENSITY,
+  pipelineCameraForView,
+} from '../gpu/ortho.js';
+import { densityFogFactor, fog, uniform } from 'three/tsl';
 import {
   clampQuality,
   createPipeline,
@@ -69,14 +78,11 @@ export const LANTERN_INTENSITY = 12;
 export const EYE_HEIGHT = 0.5;
 /** Horizon offset approximated by pitching the camera slightly down (T-0023). */
 export const CAMERA_PITCH = -0.08;
-/** Exponential-fog density for the fps close-up (camera at the hero cell, so
- *  depths are 1–10 cells; tuned in T-0031 rework 2). */
-export const FPS_FOG_DENSITY = 0.10;
-/** Exponential-fog density for the ortho 3/4 view. The ortho camera sits
- *  ~40 cells from the scene, so the fps density (0.10) would bury every
- *  surface in black (fogFactor ≈ 1 at depth 40) — the T-0032 black-canvas
- *  bug. A small density keeps a faint depth cue without occluding the room. */
-export const ORTHO_FOG_DENSITY = 0.01;
+// Fog densities now live in `web/src/gpu/ortho.ts` (T-0050 rework 3) so the
+// ortho scaling helper can reference them without pulling this browser-only
+// module (which uses DOM) into the pure test file. Re-exported here for
+// docs/web.md and any external caller.
+export { FPS_FOG_DENSITY, ORTHO_FOG_DENSITY };
 
 /** Style-pass exposure the styled path compensates for (docs/gpu.md §6.1). */
 export const STYLE_EXPOSURE = 1.7;
@@ -930,6 +936,13 @@ class GpuPath {
   readonly ghostGroup: WG.Group;
   readonly ghostGeom: WG.BoxGeometry;
   readonly ghostMaterial: WG.MeshBasicMaterial;
+  /** Uniforms `scene.fogNode` reads. Own copies (not the atmosphere's) so
+   *  `render` can scale density for the ortho view via `moodFogDensityForView`
+   *  without touching `moods.ts` — the atmosphere still writes into its
+   *  internal fog uniforms every `update()`, but nothing points at those
+   *  after we replace `scene.fogNode` in `create()` (T-0050 rework 3). */
+  readonly fogColor: WG.UniformNode<'color', WG.Color>;
+  readonly fogDensity: WG.UniformNode<'float', number>;
   quality: QualityName;
   mood: MoodId;
   private lastTime = 0;
@@ -954,6 +967,8 @@ class GpuPath {
     ghostGroup: WG.Group;
     ghostGeom: WG.BoxGeometry;
     ghostMaterial: WG.MeshBasicMaterial;
+    fogColor: WG.UniformNode<'color', WG.Color>;
+    fogDensity: WG.UniformNode<'float', number>;
     quality: QualityName;
     mood: MoodId;
   }) {
@@ -973,6 +988,8 @@ class GpuPath {
     this.ghostGroup = init.ghostGroup;
     this.ghostGeom = init.ghostGeom;
     this.ghostMaterial = init.ghostMaterial;
+    this.fogColor = init.fogColor;
+    this.fogDensity = init.fogDensity;
     this.quality = init.quality;
     this.mood = init.mood;
   }
@@ -1092,6 +1109,18 @@ class GpuPath {
     const lookProxy: AtmosphereLook = {};
     const atmosphere = new Atmosphere({ scene, look: lookProxy, weather: W });
 
+    // Own the scene's fog uniforms so `render` can scale density for the
+    // ortho view (T-0050 rework 3). The atmosphere set `scene.fogNode`
+    // against its own internal uniforms in its constructor; we replace the
+    // node with ours here so the ortho scale (via `moodFogDensityForView`)
+    // reaches the shader. The atmosphere still writes its internal uniforms
+    // every `_apply()`, but those uniforms are now orphaned — `render`
+    // drives ours from `atmosphere.state` each frame instead. Reasoning
+    // sits in `docs/gpu-ortho.md` §"Fog scales with the view".
+    const fogColor = uniform(new WG.Color(0x0b0d10));
+    const fogDensity = uniform(FPS_FOG_DENSITY);
+    scene.fogNode = fog(fogColor, densityFogFactor(fogDensity));
+
     // `sun` is null on purpose: dungeons have no shaft light and
     // `GodraysNode` throws on a light with no shadow map (docs/gpu.md §3).
     // `environment` closes the T-0048 hole — see `docs/gpu-compose.md`.
@@ -1122,7 +1151,7 @@ class GpuPath {
     const path = new GpuPath({
       canvas, renderer, caps, scene, camera, orthoCamera, lantern, dungeon, atmosphere,
       handle, compositor, backend, sprites, ghostGroup, ghostGeom, ghostMaterial,
-      quality, mood: 'torchlit',
+      fogColor, fogDensity, quality, mood: 'torchlit',
     });
 
     // Attach loss listeners for backends that surface them. Both are best-
@@ -1260,6 +1289,18 @@ class GpuPath {
     const dt = this.lastTime === 0 ? 0.016 : Math.min(0.1, (now - this.lastTime) / 1000);
     this.lastTime = now;
     this.atmosphere.update(dt);
+
+    // 4b. Drive our own fog uniforms from the atmosphere's current mood,
+    //     scaling density for the ortho view (T-0050 rework 3). The
+    //     atmosphere's blend already ran; `moodFogDensityForView` is a
+    //     multiplicative scale, so deep_dark's heavier fog stays
+    //     proportionally heavier than torchlit's. Before this fix the ortho
+    //     view rendered black at every quality tier — the fps-tuned density
+    //     (torchlit 0.10) leaves e^(−0.10·40) ≈ 1.8 % of the scene surviving
+    //     40 cells out; scaled by 0.1 that becomes ≈ 67 %.
+    const currentMood = this.atmosphere.state;
+    this.fogColor.value.setHex(currentMood.fog.color);
+    this.fogDensity.value = moodFogDensityForView(view, currentMood.fog.density);
 
     // 5. Apply the styled/raw grade overrides *after* the mood writes so the
     //    mood's vignette/grain don't leak into styled mode (docs/gpu.md §6.1).

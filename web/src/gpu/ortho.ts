@@ -29,6 +29,13 @@
  *   from the still-perspective reference — this helper hands the graph the
  *   real `OrthographicCamera` so `isOrthographicCamera` is true where three
  *   checks it.
+ * - `moodFogDensityForView(view, moodDensity)` scales a mood's raw fog
+ *   density for the active view (T-0050 rework 3). The ortho camera sits
+ *   `ORTHO_DISTANCE_CELLS` from its target, so the mood table's fps-tuned
+ *   densities (torchlit 0.10, deep_dark 0.20) leave e^(−0.10·40) ≈ 1.8 %
+ *   of the scene surviving against a near-black fog colour — the whole
+ *   frame lands under the black point. The scale keeps deep_dark's heavier
+ *   fog proportionally heavier than torchlit's.
  *
  * Pure: no `three` / `three/webgpu` import, no DOM. `tests/gpu-ortho.test.ts`
  * exercises every case in node under the root tsconfig.
@@ -134,4 +141,33 @@ export function pipelineCameraForView<P, O>(
   cams: ViewCameras<P, O>,
 ): P | O {
   return view === 'ortho' ? cams.orthographic : cams.perspective;
+}
+
+/** Exp2 fog density the fps camera runs at — the mood table's tuning point.
+ *  At depth ~6 cells this gives e^(−0.10·6) ≈ 55 % scene survival, which is
+ *  a comfortable close-up depth cue. Moved here from `gl-viewport.ts` so the
+ *  ortho scaling helper below can reference it without pulling the browser
+ *  module (which uses DOM) into the pure test file (T-0050 rework 3). */
+export const FPS_FOG_DENSITY = 0.10;
+/** Exp2 fog density for the ortho 3/4 view. The ortho camera sits
+ *  `ORTHO_DISTANCE_CELLS = 40` cells from its target, so keeping the fps
+ *  density (0.10) fogs the whole scene to black (e^(−0.10·40) ≈ 1.8 %). This
+ *  is the density that keeps a faint depth cue without occluding the room —
+ *  originally the fix for T-0032's black-canvas legacy bug, and now the
+ *  scaling reference for the GPU path (T-0050 rework 3). */
+export const ORTHO_FOG_DENSITY = 0.01;
+
+/**
+ * Scale a mood's raw fog density for the active view. In fps the density
+ * passes through unchanged; in ortho it is scaled by
+ * `ORTHO_FOG_DENSITY / FPS_FOG_DENSITY` (= 0.1). Applied *after* the mood
+ * table has already blended, so deep_dark's heavier fog stays proportionally
+ * heavier than torchlit's — the helper is a multiplicative scale, not a
+ * clamp. Reuses the two exported constants above; no third number introduced.
+ *
+ * See `docs/gpu-ortho.md` §"Fog scales with the view" for the arithmetic.
+ * Pure — no `three`, no DOM.
+ */
+export function moodFogDensityForView(view: 'fps' | 'ortho', moodDensity: number): number {
+  return view === 'ortho' ? moodDensity * (ORTHO_FOG_DENSITY / FPS_FOG_DENSITY) : moodDensity;
 }
