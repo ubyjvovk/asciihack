@@ -109,6 +109,18 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   before the first ticket.
 
 ## Board snapshot
+- 2026-09-21 03:40 — **45 done; the port is landed and visible.** T-0040
+  (wiring), T-0045/T-0047 (tuning, DOF), T-0048 (mood environment) and T-0046
+  (chunked rebuild: single-cell reveal 38 ms → 1.2 ms p50, byte-identical
+  bake, frame unchanged) all accepted. `.tigerteam/shots/before-after.png` is
+  the deliverable: legacy ASCII / ported ASCII / raw. Numbers in
+  `docs/gpu.md` §3.2–3.3. Running: T-0049 (hand the mood environment to SSR —
+  T-0048 landed the option but wiring was out of its scope, my miss).
+  Next: T-0042 sprites (the dungeon has no monsters — highest remaining
+  value, but it needs `path.ts` which T-0049 owns until it lands), then
+  T-0043 ortho on the GPU path, T-0044 dungeon air. A torch-density pass
+  (spacing 6 → 4, so more of a room reads) is worth a row in the next tuning
+  ticket.
 - 2026-09-21 03:10 — **41 done.** T-0039 (dungeon bake: 6 770 boxes for a
   full 80x21 level, ~38 ms) and T-0045 (the first tuning pass) accepted.
   **First light happened early**: I taught `/gpu-probe.html` to build the real

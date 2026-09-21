@@ -186,6 +186,37 @@ The ASCII frame is 3.5× brighter in the mean, reaches three times further up
 the tone curve (p95 18 → 54) and spends 40 % more distinct levels — which is
 the whole point: the quantiser finally has an image with structure in it.
 
+### 3.3 Measured after the wave
+
+Single-cell reveal (the cost that lands on the player's move frame), after
+T-0046 chunked the bake into 10×7-cell chunks:
+
+| | full 80×21 bake | one cell revealed |
+|---|---|---|
+| before chunking | ~38 ms | ~38 ms (whole level rebaked) |
+| after chunking | ~38 ms | **p50 1.2 ms, max 2.2 ms** |
+
+The chunked bake is byte-identical to the unchunked one from scratch, and the
+rendered frame is unchanged in practice (mean 39.0 vs 39.4; 0.16 % of pixels
+differ by more than 12 levels, which is TRAA jitter, not geometry).
+
+ASCII output through the styled path, 1280×720, `q=high`, three poses:
+
+| style | black | mean | p95 |
+|---|---|---|---|
+| `amber` (pre-port) | 94.8 % | 1.5 | 10 |
+| `amber` (ported) | 81 – 83 % | 7.7 – 8.4 | 53 – 55 |
+| `ascii` (pre-port) | 82.7 % | 10.4 | 80 |
+| `ascii` (ported) | 71.7 % | 21.8 | 130 |
+
+Stable across poses, which is what you want — the brightness comes from the
+lighting, not from one lucky camera angle.
+
+**Not measured here, and it cannot be:** real frame time. Every number in this
+document comes from SwiftShader software rasterisation, where `q=high` costs
+~240 ms/frame at 640×360. That says nothing about a real GPU; it only proves
+the graph compiles and draws. Frame budget (§8) is still unverified.
+
 ## 4. Scene conventions (unchanged from `docs/web.md`)
 
 Map `x` grows east, map `y` grows south; three's `x` = east, `z` = south,
