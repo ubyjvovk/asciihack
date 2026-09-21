@@ -19,10 +19,10 @@ npm ci
 bash scripts/nethack-build.sh lib     # once
 bash scripts/nethack-build.sh bridge  # once
 npm run web:server      # ws://127.0.0.1:8790/play?name=<name>
-npm run web:dev         # http://127.0.0.1:5173/
+npm run web:dev         # http://127.0.0.1:5273/
 ```
 
-Open `http://127.0.0.1:5173/?name=mia`. `?theme=amber|gloom|solarized|cyber`,
+Open `http://127.0.0.1:5273/?name=mia`. `?theme=amber|gloom|solarized|cyber`,
 `?mode=fps|ortho|classic` and `?render=<style-id>` (see the WebGL
 viewport section) are also honoured.
 

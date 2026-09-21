@@ -48,7 +48,7 @@ function loadPlaywright() {
 
 function parseArgs(argv) {
   const pos = [];
-  const opt = { base: 'http://127.0.0.1:5173', w: 1280, h: 720, wait: 1200, ready: 'window.__ready', evals: [] };
+  const opt = { base: 'http://127.0.0.1:5273', w: 1280, h: 720, wait: 1200, ready: 'window.__ready', evals: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (!a.startsWith('--')) { pos.push(a); continue; }

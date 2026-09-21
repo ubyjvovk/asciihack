@@ -11,12 +11,17 @@ const WS_TARGET = process.env.ASCIIHACK_WS_URL ?? 'ws://127.0.0.1:8790';
  *  reachable from other machines on the LAN; set `ASCIIHACK_WEB_HOST=127.0.0.1`
  *  to go back to loopback only. See docs/web.md "Security". */
 const WEB_HOST = process.env.ASCIIHACK_WEB_HOST ?? '0.0.0.0';
+/** Dev-server port. 5273, not vite's default 5173, so this project does not
+ *  fight the other checkouts on this machine for the port (user, 2026-09-21).
+ *  Override with `ASCIIHACK_WEB_PORT`. */
+const WEB_PORT = Number(process.env.ASCIIHACK_WEB_PORT ?? '5273');
 
 export default defineConfig({
   root: __dirname,
   server: {
     host: WEB_HOST,
-    port: 5173,
+    port: WEB_PORT,
+    strictPort: true,
     // Bound on every interface, so requests arrive with whatever Host header
     // the client used (a LAN IP, a Tailscale name). Vite blocks unknown hosts
     // by default; allow them, since the bind address is the real gate here.

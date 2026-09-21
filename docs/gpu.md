@@ -388,7 +388,7 @@ that already exist (PM-owned; **not in any ticket's scope**):
   `$PLAYWRIGHT_DIR`), with the browsers in `~/.cache/ms-playwright`.
 
 ```sh
-npm run web:dev &                       # vite on 127.0.0.1:5173
+npm run web:dev &                       # vite on 127.0.0.1:5273
 node scripts/web-shot.mjs "/scene.html?render=amber" shot.png --swiftshader
 node scripts/web-shot.mjs "/scene.html?gpu=raw&q=high" raw.png --gpu --strict
 ```

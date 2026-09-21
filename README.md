@@ -115,8 +115,8 @@ live in a `<pre>` grid on top.
 ```sh
 npm ci
 npm run web:server    # ws://127.0.0.1:8790/play?name=<name>
-npm run web:dev       # Vite dev server on http://127.0.0.1:5173/
-# open http://127.0.0.1:5173/?name=mia
+npm run web:dev       # Vite dev server on http://127.0.0.1:5273/
+# open http://127.0.0.1:5273/?name=mia
 ```
 
 Loopback-only by default (no auth). Full walk-through: [`docs/web.md`](docs/web.md).

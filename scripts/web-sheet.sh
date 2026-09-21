@@ -4,7 +4,7 @@
 #   bash scripts/web-sheet.sh <out.png> [--gl swiftshader|gpu] "<query>" ["<query>" ...]
 #
 # Each <query> is appended to /scene.html (e.g. "render=amber&pose=7.5,4.5,90").
-# Needs `npm run web:dev` running on 127.0.0.1:5173.
+# Needs `npm run web:dev` running on 127.0.0.1:5273.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 out="${1:?usage: web-sheet.sh <out.png> [--gl swiftshader|gpu] \"<query>\" ...}"; shift
