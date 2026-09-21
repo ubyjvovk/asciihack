@@ -119,6 +119,29 @@ Two pure exports live next to the impure builder so
 `setQuality` rebuilds the graph only when the resolved name actually
 changes: `setQuality('ultra')` twice in a row is a no-op.
 
+## SSR backend gate — three r185 shader bug
+
+three r185's `SSRNode.js` builds its step count as
+`trunc( … ).max( int( 1 ) )`. WGSL coerces the mismatch and the pass runs
+fine on **WebGPU**; the GLSL backend emits `max( int( trunc( … ) ), 1.0 )`,
+which GLSL ES 3.0 rejects as an `int`/`float` mismatch. On the **WebGL2**
+backend the fragment shader never links, the pass silently contributes
+nothing, and the console fills with `INVALID_OPERATION` (isolated with
+`/gpu-probe.html?backend=webgl2&stack=ssr&stochastic=0` vs `stochastic=1`;
+see `docs/gpu.md` §3).
+
+`createPipeline` therefore passes `stochastic: true` on the WebGL2 backend
+and `stochastic: false` (afterburn's setting) on WebGPU. Backend detection
+uses `renderer.backend?.isWebGPUBackend === true`, matching `renderer.ts`,
+so `forceWebGL` is honoured. Every tier that turns SSR on also runs TRAA,
+which is the temporal denoiser stochastic SSR expects. The `reflectNonMetals`
+option is only consulted on the non-stochastic path.
+
+The choice is a one-liner in `web/src/gpu/pipeline.ts`
+(`ssrStochastic(isWebGPU)`), exported so `tests/gpu-pipeline.test.ts` can
+pin it. Delete the gate when three upstream fixes `SSRNode.js` — the fix
+is one character: `.max( int( 1 ) )` → `.max( 1 )`.
+
 ## Deviations from the vendored source
 
 The port keeps runtime behaviour identical, but a strict-TypeScript

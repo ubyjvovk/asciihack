@@ -13,6 +13,7 @@ import {
   clampQuality,
   qualityPlan,
   createLook,
+  ssrStochastic,
   type RendererCaps,
 } from '../web/src/gpu/pipeline.js';
 
@@ -64,6 +65,14 @@ describe('gpu pipeline — pure exports', () => {
     const good: RendererCaps = { webgpu: true, mrtBytes: 64, maxQuality: 'ultra' };
     expect(clampQuality('ultra', good)).toBe('ultra');
     expect(clampQuality('high', good)).toBe('high');
+  });
+
+  it('SSR uses the stochastic path on WebGL2 and afterburn\'s mirror path on WebGPU', () => {
+    // three r185 SSRNode.js emits `max( int( trunc( … ) ), 1.0 )` on GLSL — an int/float
+    // mismatch GLSL ES 3.0 rejects, so the WebGL2 backend must take the stochastic branch.
+    // WGSL coerces the same expression, so WebGPU keeps afterburn's ported `stochastic: false`.
+    expect(ssrStochastic(false)).toBe(true);
+    expect(ssrStochastic(true)).toBe(false);
   });
 
   it('createLook exposes every uniform the grade block reads, at the documented defaults', () => {
