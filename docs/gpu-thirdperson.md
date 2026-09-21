@@ -146,6 +146,60 @@ starts fresh, again matching afterburn's rig.
   alone so the sharp slab is only a few cells wide — ART_BIBLE §6
   "gentle, diorama, not mush".
 
+## Motion
+
+*Added by T-0060 — the hero glides between cells instead of teleporting.*
+
+Two things are damped every browser frame:
+
+- **The third-person camera** — already there since T-0052. `dampPose`
+  (§"The spring") pulls the wanted camera pose toward the follow rig at
+  `SPRING_TAU_SEC = 0.18 s`.
+- **The hero cell centre** — added by T-0060. `createPoseSmoother` in
+  `src/ui/view3d.ts` holds the displayed position and eases it toward the
+  true cell each frame with the same exponential shape
+  (`1 − e^(−dt/τ)`, framerate-independent). `GlViewport.render` calls
+  `smoother.update(heroCell, yaw, dt)` before touching any camera; the
+  smoothed pose then drives the fps eye, the GPU-path camera and the
+  third-person spring's input.
+
+Without it the pose fed into `dampPose` is a step function — the hero
+snaps a whole cell the instant NetHack acknowledges a move — and the
+spring reacts to a step by lurching. Smoothing the input first turns the
+step into a ramp, so the follow reads as "the character walked one
+tile", not "the tile appeared under the character".
+
+### Constants
+
+| constant                     | value | why                                                            |
+|------------------------------|-------|----------------------------------------------------------------|
+| `POSE_SMOOTH_CELL_SECONDS`   | 0.12  | Time constant τ. One cell in 120 ms so it finishes with the fps mode's 120 ms turn animation. |
+| `POSE_SNAP_CELLS`            | 1.9   | Cell-space distance beyond which the smoother snaps instead of gliding. |
+
+### Snap rule
+
+Level changes, `<`/`>` and teleports jump the hero by many cells at
+once. Easing across that distance would send the avatar skating over the
+whole map for a full second — worse than the teleport it replaced. When
+the target is more than `POSE_SNAP_CELLS` cells from the displayed
+position, `update` writes the new cell centre directly and returns it
+unmodified. The threshold is `>` (not `≥`), so a legal diagonal walk
+(distance √2 ≈ 1.41) still glides.
+
+### Yaw
+
+Yaw passes through the smoother unchanged. `FpsMode.advance` already
+animates the facing over its own 120 ms in the terminal fps mode, and
+the browser reads that same current-yaw every frame, so damping it a
+second time here would double up.
+
+### Terminal fps mode
+
+`src/ui/modes/fps.ts` renders the terminal viewport straight from
+`poseFor(hero, this.yaw)` — the smoother is a browser-only wire, added
+inside `GlViewport.render`. The terminal path is untouched; its existing
+tests still pass unchanged.
+
 ## Camera azimuth — which side the camera sits on
 
 Azimuth 0 puts the camera **due south of the hero, looking north**, matching

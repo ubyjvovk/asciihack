@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { FACINGS, opposite, poseFor, spritesFromMap, strafe, turn, blitGrid, Viewport3D } from '../src/ui/view3d.js';
+import {
+  createPoseSmoother,
+  FACINGS,
+  opposite,
+  POSE_SMOOTH_CELL_SECONDS,
+  poseFor,
+  spritesFromMap,
+  strafe,
+  turn,
+  blitGrid,
+  Viewport3D,
+} from '../src/ui/view3d.js';
 import { blankGrid } from '../src/ui/grid.js';
 import { makeFrameBuffer, type GlyphInfo } from '../src/model/types.js';
 import { NethackSession } from '../src/engine/session.js';
@@ -95,6 +106,61 @@ describe('view3d sprites and pose', () => {
     expect(dst.cells[8]!.ch).toBe(' ');
     blitGrid(src, dst, { x: -3, y: -3, width: 4, height: 4 });
     expect(dst.cells[0]!.ch).toBe('Z');
+  });
+
+  it('the smoothed pose eases toward the cell centre over about 120 ms', () => {
+    const s = createPoseSmoother({ cellSeconds: POSE_SMOOTH_CELL_SECONDS });
+    // First call snaps to the starting cell — no gliding into the scene.
+    const start = s.update({ x: 0, y: 0 }, 0, 0.016);
+    expect(start.x).toBeCloseTo(0.5);
+    expect(start.y).toBeCloseTo(0.5);
+    // Step across one cell in dt = 1 ms increments up to 120 ms total. An
+    // exponential damper with tau = 120 ms covers 1 − 1/e ≈ 63.2 % of one
+    // cell in that time (framerate-independent, so the sum of small steps
+    // matches a single τ-second step).
+    let p = s.update({ x: 1, y: 0 }, 0, 0);
+    for (let i = 0; i < 120; i++) p = s.update({ x: 1, y: 0 }, 0, 0.001);
+    // Started at 0.5, target is 1.5, so ~63 % of the way lands near 1.13.
+    expect(p.x).toBeGreaterThan(0.5);
+    expect(p.x).toBeLessThan(1.5);
+    expect(p.x).toBeCloseTo(0.5 + (1 - Math.exp(-1)), 2);
+    // Push further: ~9τ leaves less than 0.01 % remaining.
+    for (let i = 0; i < 1000; i++) p = s.update({ x: 1, y: 0 }, 0, 0.001);
+    expect(p.x).toBeCloseTo(1.5, 3);
+  });
+
+  it('a jump of more than two cells snaps instead of gliding', () => {
+    const s = createPoseSmoother({ cellSeconds: POSE_SMOOTH_CELL_SECONDS });
+    s.update({ x: 0, y: 0 }, 0, 0.016);
+    // Level change / teleport: hero appears three cells over. One frame must
+    // land exactly on the new cell centre — no easing across the map.
+    const p = s.update({ x: 3, y: 0 }, 0, 0.016);
+    expect(p.x).toBeCloseTo(3.5);
+    expect(p.y).toBeCloseTo(0.5);
+    // Two-cell diagonal (Δ = √8 ≈ 2.83 > 1.9) is also a snap.
+    const q = s.update({ x: 5, y: 2 }, 0, 0.016);
+    expect(q.x).toBeCloseTo(5.5);
+    expect(q.y).toBeCloseTo(2.5);
+  });
+
+  it('the smoother is framerate independent', () => {
+    // Two smoothers advanced over the same total time (200 ms) with very
+    // different frame budgets should agree to within a few % — the whole
+    // point of `1 − e^(−dt/τ)`.
+    const coarse = createPoseSmoother({ cellSeconds: POSE_SMOOTH_CELL_SECONDS });
+    const fine = createPoseSmoother({ cellSeconds: POSE_SMOOTH_CELL_SECONDS });
+    coarse.update({ x: 0, y: 0 }, 0, 0);
+    fine.update({ x: 0, y: 0 }, 0, 0);
+    // Coarse: 4 × 50 ms (≈ 20 fps).
+    let c = coarse.update({ x: 1, y: 0 }, 0, 0);
+    for (let i = 0; i < 4; i++) c = coarse.update({ x: 1, y: 0 }, 0, 0.05);
+    // Fine: 200 × 1 ms (≈ 1000 fps, closer to the analytic value).
+    let f = fine.update({ x: 1, y: 0 }, 0, 0);
+    for (let i = 0; i < 200; i++) f = fine.update({ x: 1, y: 0 }, 0, 0.001);
+    expect(c.x).toBeCloseTo(f.x, 3);
+    // And both must be at (1 − e^(−200/120)) ≈ 81 % of the way to 1.5.
+    const expected = 0.5 + (1 - Math.exp(-0.2 / POSE_SMOOTH_CELL_SECONDS));
+    expect(f.x).toBeCloseTo(expected, 3);
   });
 
   it('Viewport3D reallocates on size change and renders through the callback', () => {

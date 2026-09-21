@@ -160,6 +160,79 @@ export function poseFor(hero: { x: number; y: number }, yawRad: number): Pose {
   return { x: hero.x + 0.5, y: hero.y + 0.5, yaw: yawRad };
 }
 
+/**
+ * Seconds for the smoother's exponential ease across one cell — matches the
+ * 120 ms turn animation in `FpsMode.advance` so a move and the turn that
+ * accompanies it finish together.
+ */
+export const POSE_SMOOTH_CELL_SECONDS = 0.12;
+
+/**
+ * Maximum in-cells jump the smoother will still glide across. Beyond it (level
+ * changes, `<`/`>`, teleports) the smoother snaps instead of skating the
+ * avatar across the whole map.
+ */
+export const POSE_SNAP_CELLS = 1.9;
+
+/** Options accepted by `createPoseSmoother`. */
+export interface PoseSmootherOptions {
+  /**
+   * Seconds it takes to cover ~63 % of one cell — the time constant `τ` in
+   * `1 − e^(−dt/τ)`. Set to `POSE_SMOOTH_CELL_SECONDS` to match the fps turn.
+   */
+  cellSeconds: number;
+}
+
+/**
+ * Stateful smoother over the hero's cell centre — the browser render loop
+ * calls `update` once per frame with the current `hero` cell (integer coords),
+ * the fps yaw and the wall-clock delta, and gets the pose to hand to the GL
+ * viewport. Returns the true cell centre on the first call and after a snap.
+ */
+export interface PoseSmoother {
+  /**
+   * Ease the displayed pose one frame toward `hero`'s cell centre. Framerate
+   * independent (`1 − e^(−dt/τ)`, the same shape `dampPose` uses for the
+   * third-person camera). Yaw passes through unchanged — `FpsMode.advance`
+   * already animates it over 120 ms.
+   */
+  update(hero: { x: number; y: number }, yawRad: number, dt: number): Pose;
+}
+
+/**
+ * Build a `PoseSmoother` that eases the displayed hero position toward the
+ * true cell centre — one cell in `cellSeconds` (framerate-independent
+ * exponential damper), snapping on jumps larger than `POSE_SNAP_CELLS` so
+ * level changes and teleports do not send the avatar skating across the map.
+ */
+export function createPoseSmoother({ cellSeconds }: PoseSmootherOptions): PoseSmoother {
+  const snapSq = POSE_SNAP_CELLS * POSE_SNAP_CELLS;
+  let displayedX: number | null = null;
+  let displayedY: number | null = null;
+  return {
+    update(hero, yawRad, dt) {
+      const tx = hero.x + 0.5;
+      const ty = hero.y + 0.5;
+      if (displayedX === null || displayedY === null) {
+        displayedX = tx;
+        displayedY = ty;
+        return { x: tx, y: ty, yaw: yawRad };
+      }
+      const dx = tx - displayedX;
+      const dy = ty - displayedY;
+      if (dx * dx + dy * dy > snapSq) {
+        displayedX = tx;
+        displayedY = ty;
+        return { x: tx, y: ty, yaw: yawRad };
+      }
+      const k = 1 - Math.exp(-Math.max(0, dt) / cellSeconds);
+      displayedX += dx * k;
+      displayedY += dy * k;
+      return { x: displayedX, y: displayedY, yaw: yawRad };
+    },
+  };
+}
+
 /** Copy a quantized `ScreenGrid` into a rectangle of the App's grid, clipped to its bounds. */
 export function blitGrid(src: ScreenGrid, dst: ScreenGrid, rect: Rect): void {
   for (let y = 0; y < src.height; y++) {

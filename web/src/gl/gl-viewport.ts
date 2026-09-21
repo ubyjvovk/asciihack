@@ -27,6 +27,11 @@
 import * as THREE from 'three';
 import * as WG from 'three/webgpu';
 import { isSolid, type LevelView, type Pose, type Sprite, type Tile } from '../../../src/model/types.js';
+import {
+  createPoseSmoother,
+  POSE_SMOOTH_CELL_SECONDS,
+  type PoseSmoother,
+} from '../../../src/ui/view3d.js';
 import { makeCamera, makeRenderer, makeScene } from '../asciicity/render/scene.js';
 import { StyleRenderer } from '../asciicity/render/post.js';
 import { STYLES } from '../asciicity/render/styles/index.js';
@@ -155,6 +160,9 @@ export class GlViewport {
   private thirdDist = THIRD_DIST_DEFAULT_CELLS;
   private thirdDamped: DampState | null = null;
   private lastFrameTime = 0;
+  private readonly heroSmoother: PoseSmoother = createPoseSmoother({
+    cellSeconds: POSE_SMOOTH_CELL_SECONDS,
+  });
   private cols = 80;
   private rows = 24;
   private cellW = 9;
@@ -447,21 +455,32 @@ export class GlViewport {
    * unused in ortho — the frustum is derived from the viewport rectangle).
    */
   render(level: LevelView, pose: Pose, sprites: readonly Sprite[], vFovDeg: number): void {
-    // Keep the legacy perspective camera at the hero cell in fps + ortho so
-    // the lantern light (child of `camera`) stays anchored to the hero even
-    // when the ortho camera is doing the rendering. The third view moves the
-    // camera further out below; the lantern rides with it on the legacy path
-    // (a limitation of that path, called out in `docs/gpu-thirdperson.md`).
+    // One wall-clock delta drives both dampers this frame — the hero-cell
+    // smoother (below) and the third-person spring (`stepThirdPose`). Sharing
+    // the delta keeps their motion locked to the same rAF cadence.
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const dt = this.lastFrameTime === 0 ? 0.016 : Math.min(0.1, (now - this.lastFrameTime) / 1000);
+    this.lastFrameTime = now;
+    // Smooth the hero cell centre so a move eases across the cell instead of
+    // teleporting — otherwise the third-person spring's input is a step
+    // function and the follow reads as a lurch (T-0060). Yaw passes through
+    // unchanged; the fps mode already animates it.
+    const heroCell = { x: Math.floor(pose.x), y: Math.floor(pose.y) };
+    const smoothedPose = this.heroSmoother.update(heroCell, pose.yaw, dt);
+    this.lastHeroCell = heroCell;
+    // Keep the legacy perspective camera at the smoothed hero position in
+    // fps + ortho so the lantern light (child of `camera`) glides too. The
+    // third view moves the camera further out below; the lantern rides with
+    // it on the legacy path (a limitation of that path, called out in
+    // `docs/gpu-thirdperson.md`).
     if (this.view !== 'third') {
-      this.camera.position.set(pose.x, EYE_HEIGHT, pose.y);
-      this.camera.rotation.set(CAMERA_PITCH, -pose.yaw, 0, 'YXZ');
+      this.camera.position.set(smoothedPose.x, EYE_HEIGHT, smoothedPose.y);
+      this.camera.rotation.set(CAMERA_PITCH, -smoothedPose.yaw, 0, 'YXZ');
       if (this.camera.fov !== vFovDeg) {
         this.camera.fov = vFovDeg;
         this.camera.updateProjectionMatrix();
       }
     }
-    const heroCell = { x: Math.floor(pose.x), y: Math.floor(pose.y) };
-    this.lastHeroCell = heroCell;
 
     // Per-frame decision: both views can go through the GPU path now — the
     // ortho camera + cutaway are wired into `GpuPath` (T-0043, docs/gpu-ortho.md).
@@ -487,7 +506,10 @@ export class GlViewport {
         this.style.render(this.scene, this.orthoCamera);
       } else if (this.view === 'third') {
         this.applyCutaway(null);
-        const p = this.stepThirdPose(heroCell);
+        const p = this.stepThirdPose(
+          { x: smoothedPose.x - 0.5, y: smoothedPose.y - 0.5 },
+          dt,
+        );
         this.camera.position.set(p.position.x, p.position.y, p.position.z);
         this.camera.lookAt(p.target.x, p.target.y, p.target.z);
         if (this.camera.fov !== p.fov) {
@@ -524,12 +546,13 @@ export class GlViewport {
     // Advance the third-person spring damper once per frame (fps + ortho pass
     // `null`; the branch inside `GpuPath.render` short-circuits to the ordinary
     // hero-cell pose). Doing it here keeps the damped state on the viewport
-    // where the legacy path already reads it.
+    // where the legacy path already reads it. Feed the smoothed hero position
+    // in so the spring's input glides across the cell instead of stepping.
     const thirdFrame = this.view === 'third'
-      ? this.stepThirdPose({ x: Math.floor(pose.x), y: Math.floor(pose.y) })
+      ? this.stepThirdPose({ x: smoothedPose.x - 0.5, y: smoothedPose.y - 0.5 }, dt)
       : null;
     try {
-      gpu.render(level, pose, sprites, vFovDeg, path, size, viewportPx, this.pinnedMood, this.view, this.cols, this.rows, thirdFrame);
+      gpu.render(level, smoothedPose, sprites, vFovDeg, path, size, viewportPx, this.pinnedMood, this.view, this.cols, this.rows, thirdFrame);
     } catch (err) {
       this.fallbackToLegacy(err);
       // Re-run this frame on the legacy path so the user gets something.
@@ -723,11 +746,8 @@ export class GlViewport {
    * the returned pose onto `this.camera`; GPU passes it into `GpuPath.render`
    * so the same damped state drives both cameras.
    */
-  private stepThirdPose(hero: { x: number; y: number }): ThirdPersonFrame {
+  private stepThirdPose(hero: { x: number; y: number }, dt: number): ThirdPersonFrame {
     const wanted = thirdPersonPose(hero, this.thirdYawSteps, this.thirdDist);
-    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
-    const dt = this.lastFrameTime === 0 ? 0.016 : Math.min(0.1, (now - this.lastFrameTime) / 1000);
-    this.lastFrameTime = now;
     const wantedState: DampState = { position: wanted.position, target: wanted.target };
     const damped = this.thirdDamped === null ? wantedState : dampPose(this.thirdDamped, wantedState, dt);
     this.thirdDamped = damped;
