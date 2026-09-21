@@ -148,26 +148,42 @@ starts fresh, again matching afterburn's rig.
 
 ## Motion
 
-*Added by T-0060 — the hero glides between cells instead of teleporting.*
+*Added by T-0060, extended by T-0062 — the hero and every other sprite
+glide between cells instead of teleporting.*
 
-Two things are damped every browser frame:
+Four things are damped every browser frame, all with the same
+first-order exponential shape (`1 − e^(−dt/τ)`, framerate-independent):
 
 - **The third-person camera** — already there since T-0052. `dampPose`
   (§"The spring") pulls the wanted camera pose toward the follow rig at
   `SPRING_TAU_SEC = 0.18 s`.
 - **The hero cell centre** — added by T-0060. `createPoseSmoother` in
   `src/ui/view3d.ts` holds the displayed position and eases it toward the
-  true cell each frame with the same exponential shape
-  (`1 − e^(−dt/τ)`, framerate-independent). `GlViewport.render` calls
-  `smoother.update(heroCell, yaw, dt)` before touching any camera; the
-  smoothed pose then drives the fps eye, the GPU-path camera and the
-  third-person spring's input.
+  true cell each frame at `POSE_SMOOTH_CELL_SECONDS = 0.12 s`.
+  `GlViewport.render` calls `smoother.update(heroCell, yaw, dt)` before
+  touching any camera; the smoothed pose then drives the fps eye, the
+  GPU-path camera and the third-person spring's input.
+- **The lantern** — a scene child of the same smoothed camera on the GPU
+  path (`GpuPath.render` writes `this.lantern.position` at the smoothed
+  hero cell), so the pool of light glides with the character.
+- **Every sprite** — added by T-0062. `SpriteLayer.update` takes the
+  smoothed hero pose and draws the `@` avatar at `(pose.x, pose.y)`
+  instead of its integer cell centre. Every other sprite (pet, monsters,
+  items) has no smoother of its own, so `SpriteLayer` runs the same
+  exponential damper per sprite: sprites are matched between frames by
+  `(ch, cls)` + nearest position, an unmatched sprite is placed directly
+  at its cell (no ease from an unrelated neighbour), and the ease shares
+  `POSE_SMOOTH_CELL_SECONDS` with the hero smoother so the whole scene
+  reads as one motion.
 
-Without it the pose fed into `dampPose` is a step function — the hero
-snaps a whole cell the instant NetHack acknowledges a move — and the
-spring reacts to a step by lurching. Smoothing the input first turns the
-step into a ramp, so the follow reads as "the character walked one
-tile", not "the tile appeared under the character".
+Before T-0060 the pose fed into `dampPose` was a step function — the
+hero snapped a whole cell the instant NetHack acknowledged a move — and
+the spring lurched. Before T-0062 the fix only reached the camera and
+the lantern: the avatar itself was still drawn at its raw integer cell,
+so the model teleported a whole cell every turn while the camera glided
+after it. Smoothing every visible position first turns the step into a
+ramp, so the follow reads as "the character (and the goblin, and the
+kitten) walked one tile", not "the tile appeared under them".
 
 ### Constants
 
@@ -184,7 +200,11 @@ whole map for a full second — worse than the teleport it replaced. When
 the target is more than `POSE_SNAP_CELLS` cells from the displayed
 position, `update` writes the new cell centre directly and returns it
 unmodified. The threshold is `>` (not `≥`), so a legal diagonal walk
-(distance √2 ≈ 1.41) still glides.
+(distance √2 ≈ 1.41) still glides. **`SpriteLayer` applies the same rule
+per sprite** — a monster shifted more than `POSE_SNAP_CELLS` from its
+previous frame's eased position snaps to its new cell rather than
+skating across the room, and a sprite that appears for the first time
+(no match in the previous frame) is placed directly at its cell.
 
 ### Yaw
 

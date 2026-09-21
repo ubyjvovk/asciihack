@@ -42,6 +42,7 @@ import {
 import type { Camera, Material, Object3D } from 'three/webgpu';
 import { float, texture as textureNode, uniform, vec3 } from 'three/tsl';
 import type { GlyphClass, Pose, Sprite, Tile } from '../../../src/model/types.js';
+import { POSE_SMOOTH_CELL_SECONDS, POSE_SNAP_CELLS, poseSmoothingFactor } from '../../../src/ui/view3d.js';
 import { applyAvatarFacing, createHeroAvatar, createPetAvatar } from './avatar.js';
 
 /** Fallback height for sprites without a `height` field (cells). */
@@ -74,6 +75,14 @@ export interface SpriteLayerOptions {
   voxelMaterial?: Material;
 }
 
+/** One previous-frame eased position, used to match sprites frame-to-frame. */
+interface EasedEntry {
+  readonly ch: string;
+  readonly cls: GlyphClass;
+  x: number;
+  y: number;
+}
+
 /**
  * Owns a pool of camera-facing quads under `root`, plus caches of
  * `DataTexture`s (per tile key) and `MeshStandardNodeMaterial`s (per tile +
@@ -84,6 +93,18 @@ export interface SpriteLayerOptions {
  * models (`createHeroAvatar` / `createPetAvatar`) instead. Each avatar object
  * is built the first time it is needed and reused on every subsequent frame —
  * only position and rotation change.
+ *
+ * ### Motion (T-0062, docs/gpu-thirdperson.md "Motion")
+ *
+ * The hero (`ch === '@'`) uses `pose.x`/`pose.y` — the smoothed hero world
+ * position the viewport already glides one cell in
+ * `POSE_SMOOTH_CELL_SECONDS`. Every other sprite (pet, monsters, items) gets
+ * its own per-sprite ease with the same exponential shape: `SpriteLayer`
+ * matches this frame's sprites to the previous frame's eased entries by
+ * `(ch, cls)` and, within a class, nearest position; unmatched sprites are
+ * new and placed directly at their target cell (no ease from an unrelated
+ * neighbour). A jump larger than `POSE_SNAP_CELLS` snaps — a monster
+ * teleporting across the room must not skate.
  */
 export class SpriteLayer {
   readonly root: Group;
@@ -96,6 +117,7 @@ export class SpriteLayer {
   private petAvatar: Object3D | null = null;
   private heroInScene = false;
   private petInScene = false;
+  private previousEased: EasedEntry[] = [];
 
   constructor(opts: SpriteLayerOptions = {}) {
     this.root = new Group();
@@ -106,26 +128,45 @@ export class SpriteLayer {
 
   /**
    * Reconcile the scene with `sprites`: reuse cached meshes/materials/textures
-   * across frames, position each entry at its cell centre with feet on the
-   * floor, yaw it toward `camera`, and drop meshes whose sprite no longer
-   * appears. When constructed with a `voxelMaterial`, the hero
-   * (`ch === '@'`) and pet (`cls === 'pet'`) become voxel avatars rotated
-   * about Y using `pose.yaw` (radians, 0 = north — architecture.md §7); the
-   * pet borrows the hero's facing because sprites carry no direction. Returns
-   * the objects present after the call, in `sprites` order. Avatars' roots
-   * are `Mesh`es at runtime (all boxes live in the "root" part), so the
-   * declared `Mesh[]` return type reads correctly through the cast.
+   * across frames, position each entry with feet on the floor and yaw it
+   * toward `camera`, and drop meshes whose sprite no longer appears. When
+   * constructed with a `voxelMaterial`, the hero (`ch === '@'`) and pet
+   * (`cls === 'pet'`) become voxel avatars rotated about Y using `pose.yaw`
+   * (radians, 0 = north — architecture.md §7); the pet borrows the hero's
+   * facing because sprites carry no direction.
+   *
+   * `pose` (when given) also carries the **smoothed hero world position** —
+   * the hero avatar/quad is drawn at `(pose.x, ., pose.y)` instead of its
+   * integer cell centre, so it glides with the smoother the viewport is
+   * already running (T-0060). Every other sprite eases toward its own cell
+   * with the same shape (`dt` seconds of `1 − e^(−dt/τ)` at
+   * `POSE_SMOOTH_CELL_SECONDS`), snapping on jumps > `POSE_SNAP_CELLS`.
+   *
+   * Returns the objects present after the call, in `sprites` order. Avatars'
+   * roots are `Mesh`es at runtime (all boxes live in the "root" part), so
+   * the declared `Mesh[]` return type reads correctly through the cast.
    */
-  update(sprites: readonly Sprite[], camera: Camera, pose?: Pose): Mesh[] {
+  update(sprites: readonly Sprite[], camera: Camera, pose?: Pose, dt = 0): Mesh[] {
     const keep = new Set<string>();
     const out: Mesh[] = [];
     let heroSeen = false;
     let petSeen = false;
     const facing = pose?.yaw ?? 0;
+    const nextEased: EasedEntry[] = [];
+    const usedPrev = new Set<number>();
     for (const s of sprites) {
+      const isHeroWithPose = s.ch === '@' && pose !== undefined;
+      // Hero position comes from the outer smoother when `pose` is supplied;
+      // no per-sprite ease so we do not double-smooth. Fall back to the
+      // per-sprite ease when the caller has no smoothed pose to offer.
+      const draw = isHeroWithPose
+        ? { x: pose.x, y: pose.y }
+        : this.easedFor(s, dt, nextEased, usedPrev);
+      const drawX = draw.x;
+      const drawY = draw.y;
       if (this.voxelMaterial !== undefined && s.ch === '@') {
         const obj = this.ensureHeroAvatar();
-        obj.position.set(s.x + 0.5, 0, s.y + 0.5);
+        obj.position.set(drawX, 0, drawY);
         applyAvatarFacing(obj, facing);
         heroSeen = true;
         out.push(obj as unknown as Mesh);
@@ -133,7 +174,7 @@ export class SpriteLayer {
       }
       if (this.voxelMaterial !== undefined && s.cls === 'pet') {
         const obj = this.ensurePetAvatar();
-        obj.position.set(s.x + 0.5, 0, s.y + 0.5);
+        obj.position.set(drawX, 0, drawY);
         applyAvatarFacing(obj, facing);
         petSeen = true;
         out.push(obj as unknown as Mesh);
@@ -155,7 +196,7 @@ export class SpriteLayer {
       const height = s.height ?? DEFAULT_HEIGHT;
       const width = height * tileAspect(s.tile);
       mesh.scale.set(width, height, 1);
-      mesh.position.set(s.x + 0.5, height / 2, s.y + 0.5);
+      mesh.position.set(drawX, height / 2, drawY);
       applyYawTowardsCamera(mesh, camera);
       out.push(mesh);
     }
@@ -172,7 +213,59 @@ export class SpriteLayer {
       this.root.remove(this.petAvatar);
       this.petInScene = false;
     }
+    this.previousEased = nextEased;
     return out;
+  }
+
+  /**
+   * Ease `s` toward its cell centre using the shared exponential damper.
+   * Matches into `previousEased` by `(ch, cls)` + nearest position so a
+   * sprite that shifts one cell inherits its previous eased position;
+   * unmatched (appearing) sprites and matches beyond `POSE_SNAP_CELLS` snap
+   * to the target cell instead of skating. Records the resulting position in
+   * `nextEased` so the following frame can match against it in turn.
+   */
+  private easedFor(
+    s: Sprite,
+    dt: number,
+    nextEased: EasedEntry[],
+    usedPrev: Set<number>,
+  ): { x: number; y: number } {
+    const targetX = s.x + 0.5;
+    const targetY = s.y + 0.5;
+    let bestIdx = -1;
+    let bestDistSq = Infinity;
+    for (let i = 0; i < this.previousEased.length; i++) {
+      if (usedPrev.has(i)) continue;
+      const p = this.previousEased[i]!;
+      if (p.ch !== s.ch || p.cls !== s.cls) continue;
+      const dx = p.x - targetX;
+      const dy = p.y - targetY;
+      const d = dx * dx + dy * dy;
+      if (d < bestDistSq) {
+        bestDistSq = d;
+        bestIdx = i;
+      }
+    }
+    let easedX = targetX;
+    let easedY = targetY;
+    if (bestIdx >= 0) {
+      const p = this.previousEased[bestIdx]!;
+      const snapSq = POSE_SNAP_CELLS * POSE_SNAP_CELLS;
+      if (bestDistSq > snapSq) {
+        // Big jump (teleport, level change, `<`/`>`) — snap instead of
+        // skating across the map for a full time constant.
+        easedX = targetX;
+        easedY = targetY;
+      } else {
+        const k = poseSmoothingFactor(dt, POSE_SMOOTH_CELL_SECONDS);
+        easedX = p.x + (targetX - p.x) * k;
+        easedY = p.y + (targetY - p.y) * k;
+      }
+      usedPrev.add(bestIdx);
+    }
+    nextEased.push({ ch: s.ch, cls: s.cls, x: easedX, y: easedY });
+    return { x: easedX, y: easedY };
   }
 
   /** Free every GPU-side resource: meshes, materials, textures, geometry. */

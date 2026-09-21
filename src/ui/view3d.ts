@@ -184,6 +184,16 @@ export interface PoseSmootherOptions {
 }
 
 /**
+ * One-frame factor of the shared exponential-decay damper: `1 − e^(−dt/τ)`
+ * in `[0, 1]`. Every place we want a framerate-independent ease toward a
+ * target (hero-cell smoother, per-sprite ease in `SpriteLayer`) multiplies
+ * the remaining delta by this factor so they all read as one motion shape.
+ */
+export function poseSmoothingFactor(dt: number, cellSeconds: number): number {
+  return 1 - Math.exp(-Math.max(0, dt) / cellSeconds);
+}
+
+/**
  * Stateful smoother over the hero's cell centre — the browser render loop
  * calls `update` once per frame with the current `hero` cell (integer coords),
  * the fps yaw and the wall-clock delta, and gets the pose to hand to the GL
@@ -225,7 +235,7 @@ export function createPoseSmoother({ cellSeconds }: PoseSmootherOptions): PoseSm
         displayedY = ty;
         return { x: tx, y: ty, yaw: yawRad };
       }
-      const k = 1 - Math.exp(-Math.max(0, dt) / cellSeconds);
+      const k = poseSmoothingFactor(dt, cellSeconds);
       displayedX += dx * k;
       displayedY += dy * k;
       return { x: displayedX, y: displayedY, yaw: yawRad };
