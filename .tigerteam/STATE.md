@@ -43,6 +43,19 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   2026-09-01). Worktrees get it via `scripts/nethack-src.sh` (T-0001).
 
 ## Decision log (append-only)
+- 2026-09-21 — Three PM decisions written into `docs/gpu.md` that the
+  tickets now cite, each made to stop two workers diverging:
+  (1) **§6.1 the grade fights the quantiser** — styled mode keeps AgX,
+  split-tone, contrast and saturation but **zeroes vignette and grain** and
+  scales the frame by `1/styleExposure` via a new `look.outputScale`, because
+  the AsciiCity prelude applies its own exposure 1.7 + `pow(v, 0.45)` and
+  per-pixel grain shimmers once it is averaged into cells;
+  (2) **§3 the WebGL2 fallback is a first-class path**, measured with
+  `/gpu-probe.html`: headless Chromium reaches the WebGPU backend but three
+  r185 throws on a `GPUTextureViewDescriptor.swizzle` mismatch, while
+  `forceWebGL: true` renders the same TSL graph in ~80 ms at 640×360;
+  (3) **torch shadows**: only the two torches nearest the hero cast, the rest
+  are lit flat and get their contact darkening from SSGI/AO.
 - 2026-09-21 — User: "a sibling project in ~/afterburn has a really really
   cool renderer, pls port it for asciihack; copy code and resources from
   there freely, and make it look as good; prefer opus workers". Decision:
@@ -96,6 +109,19 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   before the first ticket.
 
 ## Board snapshot
+- 2026-09-21 02:40 — **T-0036 (voxel kit) and T-0037 (renderer + pipeline)
+  accepted; 37 done.** T-0037 took one rework: attempt 1 was written from my
+  spec because `~/afterburn` is not mounted in worker containers; attempt 2 is
+  a verified line-for-line port (I diffed `QUALITY`, every `createLook`
+  default and the whole grade block against the vendored source myself).
+  T-0036's worker blocked on the same gap and was right to. Fix: the sources
+  are now **vendored at `vendor/afterburn/`** (read-only, committed) and every
+  ticket points there. Running: T-0038 (moods/material). Then T-0039 (dungeon
+  bake) → T-0040 (wiring). Drafts ready in `.tigerteam/board/drafts/`:
+  T-0042 sprites, T-0043 ortho on the GPU path, T-0044 dungeon air.
+  Note: only one worker container runs at a time, which is **correct** — the
+  wave's `depends_on` chain leaves only one claimable ticket. Revisit the
+  `scale = 4` supervisor restart when T-0042/43/44 go in together.
 - 2026-09-21 01:50 — T-0035 (raycaster refinement) accepted after
   re-running the full suite in its worktree: 248 pass, docs updated, in
   scope. **35 done.** Queued the afterburn port wave T-0036..T-0040 and
