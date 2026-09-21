@@ -30,7 +30,7 @@ One `InstancedMesh` per emitter, three total. Each mesh:
 | Emitter | Instance count | Wrap radius (cells) | Vertical extent (m) |
 |---|---:|---:|---:|
 | `drips`  | 400 | ±7 | 4.0 |
-| `motes`  | 800 | ±8 | 2.5 |
+| `motes`  | 560 | ±8 | 2.5 |
 | `embers` | 300 | ±5 | 2.5 |
 
 The counts are the exports `DRIP_COUNT`, `MOTE_COUNT`, `EMBER_COUNT` and are
@@ -111,7 +111,7 @@ test asserts (`emitterTargets('deep_dark', soaked).drips === 0`).
 `update()` hides a mesh whose eased intensity drops below `VISIBLE_EPS =
 0.004`. The pipeline's overlay `pass()` still runs, but the hidden mesh
 contributes nothing, so `deep_dark`'s overlay pass costs a bloom-sized
-attachment clear plus one dust-mote InstancedMesh with 800 near-transparent
+attachment clear plus one dust-mote InstancedMesh with 560 near-transparent
 discs — no drips or embers on the wire.
 
 ## Wiring into `GpuPath` (`web/src/gl/gl-viewport.ts`)
@@ -136,7 +136,7 @@ order at boot:
 ## Budget
 
 Ticket target: **under 1 ms at 640×360 on `high`**. On paper the overlay is
-`400 + 800 + 300 = 1500` instances of a `PlaneGeometry(1, 1)`, additive
+`400 + 560 + 300 = 1260` instances of a `PlaneGeometry(1, 1)`, additive
 alpha-blended, no shadow, no depth write, no fog. Each fragment does ~10
 TSL ops (hash, mod, dot, smoothstep, mix). The pass reads no G-buffer
 targets, so the MRT footprint is unchanged. The overlay never blocks

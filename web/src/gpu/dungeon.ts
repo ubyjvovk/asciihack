@@ -43,7 +43,7 @@ const MAX_LIVE_LIGHTS = 8;
 /** Number of nearest torches that cast real shadows (rest lit flat by SSGI/AO). */
 const SHADOW_CASTING_LIGHTS = 2;
 /** Minimum Chebyshev cell distance between two chosen torches. */
-const TORCH_MIN_SPACING = 6;
+const TORCH_MIN_SPACING = 4;
 /** Chunk width in cells (docs/gpu-dungeon.md "Chunked rebuild"). */
 export const CHUNK_W = 10;
 /** Chunk height in cells. */
