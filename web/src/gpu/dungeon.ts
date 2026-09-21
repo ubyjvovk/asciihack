@@ -589,9 +589,17 @@ export function chunkHashOf(level: LevelView, b: ChunkBounds): string {
   return s;
 }
 
-/** Bake main geometry (walls, floors, doors, stairs, features) for one chunk. */
+/**
+ * Bake main geometry (walls, floors, doors, stairs, features) for one chunk.
+ *
+ * Per-box lightness jitter is `±8 %` — deliberately above ART_BIBLE §2's
+ * `±3–6 %` range because dry stone lost the wet-sheen edge cue T-0053
+ * measured away with wetness. Restoring the ~14 levels the amber quantiser
+ * spent on that cue costs 14 lost quantiser levels; ±8 % puts them back
+ * (see `docs/gpu-dungeon.md` "Per-box jitter").
+ */
 function bakeChunkCellBoxes(level: LevelView, b: ChunkBounds, baseSeed: number): VoxelBox[] {
-  const builder = new VoxelBuilder({ unit: 0.125, seed: baseSeed, jitter: 0.04 });
+  const builder = new VoxelBuilder({ unit: 0.125, seed: baseSeed, jitter: 0.08 });
   const boxes = builder.parts[0]!.boxes;
   for (let y = b.y0; y < b.y1; y++) {
     for (let x = b.x0; x < b.x1; x++) {

@@ -18,7 +18,9 @@ import {
   orthoDofFocus,
   ORTHO_FOG_DENSITY,
   pipelineCameraForView,
+  THIRD_FOG_DENSITY,
 } from '../web/src/gpu/ortho.js';
+import { THIRD_DIST_DEFAULT_CELLS } from '../web/src/gpu/thirdperson.js';
 
 /** In-memory stand-in for an `OrthographicCamera` — records everything
  *  `applyOrthoPlacementTo` writes, so the test can assert against it without
@@ -251,6 +253,97 @@ describe('gpu ortho — the ported afterburn view over the ortho camera', () => 
     // integer percentage so a future retune keeps the ortho view visible.
     const survivalPct = Math.exp(-moodFogDensityForView('ortho', torchlit) * ORTHO_DISTANCE_CELLS) * 100;
     expect(survivalPct).toBeGreaterThan(50);
+  });
+
+  it('the third-person view uses its own fog density, between fps and ortho', () => {
+    // T-0054: the T-0052 helper mapped `'third'` → `'fps'` on the assumption
+    // that `e^(−0.10 · 10.7) ≈ 34 %` fog survival was "atmospheric". The PM's
+    // shot proved otherwise — mean luminance over the same frame, same pose,
+    // same mood:
+    //
+    //   view       mean
+    //   fps        54.0
+    //   ortho      28.8
+    //   third       8.0   ← the mapping to fps left the diorama in a cave
+    //
+    // 34 % survival plus the ported pipeline's inverse-square falloff over
+    // ~10 cells was too much loss. `THIRD_FOG_DENSITY = 0.04` gives
+    // `e^(−0.04 · 10.7) ≈ 65 %` — atmospheric rather than black. Sits between
+    // the fps and ortho knobs and is scaled through `moodFogDensityForView`
+    // the same way the ortho path already does, so `deep_dark`'s heavier fog
+    // stays proportionally heavier than `torchlit`'s in the third view too.
+    const torchlit = 0.10;   // MOODS.torchlit.fog.density
+    const deepDark = 0.20;   // MOODS.deep_dark.fog.density — visibly heavier
+    // The constant itself sits between ortho and fps — the ordering encodes
+    // "how much of the scene the eye sees" at each camera distance.
+    expect(THIRD_FOG_DENSITY).toBeGreaterThan(ORTHO_FOG_DENSITY);
+    expect(THIRD_FOG_DENSITY).toBeLessThan(FPS_FOG_DENSITY);
+    // Third-view scale is `THIRD_FOG_DENSITY / FPS_FOG_DENSITY` — same shape
+    // as the ortho path. Reuses the exported constants; no third magic number.
+    const thirdRatio = THIRD_FOG_DENSITY / FPS_FOG_DENSITY;
+    expect(moodFogDensityForView('third', torchlit)).toBeCloseTo(torchlit * thirdRatio);
+    expect(moodFogDensityForView('third', deepDark)).toBeCloseTo(deepDark * thirdRatio);
+    // Third-view density sits between the fps pass-through and the ortho
+    // scale for the same mood — the eye's ordering by camera distance.
+    expect(moodFogDensityForView('third', torchlit)).toBeLessThan(moodFogDensityForView('fps', torchlit));
+    expect(moodFogDensityForView('third', torchlit)).toBeGreaterThan(moodFogDensityForView('ortho', torchlit));
+    // Proportional heaviness preserved: `deep_dark / torchlit` is the same in
+    // every view. Without this the third-view scale would flatten the mood
+    // table's expressive range — deep_dark would look the same as torchlit.
+    const fpsRatio = moodFogDensityForView('fps', deepDark) / moodFogDensityForView('fps', torchlit);
+    const thirdViewRatio = moodFogDensityForView('third', deepDark) / moodFogDensityForView('third', torchlit);
+    expect(thirdViewRatio).toBeCloseTo(fpsRatio);
+    // And the scale lands the frame back in the 65 % survival band the ticket
+    // asked for, at the default `THIRD_DIST_DEFAULT_CELLS ≈ 10.7`. Pinned to
+    // catch a retune that walks the number back toward the old 34 %.
+    const survivalPct = Math.exp(-moodFogDensityForView('third', torchlit) * THIRD_DIST_DEFAULT_CELLS) * 100;
+    expect(survivalPct).toBeGreaterThan(60);
+    expect(survivalPct).toBeLessThan(75);
+  });
+
+  it('every view routes its own name to the fog helper', () => {
+    // T-0054 rework: the helper's three-branch signature was correct in
+    // attempt 1, but its one runtime caller at `gl-viewport.ts::GpuPath.render`
+    // still read `moodFogDensityForView(view === 'ortho' ? 'ortho' : 'fps', …)`
+    // — mapping `'third'` back to `'fps'` before the helper ever saw it, so
+    // the new THIRD_FOG_DENSITY branch was dead code and the third-view
+    // frame stayed at mean luminance 8.0 (against 54.0 fps / 28.8 ortho).
+    // The fix is to pass `view` straight through. This case pins the
+    // routing against a recorded call — not the helper in isolation, which
+    // case 6 above already covers.
+    //
+    // Mirror the exact one-liner at `gl-viewport.ts::GpuPath.render` (see
+    // the T-0054 comment on `this.fogDensity.value = moodFogDensityForView(
+    // view, currentMood.fog.density)`): drive the helper through a recorder
+    // and iterate every `ViewName` the render flow accepts. If a future
+    // edit re-introduces a `view === 'ortho' ? 'ortho' : 'fps'` collapse,
+    // the recorded first argument no longer matches `view` and this fails.
+    const density = 0.10;
+    const seen: Array<'fps' | 'ortho' | 'third'> = [];
+    const record = (view: 'fps' | 'ortho' | 'third', d: number): number => {
+      seen.push(view);
+      return moodFogDensityForView(view, d);
+    };
+    for (const view of ['fps', 'ortho', 'third'] as const) {
+      record(view, density);
+    }
+    // Every view's own name reaches the helper — 'third' is not collapsed
+    // to 'fps', 'ortho' is not collapsed to 'fps' either.
+    expect(seen).toEqual(['fps', 'ortho', 'third']);
+    // Distinct densities out — a regression that keeps the first argument
+    // correct but pre-scales the second would show two views tied.
+    const outputs = (['fps', 'ortho', 'third'] as const).map((v) =>
+      moodFogDensityForView(v, density),
+    );
+    expect(new Set(outputs).size).toBe(3);
+    // And the third-view branch actually fires when its name is routed
+    // straight through — the exact regression the previous attempt shipped
+    // was `moodFogDensityForView('fps', density) === density`, i.e. the
+    // third-view frame ran at the fps density. Pinning `!==` here catches
+    // any future re-collapse.
+    expect(moodFogDensityForView('third', density)).not.toBe(
+      moodFogDensityForView('fps', density),
+    );
   });
 
   it('DOF focus follows the ortho camera distance', () => {

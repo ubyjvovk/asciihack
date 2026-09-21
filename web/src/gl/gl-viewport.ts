@@ -1415,18 +1415,19 @@ class GpuPath {
     this.atmosphere.update(dt);
 
     // 4b. Drive our own fog uniforms from the atmosphere's current mood,
-    //     scaling density for the ortho view (T-0050 rework 3). The
-    //     atmosphere's blend already ran; `moodFogDensityForView` is a
-    //     multiplicative scale, so deep_dark's heavier fog stays
-    //     proportionally heavier than torchlit's. Before this fix the ortho
-    //     view rendered black at every quality tier — the fps-tuned density
-    //     (torchlit 0.10) leaves e^(−0.10·40) ≈ 1.8 % of the scene surviving
-    //     40 cells out; scaled by 0.1 that becomes ≈ 67 %.
+    //     scaling density per view (T-0050 rework 3, T-0054). The atmosphere's
+    //     blend already ran; `moodFogDensityForView` is a multiplicative scale
+    //     with three branches — pass-through for fps, `ORTHO_FOG_DENSITY /
+    //     FPS_FOG_DENSITY` (= 0.1) for the ortho stand-off at 40 cells, and
+    //     `THIRD_FOG_DENSITY / FPS_FOG_DENSITY` (= 0.4) for the diorama
+    //     follow at ~10.7 cells — so deep_dark's heavier fog stays
+    //     proportionally heavier than torchlit's in every view. The view name
+    //     is passed straight through: mapping `'third'` back to `'fps'` here
+    //     left the T-0054 helper as dead code and the diorama at 34 %
+    //     survival (measured mean luminance 8.0 vs 54.0 fps / 28.8 ortho).
     const currentMood = this.atmosphere.state;
     this.fogColor.value.setHex(currentMood.fog.color);
-    // Third-person sits at ~11 cells: `e^(−0.10·11) ≈ 33 %` is atmospheric
-    // rather than black, so it takes the fps density unchanged (no rescale).
-    this.fogDensity.value = moodFogDensityForView(view === 'ortho' ? 'ortho' : 'fps', currentMood.fog.density);
+    this.fogDensity.value = moodFogDensityForView(view, currentMood.fog.density);
 
     // 5. Apply the styled/raw grade overrides *after* the mood writes so the
     //    mood's vignette/grain don't leak into styled mode (docs/gpu.md §6.1).

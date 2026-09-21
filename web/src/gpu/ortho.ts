@@ -30,12 +30,17 @@
  *   real `OrthographicCamera` so `isOrthographicCamera` is true where three
  *   checks it.
  * - `moodFogDensityForView(view, moodDensity)` scales a mood's raw fog
- *   density for the active view (T-0050 rework 3). The ortho camera sits
- *   `ORTHO_DISTANCE_CELLS` from its target, so the mood table's fps-tuned
+ *   density for the active view (T-0050 rework 3, T-0054). The ortho camera
+ *   sits `ORTHO_DISTANCE_CELLS` from its target, so the mood table's fps-tuned
  *   densities (torchlit 0.10, deep_dark 0.20) leave e^(−0.10·40) ≈ 1.8 %
  *   of the scene surviving against a near-black fog colour — the whole
- *   frame lands under the black point. The scale keeps deep_dark's heavier
- *   fog proportionally heavier than torchlit's.
+ *   frame lands under the black point. The third-person camera sits only
+ *   `THIRD_DIST_DEFAULT_CELLS ≈ 10.7` cells out, but 34 % survival plus the
+ *   ported pipeline's inverse-square falloff pushed the frame's mean
+ *   luminance to 8.0 (vs 54.0 fps, 28.8 ortho — measured T-0054). Both
+ *   non-fps views therefore scale mood density by
+ *   `<view>_FOG_DENSITY / FPS_FOG_DENSITY`, so deep_dark stays proportionally
+ *   heavier than torchlit in every view.
  *
  * Pure: no `three` / `three/webgpu` import, no DOM. `tests/gpu-ortho.test.ts`
  * exercises every case in node under the root tsconfig.
@@ -156,18 +161,33 @@ export const FPS_FOG_DENSITY = 0.10;
  *  originally the fix for T-0032's black-canvas legacy bug, and now the
  *  scaling reference for the GPU path (T-0050 rework 3). */
 export const ORTHO_FOG_DENSITY = 0.01;
+/** Exp2 fog density for the third-person diorama follow view (T-0054). At the
+ *  default `THIRD_DIST_DEFAULT_CELLS ≈ 10.7` this gives
+ *  `e^(−0.04·10.7) ≈ 65 %` survival — a comfortable atmospheric depth cue
+ *  that keeps the frame readable through the pipeline's inverse-square
+ *  falloff. The previous "map `'third'` to `'fps'`" branch shipped 34 %
+ *  survival, which measured 8.0 mean luminance vs 54.0 fps / 28.8 ortho and
+ *  read as "the diorama is in a cave"; the number here is what the PM
+ *  measured after T-0053 landed. Sits between `ORTHO_FOG_DENSITY` and
+ *  `FPS_FOG_DENSITY`, keeping the natural ordering fps > third > ortho. */
+export const THIRD_FOG_DENSITY = 0.04;
 
 /**
  * Scale a mood's raw fog density for the active view. In fps the density
  * passes through unchanged; in ortho it is scaled by
- * `ORTHO_FOG_DENSITY / FPS_FOG_DENSITY` (= 0.1). Applied *after* the mood
- * table has already blended, so deep_dark's heavier fog stays proportionally
- * heavier than torchlit's — the helper is a multiplicative scale, not a
- * clamp. Reuses the two exported constants above; no third number introduced.
+ * `ORTHO_FOG_DENSITY / FPS_FOG_DENSITY` (= 0.1); in the third-person view
+ * it is scaled by `THIRD_FOG_DENSITY / FPS_FOG_DENSITY` (= 0.4). Applied
+ * *after* the mood table has already blended, so deep_dark's heavier fog
+ * stays proportionally heavier than torchlit's in every view — the helper
+ * is a multiplicative scale, not a clamp. Reuses the exported constants
+ * above; no per-view magic number introduced.
  *
- * See `docs/gpu-ortho.md` §"Fog scales with the view" for the arithmetic.
- * Pure — no `three`, no DOM.
+ * See `docs/gpu-ortho.md` §"Fog scales with the view" and
+ * `docs/gpu-thirdperson.md` §"Fog" for the arithmetic. Pure — no `three`,
+ * no DOM.
  */
-export function moodFogDensityForView(view: 'fps' | 'ortho', moodDensity: number): number {
-  return view === 'ortho' ? moodDensity * (ORTHO_FOG_DENSITY / FPS_FOG_DENSITY) : moodDensity;
+export function moodFogDensityForView(view: 'fps' | 'ortho' | 'third', moodDensity: number): number {
+  if (view === 'ortho') return moodDensity * (ORTHO_FOG_DENSITY / FPS_FOG_DENSITY);
+  if (view === 'third') return moodDensity * (THIRD_FOG_DENSITY / FPS_FOG_DENSITY);
+  return moodDensity;
 }
