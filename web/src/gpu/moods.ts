@@ -55,6 +55,9 @@ export interface LookValues {
   bloomStrength: number;
   ssrIntensity: number;
   giIntensity: number;
+  focus: number;
+  focusRange: number;
+  bokeh: number;
 }
 
 /** A dungeon lighting state. Every field is required except individual `look` entries. */
@@ -81,7 +84,7 @@ export const MOODS: Readonly<Record<MoodId, Mood>> = {
     fill:    { sky: 0x263140, ground: 0x080a0d, intensity: 0.05 },
     fog:     { color: 0x0b0d10, density: 0.10 },
     weather: { wetness: 0.5, puddles: 0.25, wind: 0.0 },
-    look:    { exposure: 1.0, contrast: 1.08, saturation: 1.0, tintAmount: 0.18, vignette: 0.42, grain: 0.03, bloomStrength: 0.22, ssrIntensity: 0.6, giIntensity: 8.0 },
+    look:    { exposure: 1.0, contrast: 1.08, saturation: 1.0, tintAmount: 0.18, vignette: 0.42, grain: 0.03, bloomStrength: 0.22, ssrIntensity: 0.6, giIntensity: 8.0, focus: 5, focusRange: 9, bokeh: 0.7 },
     glow: 1.0, lampGain: 1.0,
   },
   deep_dark: {
@@ -89,7 +92,7 @@ export const MOODS: Readonly<Record<MoodId, Mood>> = {
     fill:    { sky: 0x000000, ground: 0x000000, intensity: 0.0 },
     fog:     { color: 0x05070a, density: 0.20 },
     weather: { wetness: 0.4, puddles: 0.10, wind: 0.0 },
-    look:    { exposure: 1.0, contrast: 1.10, saturation: 0.75, tintAmount: 0.10, vignette: 0.75, grain: 0.03, bloomStrength: 0.20, ssrIntensity: 0.5, giIntensity: 6.0 },
+    look:    { exposure: 1.0, contrast: 1.10, saturation: 0.75, tintAmount: 0.10, vignette: 0.75, grain: 0.03, bloomStrength: 0.20, ssrIntensity: 0.5, giIntensity: 6.0, focus: 3.5, focusRange: 9, bokeh: 0.7 },
     glow: 1.0, lampGain: 1.2,
   },
   flooded: {
@@ -97,7 +100,7 @@ export const MOODS: Readonly<Record<MoodId, Mood>> = {
     fill:    { sky: 0x2b4a52, ground: 0x0f181c, intensity: 0.08 },
     fog:     { color: 0x0c1416, density: 0.14 },
     weather: { wetness: 1.0, puddles: 1.0, wind: 0.2 },
-    look:    { exposure: 1.0, contrast: 1.06, saturation: 0.95, tintAmount: 0.22, vignette: 0.45, grain: 0.028, bloomStrength: 0.28, ssrIntensity: 1.4, giIntensity: 8.0 },
+    look:    { exposure: 1.0, contrast: 1.06, saturation: 0.95, tintAmount: 0.22, vignette: 0.45, grain: 0.028, bloomStrength: 0.28, ssrIntensity: 1.4, giIntensity: 8.0, focus: 5, focusRange: 9, bokeh: 0.9 },
     glow: 1.0, lampGain: 1.0,
   },
   lava: {
@@ -105,7 +108,7 @@ export const MOODS: Readonly<Record<MoodId, Mood>> = {
     fill:    { sky: 0x2a1410, ground: 0x1a0806, intensity: 0.10 },
     fog:     { color: 0x1a0a06, density: 0.11 },
     weather: { wetness: 0.0, puddles: 0.0, wind: 0.4 },
-    look:    { exposure: 1.05, contrast: 1.08, saturation: 1.20, tintAmount: 0.22, vignette: 0.42, grain: 0.028, bloomStrength: 0.55, ssrIntensity: 0.2, giIntensity: 10.0 },
+    look:    { exposure: 1.05, contrast: 1.08, saturation: 1.20, tintAmount: 0.22, vignette: 0.42, grain: 0.028, bloomStrength: 0.55, ssrIntensity: 0.2, giIntensity: 10.0, focus: 5, focusRange: 9, bokeh: 0.7 },
     glow: 1.4, lampGain: 1.8,
   },
   ice: {
@@ -113,7 +116,7 @@ export const MOODS: Readonly<Record<MoodId, Mood>> = {
     fill:    { sky: 0x9fc8ea, ground: 0x2a3a48, intensity: 0.10 },
     fog:     { color: 0x8ca8bc, density: 0.09 },
     weather: { wetness: 0.3, puddles: 0.10, wind: 0.2 },
-    look:    { exposure: 1.05, contrast: 1.02, saturation: 0.92, tintAmount: 0.08, vignette: 0.30, grain: 0.010, bloomStrength: 0.24, ssrIntensity: 0.4, giIntensity: 9.0 },
+    look:    { exposure: 1.05, contrast: 1.02, saturation: 0.92, tintAmount: 0.08, vignette: 0.30, grain: 0.010, bloomStrength: 0.24, ssrIntensity: 0.4, giIntensity: 9.0, focus: 5, focusRange: 9, bokeh: 0.7 },
     glow: 1.0, lampGain: 1.6,
   },
 };

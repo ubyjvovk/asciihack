@@ -91,10 +91,15 @@ describe('gpu/moods — pure parts', () => {
       expect(m.weather.wind).toBeGreaterThanOrEqual(0);
       expect(m.weather.wind).toBeLessThanOrEqual(4);
       // look overrides must be present and finite for the fields moods drive
-      for (const k of ['exposure', 'contrast', 'saturation', 'tintAmount', 'vignette', 'grain', 'bloomStrength', 'ssrIntensity', 'giIntensity'] as const) {
+      for (const k of ['exposure', 'contrast', 'saturation', 'tintAmount', 'vignette', 'grain', 'bloomStrength', 'ssrIntensity', 'giIntensity', 'focus', 'focusRange', 'bokeh'] as const) {
         expect(m.look[k]).toBeDefined();
         expect(Number.isFinite(m.look[k]!)).toBe(true);
       }
+      // focus distances must be indoor-scale: a dungeon is only ~10 cells deep.
+      expect(m.look.focus!).toBeGreaterThan(0);
+      expect(m.look.focus!).toBeLessThanOrEqual(10);
+      expect(m.look.focusRange!).toBeGreaterThan(0);
+      expect(m.look.focusRange!).toBeLessThanOrEqual(20);
       // grade fields have narrow ranges (vignette/grain are 0..1)
       expect(m.look.vignette!).toBeGreaterThanOrEqual(0);
       expect(m.look.vignette!).toBeLessThanOrEqual(1);

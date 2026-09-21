@@ -67,19 +67,23 @@ interface Mood {
 
 Colours are 24-bit sRGB hex. `look` overrides a subset of the pipeline's
 grade uniforms (`exposure`, `contrast`, `saturation`, `tintAmount`,
-`vignette`, `grain`, `bloomStrength`, `ssrIntensity`, `giIntensity`); every
-mood in the table sets the same nine so blends are structurally uniform.
+`vignette`, `grain`, `bloomStrength`, `ssrIntensity`, `giIntensity`,
+`focus`, `focusRange`, `bokeh`); every mood in the table sets the same
+twelve so blends are structurally uniform. `focus`/`focusRange`/`bokeh` are
+in metres (one cell = one metre, `docs/gpu.md` §4) — the pipeline's outdoor
+defaults (`focus: 30`, `focusRange: 38`) sit outside the whole dungeon, so
+without a per-mood override every frame renders permanently defocused.
 
 Numbers below are the PM-tunable starting point; the PM eyeballs the frame
 and may send a follow-up tuning ticket without changing the shape.
 
-| Mood | Key colour · int | Fill sky/gnd · int | Fog colour · density | wet · pud · wind | exposure · contrast · sat · tint · vign · grain · bloom · ssr · gi | glow · lampGain |
-|---|---|---|---|---|---|---|
-| `torchlit` | `#ffb060` · 1.4 | `#263140`/`#080a0d` · 0.05 | `#0b0d10` · 0.10 | 0.50 · 0.25 · 0.0 | 1.00 · 1.08 · 1.00 · 0.18 · 0.42 · 0.030 · 0.22 · 0.6 · 8.0 | 1.0 · 1.0 |
-| `deep_dark` | `#ffb060` · 0.0 | `#000000`/`#000000` · 0.00 | `#05070a` · 0.20 | 0.40 · 0.10 · 0.0 | 1.00 · 1.10 · 0.75 · 0.10 · 0.75 · 0.030 · 0.20 · 0.5 · 6.0 | 1.0 · 1.2 |
-| `flooded`  | `#ffb060` · 1.8 | `#2b4a52`/`#0f181c` · 0.08 | `#0c1416` · 0.14 | 1.00 · 1.00 · 0.2 | 1.00 · 1.06 · 0.95 · 0.22 · 0.45 · 0.028 · 0.28 · 1.4 · 8.0 | 1.0 · 1.0 |
-| `lava`     | `#ff6a2a` · 3.2 | `#2a1410`/`#1a0806` · 0.10 | `#1a0a06` · 0.11 | 0.00 · 0.00 · 0.4 | 1.05 · 1.08 · 1.20 · 0.22 · 0.42 · 0.028 · 0.55 · 0.2 · 10.0 | 1.4 · 1.8 |
-| `ice`      | `#bfe4ff` · 1.2 | `#9fc8ea`/`#2a3a48` · 0.10 | `#8ca8bc` · 0.09 | 0.30 · 0.10 · 0.2 | 1.05 · 1.02 · 0.92 · 0.08 · 0.30 · 0.010 · 0.24 · 0.4 · 9.0 | 1.0 · 1.6 |
+| Mood | Key colour · int | Fill sky/gnd · int | Fog colour · density | wet · pud · wind | exposure · contrast · sat · tint · vign · grain · bloom · ssr · gi | focus · focusRange · bokeh | glow · lampGain |
+|---|---|---|---|---|---|---|---|
+| `torchlit` | `#ffb060` · 1.4 | `#263140`/`#080a0d` · 0.05 | `#0b0d10` · 0.10 | 0.50 · 0.25 · 0.0 | 1.00 · 1.08 · 1.00 · 0.18 · 0.42 · 0.030 · 0.22 · 0.6 · 8.0 | 5.0 · 9.0 · 0.7 | 1.0 · 1.0 |
+| `deep_dark` | `#ffb060` · 0.0 | `#000000`/`#000000` · 0.00 | `#05070a` · 0.20 | 0.40 · 0.10 · 0.0 | 1.00 · 1.10 · 0.75 · 0.10 · 0.75 · 0.030 · 0.20 · 0.5 · 6.0 | 3.5 · 9.0 · 0.7 | 1.0 · 1.2 |
+| `flooded`  | `#ffb060` · 1.8 | `#2b4a52`/`#0f181c` · 0.08 | `#0c1416` · 0.14 | 1.00 · 1.00 · 0.2 | 1.00 · 1.06 · 0.95 · 0.22 · 0.45 · 0.028 · 0.28 · 1.4 · 8.0 | 5.0 · 9.0 · 0.9 | 1.0 · 1.0 |
+| `lava`     | `#ff6a2a` · 3.2 | `#2a1410`/`#1a0806` · 0.10 | `#1a0a06` · 0.11 | 0.00 · 0.00 · 0.4 | 1.05 · 1.08 · 1.20 · 0.22 · 0.42 · 0.028 · 0.55 · 0.2 · 10.0 | 5.0 · 9.0 · 0.7 | 1.4 · 1.8 |
+| `ice`      | `#bfe4ff` · 1.2 | `#9fc8ea`/`#2a3a48` · 0.10 | `#8ca8bc` · 0.09 | 0.30 · 0.10 · 0.2 | 1.05 · 1.02 · 0.92 · 0.08 · 0.30 · 0.010 · 0.24 · 0.4 · 9.0 | 5.0 · 9.0 · 0.7 | 1.0 · 1.6 |
 
 Intent per row (verbatim from the ticket, expanded with the tuning above):
 
