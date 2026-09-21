@@ -79,8 +79,9 @@ byte-identical to the pre-detail flat renderer (this is what the original
   (0 at the wall top, 1 at the bottom). `brickShade(u, v, seed)`: rows 0.25
   tall, bricks 0.5 wide, every other row offset by 0.25, 0.05-wide mortar at
   the `MORTAR` sentinel (the renderer paints seams at the absolute brightness
-  `0.05`, fogged), and a brick body of 1.0 ± 0.03 hashed by (row, column,
-  `seed`) where `seed = hitY·80 + hitX` keeps bricks stable frame to frame. It
+  `0.11`, fogged — a faint darker line, not a dotted contour), and a brick
+  body of 1.0 ± 0.02 hashed by (row, column, `seed`) where
+  `seed = hitY·80 + hitX` keeps bricks stable frame to frame. It
   multiplies the wall colour after the N/S vs E/W face factor and before fog.
   `wall` gets the brick; `bars` gets `barsShade(u)` (0.2 bars at 1.0, 0.3 gaps
   at 0.25). The face base colours are dark (`wall` `[0.18,0.18,0.19]`) so a
@@ -90,13 +91,17 @@ byte-identical to the pre-detail flat renderer (this is what the original
   (faint) and gone by 10 — the wall bodies stay visible where the previous
   0.28 knocked them below the black point.
 - **Edge lines (absolute, half-fog).** The wall's top edge row, bottom
-  contact row, corner columns and door posts are painted at absolute
-  brightness (not multiples of the base) with **half-strength fog**
-  (`· e^(−0.5·fogK·d)`), so silhouettes read at distance but do not glow at
-  any depth: wall top edge `0.75`, bottom contact `0.30`, corner columns
-  `0.55`, door/doorway frame posts `0.70`, floor grid `0.30`. In a wall
-  column the precedence is top edge > corner > bottom contact > body. The
-  top edge at 10 cells is still ≈ 0.37 (a line, not a blur). A **corner
+  contact row, corner columns, door/doorway posts, floor grid and flagstone
+  seams are painted at absolute brightness (not multiples of the base) with
+  **half-strength fog** (`· e^(−0.5·fogK·d)`), so silhouettes read at
+  distance but do not glow at any depth: wall top edge `0.42`, bottom
+  contact `0.20`, corner columns `0.34`, door/doorway frame posts `0.40`,
+  floor grid `0.16`, flagstone seams `0.045` (a dark seam between stones),
+  stairs highlight `0.60` (the one line allowed to bloom). In a wall column
+  the precedence is top edge > corner > bottom contact > body. The top edge
+  is exactly one screen row per column, and at 10 cells is ≈ 0.21 (a thin
+  line, not a band) — every line stays below the amber bloom (0.48 linear
+  ≈ v 0.82) except the stairs highlight. A **corner
   column** fires only where the hit **face** changes (N/S ↔ E/W) or the
   perpendicular depth jumps by more than 0.5 cells between adjacent columns —
   so a flat wall's cell seams stay dark mortar and the face no longer reads
@@ -104,28 +109,33 @@ byte-identical to the pre-detail flat renderer (this is what the original
   plus the (half-fogged) top edge line, no mortar or corners.
 - **Doors.** `door_closed`: `plankShade(u)` = vertical planks 0.2 wide
   alternating 1.0 / 0.82 with a 0.05 dark seam at the `MORTAR` sentinel; the
-  outer 0.12 of the face (`u < 0.12 || u > 0.88`) is an absolute `0.70` frame
+  outer 0.12 of the face (`u < 0.12 || u > 0.88`) is an absolute `0.40` frame
   post. `doorway` / `door_open` stay passable, but the ray treats the outer
-  0.12 of the cell's width (its posts) as solid frame, and in the floor pass
-  the doorway threshold is drawn with an absolute `0.70` frame around the
-  passable door colour `[0.28,0.22,0.14]` — so a doorway reads as an opening
-  in a wall rather than a gap in the floor colour.
+  0.12 of the cell's width (its posts) as solid wall frame painted at the
+  absolute `0.40` post brightness in the **wall pass**; the floor pass draws
+  the opening as flat door-coloured floor only (no threshold frame) — so a
+  doorway reads as its two vertical posts and the door-coloured floor.
 
 ### Floor
 
 The floor pass is described in the algorithm; this is the detail (readable)
 look. `floor` is a poorly-lit dark-grey flagstone floor: base
-`[0.10,0.10,0.11]` with `floorShade(fX, fY)` giving each 0.5-cell stone a
-brightness 0.85–1.15 (hashed by its `(floor(2fX), floor(2fY))` index, stable
-per stone) and thin seams (within 0.04 of a stone edge) at 0.6. On top, the
-perspective grid lines at cell edges are painted at the absolute brightness
-`0.30` under half-strength fog (like every absolute edge line) so they read
-as the converging depth lines and still fade with distance. `corridor` is
-neutral rough rock: base `[0.07,0.07,0.07]` with `floorShade(fX, fY, 1.0,
-false)` (side-1.0 stones, no seams) and no grid — its previous warm cast
-read as yellow under the T-0028 quantizer. `ice`, `stairs_*`, `altar`,
-`throne` keep the multiplier `gridShade` grid (edge 0.7, or 0.5 for
-stairs). Fog is `fogK` default `0.14`, so wall bodies stay visible out to
+`[0.10,0.10,0.11]`, stones of side 0.5 whose body varies ±15 % (0.85–1.15,
+hashed by their `(floor(2fX), floor(2fY))` index, stable per stone). All the
+seams are detected **in screen space** — a seam is where the floor cell index
+`(floor(fX), floor(fY))`, or the half-cell flagstone index for the stones,
+differs from the sample directly above it (row − 1) or to its left (column −
+1) — so every seam is exactly one screen cell thick at any distance instead
+of a world-space width that fattened into thick bands near the camera. The
+cell-boundary grid lines paint at the absolute `0.16` under half-strength
+fog; the half-cell flagstone seams paint at the absolute `0.045` (a dark
+seam between stones). `corridor` is neutral rough rock: base
+`[0.12,0.115,0.11]` with `floorShade(fX, fY, 1.0, false)` (side-1.0 stones,
+no seams) and no grid, so a known corridor cell quantizes to dots like a
+floor cell, distinct from the black unknown veil. `stairs_*` bloom their
+converging cell seams at the absolute `0.60` (the one line allowed to bloom)
+with a flat stair-coloured body; `ice`, `altar`, `throne` keep the
+multiplier `gridShade` grid (edge 0.7). Fog is `fogK` default `0.14`, so wall bodies stay visible out to
 around 6–8 cells and only truly distant features fade — that fade is the
 depth cue. Sprites, water, lava and the unknown veil are unchanged.
 
@@ -215,7 +225,7 @@ renderer can reuse it. `CEILING_COLOR` is the ceiling base colour.
 | stone | `[0.12,0.12,0.12]` |
 | unexplored | `[0.03,0.03,0.03]` |
 | floor | `[0.10,0.10,0.11]` |
-| corridor | `[0.07,0.07,0.07]` |
+| corridor | `[0.12,0.115,0.11]` |
 | water | `[0.10,0.25,0.60]` |
 | lava | `[0.85,0.35,0.05]` |
 | ice | `[0.55,0.75,0.85]` |

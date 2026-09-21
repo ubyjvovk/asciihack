@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { barsShade, brickShade, floorShade, gridShade, MORTAR, plankShade, veilShade } from '../src/render/texture.js';
 
 describe('texture/brickShade', () => {
-  it('returns the MORTAR sentinel at row and column boundaries and a brick body ± 0.03 elsewhere', () => {
+  it('returns the MORTAR sentinel at row and column boundaries and a brick body ± 0.02 elsewhere', () => {
     const seed = 3 * 80 + 5;
     // horizontal mortar at the top/bottom of a 0.25-tall row
     expect(brickShade(0.25, 0.0, seed)).toBe(MORTAR);
@@ -15,11 +15,12 @@ describe('texture/brickShade', () => {
     // vertical mortar at the edges of a 0.5-wide brick (row 0, no offset)
     expect(brickShade(0.0, 0.12, seed)).toBe(MORTAR);
     expect(brickShade(0.5, 0.12, seed)).toBe(MORTAR);
-    // brick body in the middle of a brick, not mortar, in 1.0 ± 0.03
+    // brick body in the middle of a brick, not mortar, in 1.0 ± 0.02 (calmer
+    // than the old ± 0.03)
     const body = brickShade(0.25, 0.12, seed);
     expect(body).not.toBe(MORTAR);
-    expect(body).toBeGreaterThanOrEqual(0.97);
-    expect(body).toBeLessThanOrEqual(1.03);
+    expect(body).toBeGreaterThanOrEqual(0.98);
+    expect(body).toBeLessThanOrEqual(1.02);
   });
 
   it('offsets alternate rows by half a brick so their mortar columns differ', () => {
@@ -35,8 +36,8 @@ describe('texture/brickShade', () => {
     const a = brickShade(0.25, 0.12, 42);
     expect(brickShade(0.25, 0.12, 42)).toBe(a); // same seed, same body
     const other = brickShade(0.25, 0.12, 43);
-    expect(other).toBeGreaterThanOrEqual(0.97);
-    expect(other).toBeLessThanOrEqual(1.03);
+    expect(other).toBeGreaterThanOrEqual(0.98);
+    expect(other).toBeLessThanOrEqual(1.02);
   });
 });
 

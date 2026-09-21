@@ -20,7 +20,7 @@ function hash3(a: number, b: number, c: number): number {
 
 /**
  * Sentinel returned by `brickShade`/`plankShade` for seam cells. The raycaster
- * paints these at the absolute mortar brightness (0.05) rather than treating
+ * paints these at the absolute mortar brightness (0.11) rather than treating
  * the value as a multiplier of the surface base colour, so seams stay darker
  * than the body and read as lines instead of fading with the base.
  */
@@ -30,7 +30,7 @@ export const MORTAR = -1;
  * Brick-wall brightness for a face at (u, v): v is 0 at the wall top and 1 at
  * the bottom, u across the face. Rows 0.25 tall, bricks 0.5 wide, alternate
  * rows offset by 0.25, 0.05-wide mortar at the `MORTAR` sentinel, and a brick
- * body of 1.0 ± 0.03 hashed by (row, column, seed) so bricks are stable frame
+ * body of 1.0 ± 0.02 hashed by (row, column, seed) so bricks are stable frame
  * to frame. Body is a multiplier; seams signal `MORTAR`.
  */
 export function brickShade(u: number, v: number, seed: number): number {
@@ -41,7 +41,7 @@ export function brickShade(u: number, v: number, seed: number): number {
   const col = Math.floor(uShift / 0.5);
   const uPos = uShift - col * 0.5;
   if (uPos < 0.05 || uPos > 0.45) return MORTAR; // vertical mortar line
-  return 1.0 + (hash3(row, col, seed) - 0.5) * 0.06;
+  return 1.0 + (hash3(row, col, seed) - 0.5) * 0.04;
 }
 
 /**

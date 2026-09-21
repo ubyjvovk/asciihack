@@ -633,7 +633,7 @@ describe('raycast/surface-detail', () => {
     expect(saw).toBe(true);
   });
 
-  it('a doorway column shows frame posts (wall colour) at its edges and floor colour in the middle', () => {
+  it('a doorway shows wall-coloured frame posts at its two side columns and door-coloured floor between them', () => {
     // A doorway in an east-west wall two cells ahead; the hero faces it from the south.
     const level = levelFromAscii([
       '#############',
@@ -645,24 +645,26 @@ describe('raycast/surface-detail', () => {
     ]);
     const fb = makeFrameBuffer(80, 24);
     renderFirstPerson(level, pose(7.5, 4.5, 0), [], fb);
-    const c = Math.floor(fb.width / 2);
-    const doorRows: number[] = [];
-    const postRows: number[] = [];
+    // door-coloured floor (strong red dominance over blue) vs the grey wall
+    // posts across the whole view — the opening's middle is door-coloured and
+    // the two posts are at its sides.
+    const doorCols = new Set<number>();
+    const postCols = new Set<number>();
     for (let y = 0; y < fb.height; y++) {
-      const o = (y * fb.width + c) * 3;
-      const r = fb.rgb[o]!;
-      const g = fb.rgb[o + 1]!;
-      const b = fb.rgb[o + 2]!;
-      if (r < 0.02) continue;
-      // strong red dominance = the door-coloured threshold (the opening's middle)
-      if (r > b * 1.3 && r > 0.05) doorRows.push(y);
-      // bright grey = an absolute frame post at the opening's edges
-      else if (Math.abs(g - r) < 0.03 && Math.abs(b - r) < 0.03 && r > 0.4) postRows.push(y);
+      for (let x = 0; x < fb.width; x++) {
+        const o = (y * fb.width + x) * 3;
+        const r = fb.rgb[o]!;
+        const g = fb.rgb[o + 1]!;
+        const b = fb.rgb[o + 2]!;
+        if (r < 0.02) continue;
+        if (r > b * 1.3) doorCols.add(x); // the door-coloured opening
+        else if (Math.abs(g - r) < 0.03 && Math.abs(b - r) < 0.03 && r > 0.3) postCols.add(x); // a grey wall post
+      }
     }
-    expect(doorRows.length).toBeGreaterThan(0); // the middle is door-coloured, not a wall
-    expect(postRows.length).toBeGreaterThan(0); // a bright frame post is present
-    // the frame sits at the opening's edge: a door row directly touches a post row
-    expect(doorRows.some((d) => postRows.includes(d - 1) || postRows.includes(d + 1))).toBe(true);
+    expect(doorCols.size).toBeGreaterThan(0); // the middle is door-coloured, not a wall
+    expect(postCols.size).toBeGreaterThan(0); // the wall posts are present
+    // the posts sit at the opening's sides: a post column directly touches a door column
+    expect([...postCols].some((p) => doorCols.has(p - 1) || doorCols.has(p + 1))).toBe(true);
   });
 });
 
@@ -724,6 +726,9 @@ describe('raycast/camera-readability', () => {
     ]);
     const fb = makeFrameBuffer(80, 24);
     renderFirstPerson(floor, pose(6.5, 3.5, Math.PI / 2), [], fb);
+    // Some rows in the ~2-cell band are a single screen-space grid line (one
+    // brightness); scan for a row that carries the stone bodies, which must be
+    // grey and show ≥ 3 distinct levels.
     let checked = false;
     for (let y = Math.ceil(0.42 * 24); y < 24; y++) {
       const c = Math.floor(80 / 2);
@@ -745,7 +750,7 @@ describe('raycast/camera-readability', () => {
         levels.add(Math.round(mx * 1000));
         n++;
       }
-      if (n > 10) {
+      if (n > 10 && levels.size >= 3) {
         expect(greyOk).toBe(true);
         expect(levels.size).toBeGreaterThanOrEqual(3);
         checked = true;
@@ -781,8 +786,11 @@ describe('raycast/camera-readability', () => {
     expect(cells.length).toBeGreaterThan(10);
     const sorted = [...cells].sort((a, b) => a - b);
     expect(sorted[Math.floor(sorted.length / 2)]!).toBeLessThan(0.16); // dark body median
-    expect(Math.max(...cells)).toBeGreaterThan(0.6); // bright top edge row
-    expect(cells.some((v) => v > 0.4 && v <= 0.6)).toBe(true); // bright corner column
+    // softer edges: the top edge row at ~4 cells is ≈ 0.32 (EDGE_TOP·half-fog),
+    // still clearly brighter than the body but no longer a blooming white band
+    expect(Math.max(...cells)).toBeGreaterThan(0.3); // bright top edge row
+    // corner columns ≈ 0.26 at 4 cells, between the body and the top edge
+    expect(cells.some((v) => v > 0.24 && v <= 0.32)).toBe(true); // a bright corner column
   });
 
   it('every ceiling cell is exactly black', () => {
@@ -828,9 +836,10 @@ describe('raycast/corners-and-fog', () => {
     ]);
     const fb = makeFrameBuffer(80, 24);
     renderFirstPerson(level, pose(3.5, 3.0, 0), [], fb);
-    // Corner absolute (EDGE_CORNER = 0.55) at half-fog e^(-0.21) ≈ 0.446 —
+    // Corner absolute (EDGE_CORNER = 0.34) at half-fog e^(-0.21) ≈ 0.28 —
     // count columns that show that grey brightness in any interior body row
-    // at wall depth ~3.
+    // at wall depth ~3 (the band excludes the top edge ≈ 0.34 and the bottom
+    // contact ≈ 0.16).
     const cornerCols = new Set<number>();
     for (let x = 0; x < fb.width; x++) {
       for (let y = 1; y < fb.height - 1; y++) {
@@ -840,9 +849,9 @@ describe('raycast/corners-and-fog', () => {
         const r = fb.rgb[o]!;
         const g = fb.rgb[o + 1]!;
         const bb = fb.rgb[o + 2]!;
-        // grey corner brightness (0.35..0.55); excludes top edge (> 0.55) and
-        // bottom contact (< 0.35) at this depth.
-        if (r > 0.35 && r < 0.55 && g === r && bb === r) cornerCols.add(x);
+        // grey corner brightness (0.25..0.32); excludes top edge (> 0.32) and
+        // bottom contact (< 0.25) at this depth.
+        if (r > 0.25 && r < 0.32 && g === r && bb === r) cornerCols.add(x);
       }
     }
     // ≤ 4 for the two transitions (each end may spill onto one screen column
@@ -919,22 +928,20 @@ describe('raycast/lit', () => {
     renderFirstPerson(build(false), p, [], darkFb);
     // The floor base is [0.10, 0.10, 0.11] — stone bodies have b/r = 1.1;
     // wall bodies have b/r = 0.19/0.18 ≈ 1.056, so filtering b/r > 1.08 keeps
-    // floor stones and rejects both grid lines (r == b) and any wall pixel
-    // that lands at the same depth. Compare the brightest stone body at
-    // depth ≈ 2 in each buffer.
+    // floor stones and rejects both grid/seam lines (r == b) and any wall
+    // pixel. (No depth window: some ~2-cell rows are a single screen-space
+    // grid line, so compare the brightest stone body over the whole floor —
+    // the dim factor is uniform, so the ratio still measures it.)
     const stonePeak = (fb: FrameBuffer): number => {
       let peak = 0;
-      for (let y = 0; y < fb.height; y++) {
-        for (let x = 0; x < fb.width; x++) {
-          const i = y * fb.width + x;
-          const d = fb.depth[i]!;
-          if (!Number.isFinite(d) || Math.abs(d - 2) > 0.4) continue;
-          const o = i * 3;
-          const r = fb.rgb[o]!;
-          const b = fb.rgb[o + 2]!;
-          if (r < 1e-6 || b / r < 1.08) continue; // not a floor stone
-          if (r > peak) peak = r;
-        }
+      for (let i = 0; i < fb.rgb.length / 3; i++) {
+        const d = fb.depth[i]!;
+        if (!Number.isFinite(d)) continue;
+        const o = i * 3;
+        const r = fb.rgb[o]!;
+        const b = fb.rgb[o + 2]!;
+        if (r < 1e-6 || b / r < 1.08) continue; // not a floor stone
+        if (r > peak) peak = r;
       }
       return peak;
     };
@@ -944,6 +951,148 @@ describe('raycast/lit', () => {
     expect(darkPeak).toBeGreaterThan(0);
     expect(darkPeak).toBeLessThan(litPeak);
     expect(darkPeak / litPeak).toBeCloseTo(0.45, 2);
+  });
+});
+
+describe('raycast/refinement', () => {
+  it('top edge is one row and below the bloom level', () => {
+    // a north wall 2 cells ahead fills the view; its top edge is exactly one
+    // screen row per column, in the 0.35–0.48 band — below the amber bloom
+    // (0.48 linear ≈ v 0.82 after exposure), so it stays amber, not white.
+    const level = levelFromAscii(['########', '#......#', '#......#', '########']);
+    const fb = makeFrameBuffer(80, 24);
+    renderFirstPerson(level, pose(3.5, 2.0, 0), [], fb);
+    let columnsWithEdge = 0;
+    for (let x = 0; x < fb.width; x++) {
+      let inBand = 0;
+      for (let y = 0; y < fb.height; y++) {
+        const d = fb.depth[y * fb.width + x]!;
+        if (!Number.isFinite(d)) continue;
+        const o = (y * fb.width + x) * 3;
+        const v = Math.max(fb.rgb[o]!, fb.rgb[o + 1]!, fb.rgb[o + 2]!);
+        if (v > 0.35 && v < 0.48) inBand++;
+      }
+      if (inBand > 0) columnsWithEdge++;
+      expect(inBand).toBeLessThanOrEqual(1); // exactly one row, never two
+    }
+    expect(columnsWithEdge).toBeGreaterThan(fb.width * 0.8); // the edge spans the view
+  });
+
+  it('grid seams are one cell thick at 1.5 cells distance', () => {
+    // open all-floor room, hero facing east. In the near floor (≤ 2 cells) the
+    // screen-space grid seams stay thin: no column has a vertical run of seam
+    // cells longer than 2 (a single grid crossing), so the old thick bands near
+    // the camera are gone.
+    const floor = levelFromAscii([
+      '#############',
+      '#...........#',
+      '#...........#',
+      '#...........#',
+      '#...........#',
+      '#...........#',
+      '#############',
+    ]);
+    const fb = makeFrameBuffer(80, 24);
+    renderFirstPerson(floor, pose(6.5, 3.5, Math.PI / 2), [], fb);
+    // a grid seam cell: the floor grid line at EDGE_GRID under half-strength fog
+    const isGridSeam = (x: number, y: number): boolean => {
+      const d = fb.depth[y * fb.width + x]!;
+      if (!Number.isFinite(d) || d > 2) return false;
+      const o = (y * fb.width + x) * 3;
+      const r = fb.rgb[o]!;
+      const g = fb.rgb[o + 1]!;
+      const b = fb.rgb[o + 2]!;
+      return Math.abs(r - 0.16 * Math.exp(-0.07 * d)) < 0.001 && g === r && b === r;
+    };
+    let seams = 0;
+    let maxRun = 0;
+    for (let x = 0; x < fb.width; x++) {
+      let run = 0;
+      for (let y = 0; y < fb.height; y++) {
+        if (isGridSeam(x, y)) {
+          seams++;
+          run++;
+          if (run > maxRun) maxRun = run;
+        } else {
+          run = 0;
+        }
+      }
+    }
+    expect(seams).toBeGreaterThan(0); // the grid is present in the near floor
+    expect(maxRun).toBeLessThanOrEqual(2); // seams stay one cell thick (a crossing is 2)
+  });
+
+  it('corridor cell beyond a doorway is visible', () => {
+    // a doorway in a wall opens into a known corridor; facing along it, the
+    // corridor cells 1 and 2 beyond render as dots (above the black point),
+    // distinct from the unknown veil which stays black.
+    const level = levelFromAscii([
+      '###########',
+      '#.........#',
+      '#....D%...#',
+      '#.........#',
+      '###########',
+    ]);
+    const fb = makeFrameBuffer(80, 24);
+    renderFirstPerson(level, pose(4.5, 2.5, Math.PI / 2), [], fb);
+    // the corridor cell ~2 cells away is bright: brightness > 0.06 linear
+    // (above the quantizer's black point) in the corridor's screen rows
+    let brightAt2 = 0;
+    for (let y = 0; y < fb.height; y++) {
+      for (let x = 0; x < fb.width; x++) {
+        const d = fb.depth[y * fb.width + x]!;
+        if (!Number.isFinite(d) || d < 2 || d > 3) continue;
+        const o = (y * fb.width + x) * 3;
+        const v = Math.max(fb.rgb[o]!, fb.rgb[o + 1]!, fb.rgb[o + 2]!);
+        if (v > 0.06) brightAt2++;
+      }
+    }
+    expect(brightAt2).toBeGreaterThan(0);
+  });
+
+  it('doorway floor has no bright frame', () => {
+    // facing a doorway, its threshold is door-coloured floor with the two wall
+    // posts only — no bright frame ring around the opening.
+    const level = levelFromAscii([
+      '#############',
+      '#...........#',
+      '#......D....#',
+      '#...........#',
+      '#...........#',
+      '#############',
+    ]);
+    const fb = makeFrameBuffer(80, 24);
+    renderFirstPerson(level, pose(7.5, 4.5, 0), [], fb);
+    // the doorway's rows: rows containing the door-coloured floor (the opening)
+    const doorRows = new Set<number>();
+    for (let y = 0; y < fb.height; y++) {
+      for (let x = 0; x < fb.width; x++) {
+        const o = (y * fb.width + x) * 3;
+        if (fb.rgb[o]! > fb.rgb[o + 2]! * 1.3 && fb.rgb[o]! > 0.02) doorRows.add(y);
+      }
+    }
+    expect(doorRows.size).toBeGreaterThan(0);
+    // the posts: grey cells above 0.3 within the doorway rows (the two side columns)
+    const postCols = new Set<number>();
+    for (const y of doorRows) {
+      for (let x = 0; x < fb.width; x++) {
+        const o = (y * fb.width + x) * 3;
+        const r = fb.rgb[o]!;
+        const g = fb.rgb[o + 1]!;
+        const b = fb.rgb[o + 2]!;
+        if (r > 0.3 && Math.abs(g - r) < 0.03 && Math.abs(b - r) < 0.03) postCols.add(x);
+      }
+    }
+    expect(postCols.size).toBeGreaterThan(0);
+    // no floor cell in the doorway's rows is above 0.3 except the posts' columns
+    for (const y of doorRows) {
+      for (let x = 0; x < fb.width; x++) {
+        if (postCols.has(x)) continue;
+        const o = (y * fb.width + x) * 3;
+        const v = Math.max(fb.rgb[o]!, fb.rgb[o + 1]!, fb.rgb[o + 2]!);
+        expect(v).toBeLessThanOrEqual(0.3);
+      }
+    }
   });
 });
 

@@ -17,7 +17,7 @@ export const KIND_COLORS: Record<CellKind, readonly [number, number, number]> = 
   stone: [0.12, 0.12, 0.12],
   unexplored: [0.03, 0.03, 0.03],
   floor: [0.1, 0.1, 0.11],
-  corridor: [0.07, 0.07, 0.07],
+  corridor: [0.12, 0.115, 0.11],
   water: [0.1, 0.25, 0.6],
   lava: [0.85, 0.35, 0.05],
   ice: [0.55, 0.75, 0.85],
@@ -40,18 +40,22 @@ export const KIND_COLORS: Record<CellKind, readonly [number, number, number]> = 
 /** Linear RGB of the ceiling — pure black: poorly lit, nothing to see up there. */
 export const CEILING_COLOR: readonly [number, number, number] = [0, 0, 0];
 
-/** Absolute brightness of brick/plank seams (painted at this value, then fogged). */
-const MORTAR_ABS = 0.05;
-/** Absolute brightness of the wall's top edge line (not fogged, so it reads far off). */
-const EDGE_TOP = 0.75;
-/** Absolute brightness of a wall's bottom contact row (not fogged). */
-const EDGE_BOT = 0.3;
-/** Absolute brightness of wall corner columns (not fogged). */
-const EDGE_CORNER = 0.55;
-/** Absolute brightness of door/doorway frame posts (not fogged). */
-const EDGE_POST = 0.7;
-/** Absolute brightness of the floor's perspective grid lines (not fogged). */
-const EDGE_GRID = 0.3;
+/** Absolute brightness of brick/plank seams (painted at this value, then fogged): a faint darker line, not a dotted contour. */
+const MORTAR_ABS = 0.11;
+/** Absolute brightness of the wall's top edge line (half-fog), just below the amber bloom so it stays amber. */
+const EDGE_TOP = 0.42;
+/** Absolute brightness of a wall's bottom contact row (half-fog). */
+const EDGE_BOT = 0.2;
+/** Absolute brightness of wall corner columns (half-fog). */
+const EDGE_CORNER = 0.34;
+/** Absolute brightness of door/doorway frame posts (half-fog). */
+const EDGE_POST = 0.4;
+/** Absolute brightness of the floor's perspective grid lines (half-fog), drawn in screen space. */
+const EDGE_GRID = 0.16;
+/** Absolute brightness of the dark seam between flagstones (half-fog), drawn in screen space. */
+const SEAM_STONE = 0.045;
+/** Absolute brightness of the stairs highlight — the one line allowed to bloom. */
+const EDGE_STAIRS = 0.6;
 
 /** Tuning knobs for `renderFirstPerson`; every field has a default. */
 export interface RaycastOptions {
@@ -192,6 +196,7 @@ export function renderFirstPerson(
 
     let side = 0;
     let hitKind: CellKind | null = null;
+    let isDoorPost = false; // the ray hit the solid post at a doorway/open-door edge
     for (let i = 0; i < 256; i++) {
       if (sideDistX < sideDistY) {
         sideDistX += deltaX;
@@ -216,6 +221,7 @@ export function renderFirstPerson(
         const fracU = wallX - Math.floor(wallX);
         if (fracU < 0.12 || fracU > 0.88) {
           hitKind = 'wall';
+          isDoorPost = true;
           break;
         }
       }
@@ -273,21 +279,27 @@ export function renderFirstPerson(
             g = (baseColor[1] + veil) * atten;
             b = (baseColor[2] + veil) * atten;
           } else if (hitKind === 'wall') {
-            const tex = brickShade(uFrac, v, seed);
-            if (tex === MORTAR) {
-              r = g = b = MORTAR_ABS * atten; // seams are absolute and fogged
+            if (isDoorPost) {
+              // a doorway's two vertical posts: a thin solid frame at the
+              // door-post brightness, no brick or edge lines.
+              r = g = b = EDGE_POST * edgeAtten;
             } else {
-              const factor = faceFactor * tex;
-              r = baseColor[0] * factor * atten;
-              g = baseColor[1] * factor * atten;
-              b = baseColor[2] * factor * atten;
+              const tex = brickShade(uFrac, v, seed);
+              if (tex === MORTAR) {
+                r = g = b = MORTAR_ABS * atten; // seams are absolute and fogged
+              } else {
+                const factor = faceFactor * tex;
+                r = baseColor[0] * factor * atten;
+                g = baseColor[1] * factor * atten;
+                b = baseColor[2] * factor * atten;
+              }
+              // Edge lines are absolute brightness fogged at half strength so
+              // silhouettes read at distance but don't glow at any depth; top
+              // edge is brightest, then corner columns, then the bottom contact.
+              if (y === y0) r = g = b = EDGE_TOP * edgeAtten;
+              else if (isCorner) r = g = b = EDGE_CORNER * edgeAtten;
+              else if (y === y1) r = g = b = EDGE_BOT * edgeAtten;
             }
-            // Edge lines are absolute brightness fogged at half strength so
-            // silhouettes read at distance but don't glow at any depth; top
-            // edge is brightest, then corner columns, then the bottom contact.
-            if (y === y0) r = g = b = EDGE_TOP * edgeAtten;
-            else if (isCorner) r = g = b = EDGE_CORNER * edgeAtten;
-            else if (y === y1) r = g = b = EDGE_BOT * edgeAtten;
           } else if (hitKind === 'door_closed') {
             if (uFrac < 0.12 || uFrac > 0.88) {
               r = g = b = EDGE_POST * edgeAtten; // wall-coloured frame posts, half-fog
@@ -346,6 +358,22 @@ export function renderFirstPerson(
   }
 
   // --- floor pass: per-row distance, per-column horizontal step ---
+  // Screen-space seams (docs/render.md "Floor"): a seam is where the floor
+  // cell index (or the half-cell flagstone index) differs from the sample
+  // directly above (row − 1) or to its left (column − 1), so every seam is
+  // exactly one screen cell thick at any distance instead of a world-space
+  // width that fattens into thick bands near the camera.
+  const prevRowMx = new Int32Array(cols);
+  const prevRowMy = new Int32Array(cols);
+  const prevRowFix = new Int32Array(cols);
+  const prevRowFiy = new Int32Array(cols);
+  // The floor coordinate that advances with depth (drives the horizontal
+  // seams) vs laterally across columns (drives the vertical seams), from the
+  // view direction. A horizontal seam only compares the depth coordinate with
+  // the sample above — the lateral one drifts with depth, and comparing it
+  // too would double the seams into 2-cell-thick jaggies.
+  const depthIsX = Math.abs(dirX) >= Math.abs(dirY);
+  let firstRow = true;
   for (let y = Math.ceil(horizon); y < rows; y++) {
     const p = y - horizon;
     if (p <= 0) {
@@ -380,53 +408,60 @@ export function renderFirstPerson(
     let fY = posY + rowDist * (dirY - planeY);
     const atten = Math.exp(-fogK * rowDist);
     const edgeAtten = Math.exp(-0.5 * fogK * rowDist); // half-strength fog for absolute lines
+    let leftMx = -1;
+    let leftMy = -1;
+    let leftFix = -1;
+    let leftFiy = -1;
     for (let x = 0; x < cols; x++) {
+      const mx = Math.floor(fX);
+      const my = Math.floor(fY);
+      const fix = Math.floor(fX / 0.5);
+      const fiy = Math.floor(fY / 0.5);
+      // screen-space seams: a horizontal seam fires where the depth-aligned
+      // floor coordinate crosses a cell boundary from the sample above, a
+      // vertical seam where the lateral coordinate crosses from the sample to
+      // the left — each exactly one screen cell thick. The first row and first
+      // column have no valid neighbour, so those comparisons are skipped.
+      const gridAbove = depthIsX ? mx !== prevRowMx[x]! : my !== prevRowMy[x]!;
+      const gridLeft = depthIsX ? my !== leftMy : mx !== leftMx;
+      const gridLine = (x > 0 && gridLeft) || (!firstRow && gridAbove);
+      const flagAbove = depthIsX ? fix !== prevRowFix[x]! : fiy !== prevRowFiy[x]!;
+      const flagLeft = depthIsX ? fiy !== leftFiy : fix !== leftFix;
+      const flagSeam = (x > 0 && flagLeft) || (!firstRow && flagAbove);
       if (y >= wallBot[x]!) {
-        const mx = Math.floor(fX);
-        const my = Math.floor(fY);
         const kind = level.kindAt(mx, my);
         const base = isSolid(kind) ? KIND_COLORS.stone : KIND_COLORS[kind];
         // Lit rooms use the base floor colour; a remembered-dark room floor
         // (MapCell.lit === false) dims the stone body ×0.45, and a lit
-        // corridor (lit === true) brightens it ×1.4 — grid lines and edge
-        // frames keep their absolute brightness so perspective still reads
+        // corridor (lit === true) brightens it ×1.4 — grid lines and seams
+        // keep their absolute brightness so perspective still reads
         // (docs/render.md "Floor" and "Lighting").
         const lit = level.cellAt(mx, my)?.lit;
         let r: number;
         let g: number;
         let b: number;
-        if (detail && (kind === 'doorway' || kind === 'door_open')) {
-          // the doorway threshold reads as a wall-framed opening, not a gap in
-          // the floor colour: outer 0.12 of the cell is a bright frame post
-          // (half-fog so it fades with distance), the middle stays the passable
-          // door colour
-          const fx = fX - Math.floor(fX);
-          const fy = fY - Math.floor(fY);
-          if (fx < 0.12 || fx > 0.88 || fy < 0.12 || fy > 0.88) {
-            r = g = b = EDGE_POST * edgeAtten;
-          } else {
-            r = base[0] * atten;
-            g = base[1] * atten;
-            b = base[2] * atten;
-          }
-        } else if (detail && kind === 'floor') {
-          // flagstone floor: dark stone with a converging perspective grid.
-          // The grid lines at cell edges are absolute brightness (half-fog) so
-          // they read as the converging lines and still fade with distance —
-          // they ignore the lit dim so dark rooms still show perspective.
-          const fx = fX - Math.floor(fX);
-          const fy = fY - Math.floor(fY);
-          if (Math.min(fx, 1 - fx) < 0.05 || Math.min(fy, 1 - fy) < 0.05) {
+        if (detail && kind === 'floor') {
+          // flagstone floor: a grid line on each cell boundary, a dark seam
+          // between half-cell stones, and a ±15 % stone body — all detected in
+          // screen space so each is one cell thick at any distance. The grid
+          // and seam keep their absolute brightness (they ignore the lit dim)
+          // so dark rooms still show perspective.
+          if (gridLine) {
             r = g = b = EDGE_GRID * edgeAtten;
+          } else if (flagSeam) {
+            r = g = b = SEAM_STONE * edgeAtten;
           } else {
-            const tex = floorShade(fX, fY);
+            const tex = floorShade(fX, fY, 0.5, false);
             const dim = lit === false ? 0.45 : 1;
             r = base[0] * tex * atten * dim;
             g = base[1] * tex * atten * dim;
             b = base[2] * tex * atten * dim;
           }
         } else if (detail && kind === 'corridor') {
-          const tex = floorShade(fX, fY, 1.0, false); // rough rock, no seams
+          // known corridor: neutral rough rock (side-1.0 stones, no seams), so
+          // it quantizes to dots like a floor cell and stays distinct from the
+          // black unknown veil. A lit corridor brightens ×1.4.
+          const tex = floorShade(fX, fY, 1.0, false);
           const boost = lit === true ? 1.4 : 1;
           r = base[0] * tex * atten * boost;
           g = base[1] * tex * atten * boost;
@@ -439,14 +474,27 @@ export function renderFirstPerson(
             kind === 'altar' ||
             kind === 'throne')
         ) {
-          // perspective grid on the other floor-like surfaces (not corridors)
-          const edge = kind === 'stairs_up' || kind === 'stairs_down' ? 0.5 : 0.7;
-          const gridFactor = gridShade(fX, fY, edge);
-          r = base[0] * gridFactor * atten;
-          g = base[1] * gridFactor * atten;
-          b = base[2] * gridFactor * atten;
+          if (kind === 'stairs_up' || kind === 'stairs_down') {
+            // stairs: the converging cell seams bloom as the one bright
+            // highlight; the body is the flat stair colour.
+            if (gridLine) {
+              r = g = b = EDGE_STAIRS * edgeAtten;
+            } else {
+              r = base[0] * atten;
+              g = base[1] * atten;
+              b = base[2] * atten;
+            }
+          } else {
+            // ice / altar / throne keep the world-space multiplier grid
+            const gridFactor = gridShade(fX, fY, 0.7);
+            r = base[0] * gridFactor * atten;
+            g = base[1] * gridFactor * atten;
+            b = base[2] * gridFactor * atten;
+          }
         } else {
-          // flat: floor tint, water, lava, and the flat (detail:false) path
+          // flat: a doorway / open door is just its door-coloured floor (the
+          // two posts are the wall pass), water, lava, and the flat
+          // (detail:false) path — no threshold frame.
           r = base[0] * atten;
           g = base[1] * atten;
           b = base[2] * atten;
@@ -457,9 +505,18 @@ export function renderFirstPerson(
         fb.rgb[i + 2] = b;
         fb.depth[y * cols + x] = rowDist;
       }
+      leftMx = mx;
+      leftMy = my;
+      leftFix = fix;
+      leftFiy = fiy;
+      prevRowMx[x] = mx;
+      prevRowMy[x] = my;
+      prevRowFix[x] = fix;
+      prevRowFiy[x] = fiy;
       fX += stepX;
       fY += stepY;
     }
+    firstRow = false;
   }
 
   // --- sprites: far to near, depth-tested per cell against the buffer depth ---
