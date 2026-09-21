@@ -11,7 +11,16 @@
  * TSL nodes themselves are only built inside the `Atmosphere` constructor.
  */
 
-import { Color, DirectionalLight, HemisphereLight } from 'three/webgpu';
+import {
+  Color,
+  DataTexture,
+  DataUtils,
+  DirectionalLight,
+  EquirectangularReflectionMapping,
+  HalfFloatType,
+  HemisphereLight,
+  RGBAFormat,
+} from 'three/webgpu';
 import type { Scene, UniformNode } from 'three/webgpu';
 import { densityFogFactor, fog, uniform } from 'three/tsl';
 import type { Weather } from './materials.js';
@@ -151,6 +160,40 @@ function blendLook(a: Partial<LookValues>, b: Partial<LookValues>, t: number): P
 }
 
 /**
+ * Build a 32 x 16 equirectangular `DataTexture` (RGBA half-float, no colour
+ * space conversion, mapping = `EquirectangularReflectionMapping`) whose
+ * vertical gradient runs from `mood.fill.ground` at the bottom pole
+ * (data row 0, equirect V = 0) to `mood.fill.sky` at the top pole (data row
+ * H-1, V = 1), each pre-multiplied by `mood.fill.intensity`. There is no
+ * horizontal variation. The stochastic SSR path samples this whenever a ray
+ * leaves the screen; a dungeon has no sky dome, so we hand it a tiny
+ * per-mood one to keep `SSRNode.setEnvMap` happy and give misses a
+ * plausible fallback colour. 512 texels total; the atmosphere caches one
+ * and disposes it on mood changes.
+ */
+export function moodEnvironment(mood: Mood): DataTexture {
+  const W = 32, H = 16;
+  const data = new Uint16Array(W * H * 4);
+  const sky = new Color(mood.fill.sky);
+  const ground = new Color(mood.fill.ground);
+  const intensity = mood.fill.intensity;
+  const alphaHalf = DataUtils.toHalfFloat(1);
+  for (let y = 0; y < H; y++) {
+    const t = y / (H - 1);
+    const r = DataUtils.toHalfFloat((ground.r + (sky.r - ground.r) * t) * intensity);
+    const g = DataUtils.toHalfFloat((ground.g + (sky.g - ground.g) * t) * intensity);
+    const b = DataUtils.toHalfFloat((ground.b + (sky.b - ground.b) * t) * intensity);
+    for (let x = 0; x < W; x++) {
+      const idx = (y * W + x) * 4;
+      data[idx] = r; data[idx + 1] = g; data[idx + 2] = b; data[idx + 3] = alphaHalf;
+    }
+  }
+  const tex = new DataTexture(data, W, H, RGBAFormat, HalfFloatType, EquirectangularReflectionMapping);
+  tex.needsUpdate = true;
+  return tex;
+}
+
+/**
  * Pure linear blend of two `Mood` records. `t` is clamped to `[0, 1]`; hex
  * colours are blended per RGB channel. Never touches TSL; testable in node.
  */
@@ -227,6 +270,8 @@ export class Atmosphere {
   private to: Mood | null;
   private t: number;
   private dur: number;
+  private _env: DataTexture | null;
+  private _envMoodId: MoodId | null;
   name: MoodId;
 
   constructor({ scene, look, weather, shadowSize = 2048, shadowRange = 24 }: AtmosphereOptions) {
@@ -259,7 +304,24 @@ export class Atmosphere {
     this.to = null;
     this.t = 1;
     this.dur = 0;
+    this._env = null;
+    this._envMoodId = null;
     this._apply();
+    this._rebuildEnv();
+  }
+
+  /**
+   * Current SSR environment texture — a per-mood `moodEnvironment` cached
+   * on the atmosphere. Callers pass this to `createPipeline({ environment })`
+   * so SSR misses have something to sample; see docs/gpu-pipeline.md.
+   */
+  get environment(): DataTexture | null { return this._env; }
+
+  private _rebuildEnv(): void {
+    if (this._envMoodId === this.name) return;
+    if (this._env !== null) this._env.dispose();
+    this._env = moodEnvironment(MOODS[this.name]);
+    this._envMoodId = this.name;
   }
 
   /** Snap to `id` immediately, no blend. */
@@ -272,6 +334,7 @@ export class Atmosphere {
     this.to = null;
     this.t = 1;
     this._apply();
+    this._rebuildEnv();
   }
 
   /** Blend to `id` over `seconds` real-time; `seconds <= 0` snaps. */
@@ -284,6 +347,7 @@ export class Atmosphere {
     this.to = blendMoods(target, target, 0);
     this.t = 0;
     this.dur = seconds;
+    this._rebuildEnv();
   }
 
   /** Advance the blend by `dtSeconds` and write current values everywhere. */

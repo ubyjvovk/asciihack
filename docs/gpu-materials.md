@@ -105,6 +105,56 @@ Intent per row (verbatim from the ticket, expanded with the tuning above):
   light off ice), high-key grade (low contrast, low saturation, low grain,
   small vignette). Modest wetness keeps stone shiny.
 
+## Environment map — `moodEnvironment(mood)` and `Atmosphere.environment`
+
+The GPU pipeline's SSR pass samples an equirectangular environment map for
+rays that leave the screen (screen-edge fade and misses fall back to it).
+`SSRNode.setEnvMap` requires a **plain equirectangular `DataTexture` with
+CPU-side `image.data`** — PMREM render targets and `scene.environment`
+cubemaps are explicitly rejected. Afterburn built one from its `_envScene`
+sky dome; the port dropped the sky dome (a dungeon has none) which left the
+stochastic path calling `sampleEnvironmentBRDF` on `null` and spewing
+`TypeError` at `SSRNode.js:1051` every frame. `moodEnvironment` closes that
+hole.
+
+```ts
+export function moodEnvironment(mood: Mood): THREE.DataTexture;
+```
+
+- **Shape.** 32 × 16 texels, `RGBAFormat`, `HalfFloatType`, mapping
+  `THREE.EquirectangularReflectionMapping`. 512 texels is enough — SSR only
+  reads it as a low-frequency miss colour, not as a diffuse IBL source.
+- **Gradient.** Vertical only, no horizontal variation. Row 0 of the data
+  array is equirect V = 0 (bottom pole, "looking down") and carries
+  `mood.fill.ground`; row 15 is V = 1 (top pole, "looking up") and carries
+  `mood.fill.sky`. Every channel is pre-multiplied by `mood.fill.intensity`,
+  so the pipeline can hand the texture to SSR as-is (no separate uniform to
+  wire).
+- **`flipY = false` and no colour-space conversion.** Matches `DataTexture`
+  defaults; the raw half-float values are what SSR reads in linear space.
+
+`Atmosphere` caches one env texture per named mood and exposes it via a
+read-only accessor:
+
+```ts
+readonly get environment: THREE.DataTexture | null;
+```
+
+Rebuilt (with the previous texture disposed) in the constructor, in
+`atm.set(id)`, and in `atm.blendTo(id, s)` — i.e. whenever `atm.name`
+changes, but only once per distinct id. The environment does **not** blend
+during a `blendTo` transition: it snaps to the destination mood's map when
+the transition is armed. This is deliberate — SSR misses only see the
+gradient as a dim fallback (dungeon moods use `fill.intensity` of
+`0.05..0.10`); the visible reflection quality comes from the on-screen
+part, not the miss colour.
+
+`SSRNode` reads the environment map at construction time, so downstream
+wiring passes `atmosphere.environment` into `createPipeline({ environment })`
+once. Runtime mood changes will rebuild the atmosphere's cache but the SSR
+node keeps its original map until the caller rebuilds the pipeline or
+calls `state.nodes['ssr'].setEnvMap(atmosphere.environment)` explicitly.
+
 ## Blending — `blendMoods(a, b, t)`
 
 Pure exported function, no TSL, no side effects. `t` is clamped to `[0, 1]`;

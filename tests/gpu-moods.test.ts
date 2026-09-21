@@ -4,6 +4,7 @@
  * these imports resolve (see docs/gpu-materials.md).
  */
 import { describe, expect, it } from 'vitest';
+import { Color, DataUtils, EquirectangularReflectionMapping, HalfFloatType, RGBAFormat } from 'three/webgpu';
 import {
   FLAG_DRY,
   FLAG_GROUND,
@@ -14,6 +15,7 @@ import {
   MOODS,
   blendMoods,
   fxByte,
+  moodEnvironment,
   type Mood,
   type MoodId,
 } from '../web/src/gpu/moods.js';
@@ -111,6 +113,61 @@ describe('gpu/moods — pure parts', () => {
   it('blending deep_dark to torchlit at t = 1 equals torchlit exactly', () => {
     const result = blendMoods(MOODS.deep_dark, MOODS.torchlit, 1);
     expect(result).toEqual(MOODS.torchlit);
+  });
+
+  it('moodEnvironment builds a 32x16 equirect gradient between the mood\'s fill colours', () => {
+    const mood = MOODS.torchlit;
+    const tex = moodEnvironment(mood);
+    // Format / mapping the stochastic SSR path requires (setEnvMap rejects PMREM cubemaps).
+    expect(tex.isDataTexture).toBe(true);
+    expect(tex.image.width).toBe(32);
+    expect(tex.image.height).toBe(16);
+    expect(tex.format).toBe(RGBAFormat);
+    expect(tex.type).toBe(HalfFloatType);
+    expect(tex.mapping).toBe(EquirectangularReflectionMapping);
+    const data = tex.image.data as Uint16Array;
+    expect(data.length).toBe(32 * 16 * 4);
+
+    // Equirect V: row 0 = bottom pole (ground); row H-1 = top pole (sky).
+    // Each channel = fill.{ground|sky}.* pre-multiplied by fill.intensity.
+    const sky = new Color(mood.fill.sky);
+    const ground = new Color(mood.fill.ground);
+    const I = mood.fill.intensity;
+    const decode = (y: number, x: number): [number, number, number, number] => {
+      const i = (y * 32 + x) * 4;
+      return [
+        DataUtils.fromHalfFloat(data[i]!),
+        DataUtils.fromHalfFloat(data[i + 1]!),
+        DataUtils.fromHalfFloat(data[i + 2]!),
+        DataUtils.fromHalfFloat(data[i + 3]!),
+      ];
+    };
+    const [r0, g0, b0, a0] = decode(0, 0);
+    expect(r0).toBeCloseTo(ground.r * I, 3);
+    expect(g0).toBeCloseTo(ground.g * I, 3);
+    expect(b0).toBeCloseTo(ground.b * I, 3);
+    expect(a0).toBeCloseTo(1, 3);
+    const [rT, gT, bT] = decode(15, 0);
+    expect(rT).toBeCloseTo(sky.r * I, 3);
+    expect(gT).toBeCloseTo(sky.g * I, 3);
+    expect(bT).toBeCloseTo(sky.b * I, 3);
+    // Midpoint row lands halfway between the two endpoints.
+    const [rM, gM, bM] = decode(Math.round(15 / 2), 0);
+    expect(rM).toBeCloseTo(((ground.r + sky.r) / 2) * I, 3);
+    expect(gM).toBeCloseTo(((ground.g + sky.g) / 2) * I, 3);
+    expect(bM).toBeCloseTo(((ground.b + sky.b) / 2) * I, 3);
+    // No horizontal variation: every column of a row matches column 0.
+    for (let y = 0; y < 16; y++) {
+      const [ra, ga, ba, aa] = decode(y, 0);
+      for (let x = 1; x < 32; x++) {
+        const [rb, gb, bb, ab] = decode(y, x);
+        expect(rb).toBe(ra);
+        expect(gb).toBe(ga);
+        expect(bb).toBe(ba);
+        expect(ab).toBe(aa);
+      }
+    }
+    tex.dispose();
   });
 
   it('fxByte packs the fx code with the stone, ground and dry flags', () => {

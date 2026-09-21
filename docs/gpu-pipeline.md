@@ -119,6 +119,31 @@ Two pure exports live next to the impure builder so
 `setQuality` rebuilds the graph only when the resolved name actually
 changes: `setQuality('ultra')` twice in a row is a no-op.
 
+## Environment map (`environment` option)
+
+`createPipeline({ environment })` accepts an optional `THREE.Texture` and
+forwards it verbatim to `ssr(..., { environmentNode })`. Pass it on
+**both** backends: the stochastic path — the one used on WebGL2 (see
+[SSR backend gate](#ssr-backend-gate--three-r185-shader-bug) below) —
+calls `sampleEnvironmentBRDF` on every screen-space miss and throws
+`TypeError: Cannot read properties of null (reading 'sampleEnvironmentBRDF')`
+at `SSRNode.js:1051` if it is `null`; the mirror path uses it as an
+edge-fade fallback so passing it there is harmless. Not needed on tiers
+with SSR off (`low`), and safe to omit if `stochastic: false` and
+`screenEdgeFadeBlack: true` — but the pipeline sets neither, so callers
+should always pass one when `q.ssr` is `true`.
+
+Must be a **plain `DataTexture` with CPU-side `image.data`** (see
+`SSRNode.js` line 706); PMREM render targets and `scene.environment`
+cubemaps are rejected. `moods.ts` builds one per mood via
+`moodEnvironment(mood)` (a 32 × 16 equirect `HalfFloatType` gradient) and
+`Atmosphere.environment` returns the current one; wiring code hands that to
+`createPipeline` at construction. The environment map is read once at SSR
+construction time, so a mood change does not update the SSR node — the
+pipeline (or a follow-up ticket) calls `state.nodes['ssr'].setEnvMap(newEnv)`
+when it needs to swap. See `docs/gpu-materials.md` for the shape and
+disposal rules.
+
 ## SSR backend gate — three r185 shader bug
 
 three r185's `SSRNode.js` builds its step count as
