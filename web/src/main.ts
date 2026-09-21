@@ -7,9 +7,13 @@
  * When `mode=fps` (or `ortho`), the three.js `GlViewport` (T-0031/T-0032)
  * is mounted under the DOM terminal's viewport rectangle and renders the
  * dungeon through AsciiCity's shader styles; `F5` cycles them, `F2`/`F3`
- * switch between the first-person and 3/4 overhead ortho camera. Both key
- * bindings mark the viewport dirty immediately so the next rAF paints the
- * change without waiting for a game event.
+ * switch between the first-person and 3/4 overhead ortho camera, and `F9`
+ * switches to the third-person long-lens follow (T-0052 —
+ * `docs/gpu-thirdperson.md`; F4 was already taken by the minimap toggle in
+ * `src/ui/app.ts`). `Q`/`E` rotate the third-person camera in 45° steps and
+ * the mouse wheel zooms between the min/max distance. Both key bindings mark
+ * the viewport dirty immediately so the next rAF paints the change without
+ * waiting for a game event.
  */
 import { NethackSession, runSession } from '../../src/engine/session.js';
 import { App } from '../../src/ui/app.js';
@@ -30,6 +34,9 @@ interface UrlOpts {
   theme: Theme | null;
   mode: string;
   render: string | null;
+  /** `?view=third` selects the third-person view once the viewport is mounted.
+   *  Matches the `?view=fps|ortho` pattern already accepted by `scene-bench`. */
+  view: 'third' | null;
 }
 
 /** Parse the query string; falls back to sensible defaults for missing bits. */
@@ -42,7 +49,8 @@ export function parseUrlOpts(search: string): UrlOpts {
   const rawMode = p.get('mode') ?? 'fps';
   const mode = rawMode === 'classic' || rawMode === 'fps' || rawMode === 'ortho' ? rawMode : 'fps';
   const render = p.get('render');
-  return { name, theme, mode, render };
+  const view = p.get('view') === 'third' ? 'third' : null;
+  return { name, theme, mode, render, view };
 }
 
 function isTheme(v: string | null): v is Theme {
@@ -93,7 +101,10 @@ function boot(): void {
     externalViewport: gl !== null,
   });
   if (gl !== null) {
-    gl.setView(opts.mode === 'ortho' ? 'ortho' : 'fps');
+    // `?view=third` overrides the mode's default so the browser hosts the
+    // long-lens diorama follow from load. Otherwise the mode picks fps/ortho.
+    if (opts.view === 'third') gl.setView('third');
+    else gl.setView(opts.mode === 'ortho' ? 'ortho' : 'fps');
     // Debug handle so the PM can diagnose the viewport from the page console:
     // `window.__asciihack.gl.debugInfo()` (plain numbers, see gl-viewport.ts).
     (window as unknown as { __asciihack: { gl: GlViewport } }).__asciihack = { gl };
@@ -121,6 +132,34 @@ function boot(): void {
         loop.mark();
         return;
       }
+      if (ev.key === 'F9') {
+        // T-0052: F4 was taken (minimap toggle in `src/ui/app.ts`), so the
+        // third-person view lands on F9 per the ticket's fallback rule.
+        gl.setView('third');
+        loop.mark();
+        ev.preventDefault();
+        ev.stopPropagation();
+        return;
+      }
+      if (gl.currentView === 'third') {
+        // Q/E rotate the third-person yaw in 45° steps (afterburn's snap);
+        // ignored in the other views so game keys (like `q` for quaff) reach
+        // the app in fps/ortho.
+        if (ev.key === 'q' || ev.key === 'Q') {
+          gl.rotateThird(-1);
+          loop.mark();
+          ev.preventDefault();
+          ev.stopPropagation();
+          return;
+        }
+        if (ev.key === 'e' || ev.key === 'E') {
+          gl.rotateThird(+1);
+          loop.mark();
+          ev.preventDefault();
+          ev.stopPropagation();
+          return;
+        }
+      }
       if (ev.key === 'F8') {
         // T-0040: flip between raw GPU output and the styled composite.
         // Verified F1..F7 are the only F-key bindings in `src/ui/app.ts`, so
@@ -132,6 +171,16 @@ function boot(): void {
         return;
       }
     }, { capture: true });
+    // Third-person mouse-wheel zoom. Only active while the third view is up
+    // so a normal scroll keeps working in fps/ortho. `deltaY / 100` maps a
+    // notch to ~1 cell of camera movement — `clampThirdDist` inside
+    // `GlViewport` enforces the ART_BIBLE §6 min/max distance band.
+    document.addEventListener('wheel', (ev: WheelEvent) => {
+      if (gl.currentView !== 'third') return;
+      gl.zoomThird(ev.deltaY / 100);
+      loop.mark();
+      ev.preventDefault();
+    }, { passive: false });
     placeGl(gl, term);
     const relayout = (): void => placeGl(gl, term);
     const glResizeObserver = new ResizeObserver(relayout);
@@ -215,7 +264,9 @@ function renderFrame(gl: GlViewport, session: NethackSession, app: App): void {
   const yaw = fps ? fps.currentYaw : 0;
   const vFovDeg = fps ? fps.vFovDeg : 60;
   const pose = poseFor(hero, yaw);
-  const includeHero = gl.currentView === 'ortho';
+  // Third-person needs the hero visible too — the camera looks *at* the hero
+  // from behind and above, so an invisible hero would leave the frame empty.
+  const includeHero = gl.currentView !== 'fps';
   const sprites = spritesFromMap(session, hero, includeHero);
   if (includeHero) {
     const heroIdx = sprites.findIndex((s) => s.x === hero.x && s.y === hero.y);
