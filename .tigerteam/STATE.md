@@ -109,6 +109,18 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   before the first ticket.
 
 ## Board snapshot
+- 2026-09-21 03:25 — **39 done** (T-0038 moods/material accepted after
+  diffing its constants against the vendored source — the only deltas are the
+  deliberately-dropped Crystal Hollow block). Running: T-0039 (the dungeon
+  bake, the biggest art ticket). **The three ports were proven to compose**:
+  `/gpu-probe.html?stack=voxel` builds real kit geometry + the real voxel
+  material + a real mood through the ported pipeline and renders the afterburn
+  look with zero shader errors — saved as `.tigerteam/shots/reference-torch.png`
+  and written up in `docs/gpu.md` §3.1. Numbers that came out of it:
+  `PointLight(PAL.lamp, 8, 6, 2)` gives mean luminance 52 / 22.6 % black vs
+  the legacy path's 1.5 / 94.8 %; an emissive box alone lights nothing.
+  Draft T-0045 (look tuning) is waiting on the PM's eyeball review to fill in
+  its table.
 - 2026-09-21 03:00 — **38 done**; T-0041 (SSR stochastic gate) landed and was
   verified empirically. The probe work this session is the important part:
   `/gpu-probe.html` now builds the *real* ported pipeline at any tier, and
