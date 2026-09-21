@@ -109,6 +109,15 @@ Design contract: `docs/architecture.md` (PM-owned). PM-owned code:
   before the first ticket.
 
 ## Board snapshot
+- 2026-09-21 03:00 — **38 done**; T-0041 (SSR stochastic gate) landed and was
+  verified empirically. The probe work this session is the important part:
+  `/gpu-probe.html` now builds the *real* ported pipeline at any tier, and
+  proved (a) three r185's `SSRNode` cannot link on the WebGL2 backend unless
+  `stochastic: true` (→ T-0041), (b) `GodraysNode` throws unless its light
+  casts shadows, (c) TRAA/DOF return an **all-black frame** unless rendering
+  is driven from `requestAnimationFrame`, and (d) with those three known,
+  `medium`/`high`/`ultra` all build, link and draw. All four are written into
+  `docs/gpu.md` §3 and cited by T-0040. Running: T-0038.
 - 2026-09-21 02:40 — **T-0036 (voxel kit) and T-0037 (renderer + pipeline)
   accepted; 37 done.** T-0037 took one rework: attempt 1 was written from my
   spec because `~/afterburn` is not mounted in worker containers; attempt 2 is
