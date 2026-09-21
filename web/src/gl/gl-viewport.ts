@@ -40,11 +40,17 @@ import {
   SceneBuilder,
   type SceneMaterials,
 } from './scene-builder.js';
-import { cutawayCellsFor, orthoPlacement, placeOrthoCamera, type OrthoPlacement } from './ortho-camera.js';
+import { cutawayCellsFor, HERO_SPRITE_HEIGHT, orthoPlacement, placeOrthoCamera, type OrthoPlacement } from './ortho-camera.js';
 import { GpuCompositor } from '../gpu/compose.js';
 import { DungeonScene } from '../gpu/dungeon.js';
 import { CUTOUT, createVoxelMaterial, W } from '../gpu/materials.js';
-import { cutoutForwardFor } from '../gpu/cutout.js';
+import {
+  CUTOUT_DEPTH_BIAS_CELLS,
+  CUTOUT_SCREEN_FADE_MARGIN_PX,
+  HERO_SILHOUETTE_WIDTH_CELLS,
+  projectHeroForCutout,
+  type CutoutFrame,
+} from '../gpu/cutout.js';
 import { Atmosphere, type MoodId } from '../gpu/moods.js';
 import {
   applyOrthoPlacementTo,
@@ -413,6 +419,7 @@ export class GlViewport {
   debugInfo(): DebugInfo {
     const usingGpu = this.lastPath !== 'legacy' && this.gpu !== null;
     const h = this.lastHeroCell;
+    const cutout = this.cutoutDebug();
     if (usingGpu) {
       const gpu = this.gpu!;
       // Third-person reuses the perspective `gpu.camera`, just repositioned.
@@ -442,6 +449,7 @@ export class GlViewport {
         backend: this.gpu?.backend ?? null,
         quality: this.gpu?.quality ?? null,
         mood: this.gpu?.mood ?? null,
+        cutout,
       };
     }
     // Third-person reuses the legacy `this.camera` (perspective), repositioned.
@@ -471,6 +479,27 @@ export class GlViewport {
       backend: this.gpu?.backend ?? null,
       quality: this.gpu?.quality ?? null,
       mood: this.gpu?.mood ?? null,
+      cutout,
+    };
+  }
+
+  /** Snapshot of the CUTOUT uniforms `GpuPath.render` wrote last frame
+   *  (T-0063 rework — the PM asked for the numbers so the resolved cut
+   *  region can be read directly instead of inferred from a screenshot).
+   *  `enabled` is `false` in `fps` (the camera IS the hero there) and while
+   *  the GPU path is not running; the other fields report the most-recent
+   *  frame the cutout was active on. */
+  private cutoutDebug(): CutoutDebug {
+    const frame = this.gpu?.lastCutoutFrame ?? null;
+    const enabled = frame !== null;
+    return {
+      enabled,
+      heroScreen: {
+        min: { x: frame?.heroScreenMinX ?? 0, y: frame?.heroScreenMinY ?? 0 },
+        max: { x: frame?.heroScreenMaxX ?? 0, y: frame?.heroScreenMaxY ?? 0 },
+      },
+      heroCamDist: frame?.heroCamDist ?? 0,
+      fadeMarginPx: frame?.fadeMarginPx ?? 0,
     };
   }
 
@@ -900,6 +929,32 @@ export interface DebugInfo {
   quality: QualityName | null;
   /** Current mood id being applied by the GPU path, or null. */
   mood: MoodId | null;
+  /** Hero cutout numbers the shader received last frame (T-0063 rework). */
+  cutout: CutoutDebug;
+}
+
+/** Plain-number snapshot of the CUTOUT uniforms — surfaced by
+ *  `GlViewport.debugInfo().cutout` so the PM can read the resolved cut
+ *  rectangle and hero depth directly. All zero and `enabled: false` when
+ *  the cutout is off (fps view, or before the first GPU frame). */
+export interface CutoutDebug {
+  /** True when the cutout uniform block is driving a discard this frame
+   *  (`view === 'third' || view === 'ortho'`). */
+  enabled: boolean;
+  /** Hero's projected silhouette rectangle in pixels (top-left origin,
+   *  matches TSL `screenCoordinate.xy`). Fragments inside this rectangle
+   *  (plus `fadeMarginPx` on each side for the dither band) are candidates
+   *  for the cut when the depth test also fires. */
+  heroScreen: {
+    min: { x: number; y: number };
+    max: { x: number; y: number };
+  };
+  /** Hero's camera-space depth in world units (positive in front of the
+   *  camera). Compare against `-positionView.z` fragment-side. */
+  heroCamDist: number;
+  /** Pixel margin the rectangle is expanded by for the screen-door dither
+   *  fade. `CUTOUT_SCREEN_FADE_MARGIN_PX` by default. */
+  fadeMarginPx: number;
 }
 
 /** Per-frame third-person pose after the spring damper (`dampPose`) has run.
@@ -1108,6 +1163,11 @@ class GpuPath {
   private lastMoodDecision: MoodId | null = null;
   private lastView: 'fps' | 'ortho' | 'third' = 'fps';
   private lastGhostKey = '';
+  /** Resolved cutout numbers from the most recent `render` — surfaced by
+   *  `GlViewport.debugInfo()` so the PM can read the actual pixel radius
+   *  and hero screen position instead of inferring them from a screenshot.
+   *  `null` in `fps` (the cutout is disabled there). */
+  lastCutoutFrame: CutoutFrame | null = null;
 
   private constructor(init: {
     canvas: HTMLCanvasElement;
@@ -1242,9 +1302,10 @@ class GpuPath {
     // tile art, lit by the ported stack rather than pasted on top (T-0042).
     // The hero and pet are routed to voxel avatars sharing the voxel
     // material family (T-0056, docs/gpu-avatar.md), but with the cutout
-    // discard disabled — the avatars sit at `CUTOUT.center`, so the same
-    // per-fragment rule that clears the wall in front of the hero would
-    // otherwise discard the hero itself (`docs/gpu-cutout.md` §"What is exempt").
+    // discard disabled — the avatars project onto the same screen pixel as
+    // the hero and can dip below the depth bias under smoothing, so the
+    // rule that clears the wall in front of the hero would otherwise flicker
+    // the avatar itself (`docs/gpu-cutout.md` §"What is exempt").
     const avatarMat = createVoxelMaterial({ weather: true, sway: true, cutout: false });
     const sprites = new SpriteLayer({ voxelMaterial: avatarMat });
     scene.add(sprites.root);
@@ -1418,29 +1479,43 @@ class GpuPath {
     // the light with it (T-0043).
     this.lantern.position.set(pose.x, EYE_HEIGHT, pose.y);
 
-    // 1c. Hero cutout (T-0058, docs/gpu-cutout.md). Third and ortho enable
-    //     the material-side discard so any wall between the camera and the
-    //     hero clears; fps disables it — the camera IS the hero there, so
-    //     nothing is ever between them. `cutoutCenter` uses the hero cell
-    //     centre (matches `sprites.ts::update` for the hero avatar), and
-    //     `cutoutForward` is the horizontal hero → camera direction, from
-    //     whichever camera drew the last frame.
+    // 1c. Hero cutout (T-0063, docs/gpu-cutout.md). Third and ortho enable
+    //     the material-side discard so a wall actually blocking the hero
+    //     clears; fps disables it — the camera IS the hero there, so
+    //     nothing is ever between them. The rule is depth + screen-space
+    //     **silhouette rectangle**: a fragment is cut when it is closer to
+    //     the camera than the hero (view-space z) AND its projected pixel
+    //     falls inside the hero's projected AABB. `projectHeroForCutout`
+    //     projects the eight corners of the hero's world-space AABB and
+    //     returns the pixel min/max — the actual on-screen silhouette,
+    //     so the hole is the size of the figure it reveals. Rework 1's
+    //     screen-space disc reached past the avatar and cut floor his
+    //     shape never covered (`docs/gpu-cutout.md` §"Why a screen-space
+    //     disc was tried and rejected"); rework 2 (this attempt) uses
+    //     the rectangle instead.
     const cutoutOn = view === 'third' || view === 'ortho';
     CUTOUT.enabled.value = cutoutOn ? 1.0 : 0.0;
     if (cutoutOn) {
-      const heroWorldX = heroCell.x + 0.5;
-      const heroWorldZ = heroCell.y + 0.5;
-      CUTOUT.center.value.set(heroWorldX, 0, heroWorldZ);
-      const camPos = view === 'ortho' && orthoPlace !== null
-        ? orthoPlace.position
-        : view === 'third' && thirdFrame !== null
-          ? thirdFrame.position
-          : { x: heroWorldX, y: EYE_HEIGHT, z: heroWorldZ };
-      const fwd = cutoutForwardFor(
-        { x: camPos.x, y: 0, z: camPos.z },
-        { x: heroWorldX, y: 0, z: heroWorldZ },
+      const activeCam = view === 'ortho' ? this.orthoCamera : this.camera;
+      const frame = projectHeroForCutout(
+        activeCam,
+        pose.x,
+        0,
+        pose.y,
+        HERO_SILHOUETTE_WIDTH_CELLS,
+        HERO_SPRITE_HEIGHT,
+        this.canvas.width,
+        this.canvas.height,
+        CUTOUT_SCREEN_FADE_MARGIN_PX,
       );
-      CUTOUT.forward.value.set(fwd.x, fwd.y, fwd.z);
+      CUTOUT.heroCamDist.value = frame.heroCamDist;
+      CUTOUT.heroScreenMin.value.set(frame.heroScreenMinX, frame.heroScreenMinY);
+      CUTOUT.heroScreenMax.value.set(frame.heroScreenMaxX, frame.heroScreenMaxY);
+      CUTOUT.fadeMarginPx.value = frame.fadeMarginPx;
+      CUTOUT.depthBias.value = CUTOUT_DEPTH_BIAS_CELLS;
+      this.lastCutoutFrame = frame;
+    } else {
+      this.lastCutoutFrame = null;
     }
 
     // 1b. View-change side effects: rebuild the pipeline graph against the
