@@ -145,6 +145,12 @@ without rescaling. Wall height stays 1 unit and eye height 0.5
 **Voxel unit = 0.125** (8 voxels per cell edge) — afterburn's prop unit, and
 chunky enough that a wall face reads as stacked blocks at ASCII resolution.
 
+**The GPU scene has a ceiling**, at `y = 1` over every known passable cell,
+which the legacy scene lacks. Without it torchlight escapes upward and the
+SSGI bounce has nothing above to come off. It lives in its own `ceiling`
+group on `DungeonScene.root` so the ortho view can hide it; sprites up to the
+1.3-cell "gigantic" class will clip it, which is accepted.
+
 ## 5. Lighting model for a dungeon
 
 Afterburn's moods are outdoor weather states; ours are dungeon states. The
