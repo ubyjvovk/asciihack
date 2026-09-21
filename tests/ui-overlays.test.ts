@@ -2,9 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { App } from '../src/ui/app.js';
 import { blankGrid, PANEL_BG, UI_BG } from '../src/ui/grid.js';
 import { createOverlay } from '../src/ui/overlays.js';
+import { paintMinimap } from '../src/ui/minimap.js';
 import { NethackSession } from '../src/engine/session.js';
-import type { HelloMsg, RetMsg } from '../src/engine/protocol.js';
-import type { ScreenGrid } from '../src/model/types.js';
+import type { BridgeMsg, HelloMsg, RetMsg } from '../src/engine/protocol.js';
+import type { GlyphClass, ScreenGrid } from '../src/model/types.js';
 import type { KeyEvent } from '../src/term/input.js';
 import type { TermIO } from '../src/term/screen.js';
 
@@ -375,5 +376,93 @@ describe('overlay panel background', () => {
         expect(cell.bg).toEqual([...UI_BG]);
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Minimap 2× sampling (T-0059)
+
+describe('minimap 2× sampling', () => {
+  /** Spin up a session with a mapping S table rich enough for classify to
+   *  produce 'floor' / 'wall' cells (not 'other'), plus the three standard
+   *  windows so `WIN_MAP` = 3. */
+  function newSession(): NethackSession {
+    const session = new NethackSession(() => {});
+    session.handle({
+      t: 'hello', proto: 1, version: 'test',
+      S: { S_stone: 0, S_room: 1, S_corr: 2, S_vwall: 3 },
+      cmap: [],
+      nhw: { NHW_MESSAGE: 1, NHW_STATUS: 2, NHW_MAP: 3, NHW_MENU: 4, NHW_TEXT: 5 },
+      bl: {}, pick: {}, atr: {}, mg: {}, clr: {}, blmask: {},
+    } as unknown as BridgeMsg);
+    session.handle({ t: 'call', name: 'create_nhwindow', args: [1], id: 1 } as unknown as BridgeMsg);
+    session.handle({ t: 'call', name: 'create_nhwindow', args: [2], id: 2 } as unknown as BridgeMsg);
+    session.handle({ t: 'call', name: 'create_nhwindow', args: [3], id: 3 } as unknown as BridgeMsg);
+    return session;
+  }
+  /** Move the hero via a `curs` on the map window (WIN_MAP = 3). */
+  function heroAt(session: NethackSession, x: number, y: number): void {
+    session.handle({ t: 'call', name: 'curs', args: [3, x, y] } as unknown as BridgeMsg);
+  }
+  function pg(
+    session: NethackSession, x: number, y: number, ch: string, cls: GlyphClass,
+    idx = 0, color = 15,
+  ): void {
+    session.handle({
+      t: 'call', name: 'print_glyph',
+      args: [3, x, y, { glyph: 1, ch, color, cls, idx, flags: 0 }],
+    } as unknown as BridgeMsg);
+  }
+  // Panel is 42×13 top-right of an 80-wide viewport with a 1-cell inset, so
+  // ox = 80 - 42 - 1 = 37 and oy = rect.y + 1 = 2. Inner (dx, dy) sits at
+  // grid position (ox + 1 + dx, oy + 1 + dy) = (38 + dx, 3 + dy).
+  const rect = { x: 0, y: 1, width: 80, height: 21 };
+  const at = (grid: ScreenGrid, dx: number, dy: number): string =>
+    grid.cells[(3 + dy) * grid.width + (38 + dx)]!.ch;
+
+  it('the minimap covers the whole map at 2x', () => {
+    const session = newSession();
+    heroAt(session, 10, 10);
+    // Distinguishable monster glyphs at every corner of the 80×21 map.
+    pg(session, 0, 0, 'A', 'mon');
+    pg(session, 79, 0, 'B', 'mon');
+    pg(session, 0, 20, 'C', 'mon');
+    pg(session, 79, 20, 'D', 'mon');
+    const grid = blankGrid(80, 24);
+    paintMinimap(grid, rect, session);
+    expect(at(grid, 0, 0)).toBe('A');
+    expect(at(grid, 39, 0)).toBe('B');
+    expect(at(grid, 0, 10)).toBe('C');
+    expect(at(grid, 39, 10)).toBe('D');
+  });
+
+  it('the hero always wins its 2x2 block', () => {
+    const session = newSession();
+    // Block dx=5, dy=5 covers map cells (10..11, 10..11). Put the hero at
+    // (11, 11) — the bottom-right of the block, last in scan order — with a
+    // monster at the other three cells. Monsters outrank everything except
+    // the hero, so this proves rank beats scan order.
+    heroAt(session, 11, 11);
+    pg(session, 10, 10, 'D', 'mon');
+    pg(session, 11, 10, 'D', 'mon');
+    pg(session, 10, 11, 'D', 'mon');
+    const grid = blankGrid(80, 24);
+    paintMinimap(grid, rect, session);
+    expect(at(grid, 5, 5)).toBe('@');
+  });
+
+  it('a monster beats terrain in the same block', () => {
+    const session = newSession();
+    heroAt(session, 0, 0); // keep the hero out of block dx=5, dy=5
+    // Remember floor at every cell of block (5, 5); rank PASSABLE = 5.
+    pg(session, 10, 10, '.', 'cmap', 1);
+    pg(session, 11, 10, '.', 'cmap', 1);
+    pg(session, 10, 11, '.', 'cmap', 1);
+    pg(session, 11, 11, '.', 'cmap', 1);
+    // A monster on one cell of the block; rank MONSTER = 2 wins.
+    pg(session, 11, 10, 'd', 'mon');
+    const grid = blankGrid(80, 24);
+    paintMinimap(grid, rect, session);
+    expect(at(grid, 5, 5)).toBe('d');
   });
 });
