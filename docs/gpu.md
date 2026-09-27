@@ -61,6 +61,12 @@ If `createRenderer()` throws or `renderer.init()` rejects, the viewport keeps
 the existing WebGL path (§6) and logs one line. The GPU path is never
 required for the browser client to work.
 
+A page served from a **non-secure origin** — a LAN IP over plain http — has
+no `navigator.gpu` at all (`[SecureContext]` in the WebGPU spec), so it
+always lands on the WebGL2 backend at `medium`. That is the common reason
+for the "WebGPU is not available" console line, and it is never the cause of
+a blank page; see docs/web.md "Reaching it from another machine".
+
 **Measured on this host (2026-09-21, `/gpu-probe.html`, see §9).** A
 `WebGPURenderer` reaches the **WebGPU backend** in headless Chromium, but
 `pipeline.render()` then dies inside three r185 with

@@ -3,9 +3,16 @@
  * spawns one `nh-bridge` per socket connection. Every stdout line from the
  * bridge is forwarded to the socket as a text frame; every text frame from
  * the socket is written to the bridge's stdin. Closing the socket kills the
+ * bridge, and the bridge exiting closes the socket.
+ *
  * Binds every interface (`0.0.0.0`) by default so a browser on another
  * machine can reach it; set `ASCIIHACK_WS_HOST=127.0.0.1` (or `--host=`) for
  * loopback only. There is **no authentication** — see docs/web.md "Security".
+ *
+ * Because that kill is a `SIGTERM`, NetHack never cleans up its level locks,
+ * so the server sweeps them (`./locks.ts`) at start and after each player's
+ * last session — otherwise ten dead sessions wedge a name for three days
+ * with "Too many hacks running now." See docs/web.md "Stale level locks".
  *
  * Run: `npm run web:server [-- --port 8790] [--playgrounds DIR]`.
  */
@@ -17,6 +24,7 @@ import { IncomingMessage, createServer } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { spawnBridge } from '../src/engine/bridge.js';
 import type { BridgeProcess } from '../src/engine/bridge.js';
+import { sweepAllPlaygrounds, sweepPlaygroundLocks } from './locks.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, '..');
@@ -37,6 +45,10 @@ export interface ServerFlags {
   bridge: string;
   playgroundSrc: string;
   playgrounds: string;
+  /** Sweep stale NetHack level locks at start and after each session
+   *  (docs/web.md "Stale level locks"). `--no-lock-sweep` turns it off for
+   *  the case this server does not own `--playgrounds` alone. */
+  sweepLocks: boolean;
 }
 
 /** Parse `argv.slice(2)` into `ServerFlags` (env overrides for defaults). */
@@ -47,6 +59,7 @@ export function parseServerFlags(argv: readonly string[]): ServerFlags {
     bridge: process.env.ASCIIHACK_BRIDGE ?? DEFAULT_BRIDGE,
     playgroundSrc: process.env.ASCIIHACK_PLAYGROUND_SRC ?? DEFAULT_PLAYGROUND_SRC,
     playgrounds: process.env.ASCIIHACK_PLAYGROUNDS ?? DEFAULT_PLAYGROUNDS,
+    sweepLocks: (process.env.ASCIIHACK_LOCK_SWEEP ?? '1') !== '0',
   };
   for (const arg of argv) {
     if (arg.startsWith('--host=')) flags.host = arg.slice('--host='.length);
@@ -54,9 +67,10 @@ export function parseServerFlags(argv: readonly string[]): ServerFlags {
     else if (arg.startsWith('--bridge=')) flags.bridge = arg.slice('--bridge='.length);
     else if (arg.startsWith('--playgrounds=')) flags.playgrounds = arg.slice('--playgrounds='.length);
     else if (arg.startsWith('--playground-src=')) flags.playgroundSrc = arg.slice('--playground-src='.length);
+    else if (arg === '--no-lock-sweep') flags.sweepLocks = false;
     else if (arg === '--help' || arg === '-h') {
       process.stdout.write(
-        'usage: asciihack-ws [--host=HOST] [--port=PORT] [--bridge=PATH] [--playgrounds=DIR] [--playground-src=DIR]\n',
+        'usage: asciihack-ws [--host=HOST] [--port=PORT] [--bridge=PATH] [--playgrounds=DIR] [--playground-src=DIR] [--no-lock-sweep]\n',
       );
       process.exit(0);
     } else {
@@ -174,6 +188,21 @@ export function startServer(flags: ServerFlags): { close: () => Promise<void> } 
   });
   const wss = new WebSocketServer({ noServer: true });
 
+  // Boot sweep: this process owns no sessions yet, so every level lock under
+  // the playgrounds root is litter from a run that died without quitting.
+  // NetHack cannot reclaim these itself for three days (docs/web.md).
+  if (flags.sweepLocks) {
+    for (const [player, n] of sweepAllPlaygrounds(flags.playgrounds)) {
+      // eslint-disable-next-line no-console
+      console.log(`ws-server: swept ${n} stale lock file(s) name=${player}`);
+    }
+  }
+
+  // Live sessions per player name. A name's playground is only safe to sweep
+  // once its last bridge has exited — two tabs under one name get two lock
+  // letters, and sweeping after the first would delete the second's levels.
+  const live = new Map<string, number>();
+
   http.on('upgrade', (req: IncomingMessage, socket, head) => {
     const url = req.url ?? '';
     const host = req.headers.host ?? flags.host;
@@ -203,11 +232,29 @@ export function startServer(flags: ServerFlags): { close: () => Promise<void> } 
         name,
       });
       const startedAt = Date.now();
+      live.set(name, (live.get(name) ?? 0) + 1);
       // eslint-disable-next-line no-console
       console.log(`ws-server: session start name=${name} target=${target}`);
       attachBridgeToSocket(ws, bridge, () => {
         // eslint-disable-next-line no-console
         console.log(`ws-server: session end   name=${name} durationMs=${Date.now() - startedAt}`);
+      });
+      // Sweep on bridge *exit*, not on socket close: the socket handler has
+      // only just sent SIGTERM at that point, and NetHack is still holding
+      // its level files open.
+      void bridge.exited.then(() => {
+        const remaining = (live.get(name) ?? 1) - 1;
+        if (remaining > 0) {
+          live.set(name, remaining);
+          return;
+        }
+        live.delete(name);
+        if (!flags.sweepLocks) return;
+        const swept = sweepPlaygroundLocks(target);
+        if (swept > 0) {
+          // eslint-disable-next-line no-console
+          console.log(`ws-server: swept ${swept} stale lock file(s) name=${name}`);
+        }
       });
     });
   });

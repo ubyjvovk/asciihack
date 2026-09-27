@@ -106,8 +106,11 @@ enough for the classic tty rate; the server bundles nothing.
   - closing the socket sends `SIGTERM` to the bridge; the bridge
     exiting closes the socket cleanly.
 - One session per socket. No sharing, no auth.
-- Log lines: `session start name=<name> target=<dir>` and
-  `session end   name=<name> durationMs=<n>`.
+- Stale NetHack level locks are swept at start and after each player's
+  last session — see "Stale level locks" below.
+- Log lines: `session start name=<name> target=<dir>`,
+  `session end   name=<name> durationMs=<n>` and
+  `swept <n> stale lock file(s) name=<name>`.
 
 Flags:
 
@@ -118,9 +121,79 @@ Flags:
 | `--bridge=` | `build/nethack/bridge/nh-bridge` | bridge binary |
 | `--playgrounds=` | `~/.asciihack/players` | per-player playground root |
 | `--playground-src=` | `build/nethack/bridge/playground` | first-use source |
+| `--no-lock-sweep` | *(sweep is on)* | leave stale level locks alone |
 
 Env overrides use `ASCIIHACK_WS_HOST`, `ASCIIHACK_WS_PORT`,
-`ASCIIHACK_BRIDGE`, `ASCIIHACK_PLAYGROUNDS`, `ASCIIHACK_PLAYGROUND_SRC`.
+`ASCIIHACK_BRIDGE`, `ASCIIHACK_PLAYGROUNDS`, `ASCIIHACK_PLAYGROUND_SRC`
+and `ASCIIHACK_LOCK_SWEEP=0`.
+
+### Stale level locks
+
+**The failure.** A browser tab shows a black page; the socket opens,
+NetHack starts, and ~13 frames later it is gone:
+
+```
+<< {"t":"call","name":"display_nhwindow","args":[2,false]}
+<< {"t":"call","name":"exit_nhwindows","args":[null]}
+   Too many hacks running now.            ← bare stdout line, not JSON
+<< {"t":"exit","code":0,"reason":"atexit"}
+```
+
+The page goes black rather than showing an error because `main.ts` treats
+the socket close as game-over and calls `gl.dispose()`, which removes the
+canvas. Diagnosed 2026-09-22 on the live `guest` playground.
+
+**Why it happens.** The playgrounds ship `MAXPLAYERS=10` in `sysconf`, so
+`getlock()` (`nethack/sys/unix/unixunix.c`) names each game's level files
+`<letter>lock.<level>` — `'a' + i` over the template `"1lock"`, for
+`i < locknum`, capped at 25. A game that quits normally removes its own
+locks. A game that is killed does not, and **this server kills every
+session**: closing a socket sends `SIGTERM`. So each abandoned tab burns a
+lock letter permanently, and the eleventh game under that name cannot start.
+
+NetHack's own reclaim path does not help. `veryold()` only considers a lock
+stale when it is **older than three days**; the `kill(lockedpid, 0)`
+liveness check that would catch a dead session is inside `#ifndef NETWORK`,
+and `nethack/include/unixconf.h:37` defines `NETWORK`. Worse, `veryold()`
+returns "not stale" outright when the file is not exactly `sizeof(int)`
+bytes — true for every lock whose game got far enough to write level data —
+so those never age out at all.
+
+**The sweep** (`server/locks.ts`). `sweepPlaygroundLocks(dir)` deletes the
+`<a-y>lock.<n>` files in one playground; `sweepAllPlaygrounds(root)` does
+every player under the playgrounds root. The server runs it:
+
+- **at start**, over every playground — this process owns no sessions yet,
+  so all of it is litter from a previous run;
+- **after a player's last bridge exits** — keyed on a live-session count per
+  name, because two tabs under one name hold two lock letters and sweeping
+  after the first would delete the second's levels. It hangs off
+  `bridge.exited`, not the socket-close callback, which fires while NetHack
+  still has the files open.
+
+The predicate is deliberately tight. Playgrounds also hold `record`,
+`perm`, `nhdat`, `symbols`, `sysconf` and `save/`, and the sweep must never
+touch them; `tests/ws-locks.test.ts` pins the reject list. In particular the
+`!gl.locknum` lock spelling (`<uid><plname>.<n>`) is *not* swept — it is
+indistinguishable from an ordinary file — so a playground whose `sysconf`
+drops `MAXPLAYERS` will accumulate locks again.
+
+Turn the sweep off with `--no-lock-sweep` (or `ASCIIHACK_LOCK_SWEEP=0`) if
+something other than this server also runs games out of `--playgrounds`;
+the boot sweep would delete that other process's live levels. Saved games
+in `save/` are never touched either way.
+
+Manual cleanup, equivalent to one sweep:
+
+```sh
+rm -f ~/.asciihack/players/<name>/[a-y]lock.*
+```
+
+**Known gap.** `getlock()`'s refusal is printed *after* `exit_nhwindows`,
+so it leaves as a bare non-JSON stdout line; `parseBridgeLine`
+(`src/engine/bridge.ts`) drops it and the browser gets nothing. Any fatal
+startup refusal therefore presents as an unexplained black page. Surfacing
+those lines — logging them server-side at minimum — is not done yet.
 
 ## The Vite dev server (`web/vite.config.ts`)
 
@@ -152,6 +225,44 @@ you want real multi-player, put an authenticated reverse proxy in front and
 mirror `bin/asciihack-lib.sh`'s name rules there too. The Vite dev server
 also runs with `allowedHosts: true`, since with an open bind address the
 Host-header check is not the thing protecting anything.
+
+## Reaching it from another machine — and WebGPU
+
+Both servers bind `0.0.0.0`, so `http://<lan-ip>:5273/` works from another
+box. That URL is a **non-secure context**, and `navigator.gpu` is
+`[SecureContext]` in the WebGPU spec — so it is `undefined` there in *every*
+browser, whatever the version. The console then shows
+
+```
+THREE.WebGPURenderer: WebGPU is not available, running under WebGL2 backend.
+```
+
+This is expected noise, not a fault: the GPU path falls back to three's
+WebGL2 backend and renders the dungeon normally (`docs/gpu.md` §3). The only
+cost is the quality tier — `caps.maxQuality` is `ultra` only on a WebGPU
+backend with a 64-byte `maxColorAttachmentBytesPerSample`, and `medium`
+otherwise. **A missing `navigator.gpu` never explains a black page**; for
+that, see "Stale level locks".
+
+Confirm which of the two it is from the page console:
+
+```js
+[window.isSecureContext, typeof navigator.gpu]
+// [false, "undefined"] → the origin; [true, "undefined"] → the browser
+```
+
+To get a secure context, tunnel port 5273 — `localhost` counts as
+trustworthy, and Vite proxies `/play` onward, so the WS port needs no
+forwarding of its own:
+
+```sh
+ssh -L 5273:localhost:5273 <user>@<host>      # then http://localhost:5273/
+```
+
+Tailscale with `tailscale serve` gives real HTTPS if a tunnel per session is
+too much. Browser-side, WebGPU is on by default from Safari 26 (macOS Tahoe
+/ iOS 26); Safari 18 and earlier keep it behind Develop → Feature Flags →
+WebGPU.
 
 ## Smoke test
 

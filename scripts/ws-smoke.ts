@@ -34,6 +34,10 @@ async function main(): Promise<void> {
     bridge: BRIDGE,
     playgroundSrc: PLAYGROUND_SRC,
     playgrounds: PLAYGROUNDS,
+    // The smoke test kills its session on purpose, which is exactly what
+    // leaves level locks behind; without the sweep a rerun would eventually
+    // hit "Too many hacks running now" (docs/web.md "Stale level locks").
+    sweepLocks: true,
   };
   const server = startServer(flags);
   // The server logs 'listening on…' from inside listen(); wait a tick.
